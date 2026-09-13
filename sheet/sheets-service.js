@@ -329,9 +329,13 @@ export async function listSheetTabs(sheets, spreadsheetId) {
   return (res.data.sheets || []).map((s) => s.properties.title);
 }
 
-// Đọc thô tab ⚙config. Range A:AZ (không phải A:Z) vì bảng cấu hình đã có 24 cột.
+// Đọc thô tab ⚙config. Range = TÊN TAB TRỐNG KHÔNG, cố ý: Sheets trả về đúng vùng có dữ
+// liệu của tab, không giới hạn số cột. Trước đây range ghi cứng "A:AZ" (52 cột) nên khi
+// mode dualFrame đẩy bảng lên 59 cột thì 7 cột cuối — Giờ đăng, Link kênh, @handle nguồn
+// và 4 cột stats — biến mất IM LẶNG khỏi cfg (API không trả thì app không biết là có).
+// Ghi cứng bao nhiêu cột cũng chỉ là dời cái bẫy đi xa hơn, nên bỏ hẳn giới hạn.
 export async function readConfigValues(sheets, spreadsheetId, configTab = "⚙config") {
-  const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: `${configTab}!A:AZ` });
+  const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: configTab });
   return res.data.values || [];
 }
 

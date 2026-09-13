@@ -18,7 +18,7 @@ if (!credentialsPath || !spreadsheetId) {
 const sheets = createSheetsClient(credentialsPath);
 const values = await readConfigValues(sheets, spreadsheetId);
 
-console.log(`Đọc được ${values.length} dòng từ ⚙config!A:AZ\n`);
+console.log(`Đọc được ${values.length} dòng từ tab ⚙config\n`);
 
 const channels = parseConfigRows(values);
 const { headerRowIndex, cols } = findStatsColumns(values);
