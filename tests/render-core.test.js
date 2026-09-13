@@ -26,6 +26,7 @@ import {
   dualFrameMainGeometry,
   dualFrameSmallGeometry,
   dualFrameFrameGeometry,
+  isVideoAsset,
   roundedCornerAlphaExpr,
 } from "../sheet/render-core.js";
 
@@ -568,6 +569,77 @@ test("resolveDualFrameAssets: bật khung viền nhưng path hỏng -> cảnh b�
     assert.equal(r.frameFile, "");
     assert.equal(r.warnings.length, 1);
     assert.ok(r.warnings[0].includes("khung"));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── dualFrame: lớp nền nhận cả ảnh lẫn video ──
+
+test("isVideoAsset: phân loại theo đuôi file, không phân biệt hoa thường", () => {
+  assert.equal(isVideoAsset("nen.mp4"), true);
+  assert.equal(isVideoAsset("D:/asset/NEN.MOV"), true);
+  assert.equal(isVideoAsset("nen.webm"), true);
+  assert.equal(isVideoAsset("nen.mkv"), true);
+  assert.equal(isVideoAsset("nen.png"), false);
+  assert.equal(isVideoAsset("nen.webp"), false);
+  assert.equal(isVideoAsset("khong-co-duoi"), false);
+  assert.equal(isVideoAsset(""), false);
+  assert.equal(isVideoAsset(undefined), false);
+});
+
+test("buildStudioInputs: nền dualFrame là video -> -stream_loop -1, ảnh giữ -loop 1", () => {
+  assert.deepEqual(buildStudioInputs("dualFrame", { dualFrameBgFile: "nen.mp4" }), [
+    { file: "nen.mp4", inputOptions: ["-stream_loop", "-1"] },
+  ]);
+  // Hành vi cũ không được đổi: ảnh tĩnh vẫn phải -loop 1, nếu không chỉ khung đầu có nền.
+  assert.deepEqual(buildStudioInputs("dualFrame", { dualFrameBgFile: "nen.png" }), [
+    { file: "nen.png", inputOptions: ["-loop", "1"] },
+  ]);
+  // Khung viền luôn là ảnh -> luôn -loop 1, và đứng sau nền đúng thứ tự filter.
+  assert.deepEqual(buildStudioInputs("dualFrame", { ...DF, dualFrameBgFile: "nen.mp4" }), [
+    { file: "nen.mp4", inputOptions: ["-stream_loop", "-1"] },
+    { file: "khung.png", inputOptions: ["-loop", "1"] },
+  ]);
+});
+
+test("dualFrame: nền video phải chuẩn hoá fps + bỏ alpha, nền ảnh giữ nguyên chuỗi cũ", () => {
+  const v = buildComplexFilter("dualFrame", { ...DF, dualFrameBgFile: "nen.mp4" });
+  assert.ok(v.includes("[2:v]scale=1280:720,fps=30,format=yuv420p[df_bg]"));
+  // Chỉ số input không được lệch khi nền là video: khung viền vẫn là [3:v].
+  assert.ok(v.includes("[3:v]scale=960:560[df_frame]"));
+  assert.equal((v.join("|").match(/\[combined_video\]/g) || []).length, 1);
+
+  const img = buildComplexFilter("dualFrame", DF);
+  assert.ok(img.includes("[2:v]scale=1280:720[df_bg]"));
+});
+
+test("resolveDualFrameAssets: thư mục nền bốc được cả ảnh lẫn video", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "df-bg-mix-"));
+  fs.writeFileSync(path.join(dir, "a.png"), "x");
+  fs.writeFileSync(path.join(dir, "b.mp4"), "x");
+  fs.writeFileSync(path.join(dir, "bo-qua.txt"), "x");
+  try {
+    assert.equal(
+      resolveDualFrameAssets({ dualFrameBgPath: dir }, () => 0).bgFile,
+      path.join(dir, "a.png")
+    );
+    assert.equal(
+      resolveDualFrameAssets({ dualFrameBgPath: dir }, () => 0.99).bgFile,
+      path.join(dir, "b.mp4")
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("resolveDualFrameAssets: thư mục chỉ có video vẫn ra file, không rơi về nền đen", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "df-bg-vid-"));
+  fs.writeFileSync(path.join(dir, "nen.mp4"), "x");
+  try {
+    const r = resolveDualFrameAssets({ dualFrameBgPath: dir });
+    assert.equal(r.bgFile, path.join(dir, "nen.mp4"));
+    assert.deepEqual(r.warnings, []);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

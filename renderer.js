@@ -2407,7 +2407,7 @@ function clearRenderFramePath() {
   saveSettings();
 }
 
-// ===== Khung đôi (dualFrame): ảnh nền và ảnh khung viền =====
+// ===== Khung đôi (dualFrame): ảnh/video nền và ảnh khung viền =====
 // Cả hai đều nhận file lẻ hoặc thư mục: trỏ vào thư mục thì mỗi video render ra
 // sẽ bốc ngẫu nhiên một file trong đó.
 async function selectRenderDualFrameBgFile() {
@@ -2415,14 +2415,17 @@ async function selectRenderDualFrameBgFile() {
   try {
     const filePath = await window.electronAPI.selectFile({
       filters: [
-        { name: "Ảnh nền", extensions: ["png", "webp"] },
+        // Nền nhận cả ảnh tĩnh lẫn video — render-core tự nạp theo đuôi file (isVideoAsset).
+        { name: "Ảnh/video nền", extensions: ["png", "webp", "mp4", "mov", "webm", "mkv"] },
+        { name: "Ảnh", extensions: ["png", "webp"] },
+        { name: "Video", extensions: ["mp4", "mov", "webm", "mkv"] },
         { name: "All Files", extensions: ["*"] },
       ],
     });
     if (filePath) setRenderDualFrameBgPath(filePath);
   } catch (error) {
     console.error("Error selecting dualFrame bg file:", error);
-    alert("Lỗi khi chọn ảnh nền: " + error.message);
+    alert("Lỗi khi chọn ảnh/video nền: " + error.message);
   }
 }
 

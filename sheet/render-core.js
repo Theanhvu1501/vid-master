@@ -52,7 +52,7 @@ export const DEFAULT_RENDER_CFG = {
   // thành trong suốt rồi chồng thẳng.
   effectBlend: "normal",
   effectKeyThreshold: 0.15,
-  // Mode dualFrame: 4 lớp — ảnh nền full khung, video overlay (khung to, giữa),
+  // Mode dualFrame: 4 lớp — nền full khung (ảnh tĩnh hoặc video), video overlay (khung to, giữa),
   // video background (khung nhỏ, góc dưới phải), ảnh khung viền khung to (tuỳ chọn).
   dualFrameBgPath: "",
   dualFrameBgFile: "",
@@ -78,6 +78,17 @@ export const EFFECT_BLENDS = ["normal", "screen", "lumakey"];
 
 export const FRAME_EXTS = [".png", ".webp"];
 export const EFFECT_EXTS = [".mp4", ".mov", ".webm", ".mkv"];
+
+// Lớp nền của dualFrame nhận cả hai loại: ảnh tĩnh hoặc video. Thư mục trộn lẫn cũng được,
+// mỗi lần render bốc ngẫu nhiên một file rồi tự nạp theo đúng loại của nó.
+export const BG_EXTS = [...FRAME_EXTS, ...EFFECT_EXTS];
+
+// Nguồn sự thật duy nhất về "file asset này là video hay ảnh tĩnh". Ảnh tĩnh phải nạp
+// bằng -loop 1, video phải nạp bằng -stream_loop -1 và chuẩn hoá fps trong filter — hai
+// chỗ đó mà hỏi khác nhau thì nền sẽ đứng hình hoặc ffmpeg chết, nên cùng hỏi hàm này.
+export function isVideoAsset(file) {
+  return EFFECT_EXTS.includes(path.extname(String(file ?? "")).toLowerCase());
+}
 
 function topTransparent(cfg) {
   const filter = [
@@ -334,9 +345,17 @@ export function buildStudioInputs(renderMode, cfgIn = {}) {
     const cfg = { ...DEFAULT_RENDER_CFG, ...cfgIn };
     const layers = dualFrameLayers(cfg);
     const inputs = [];
-    // Thiếu ảnh nền thì dualFrame() tự phát sinh nền đen ngay trong filter_complex
+    // Thiếu file nền thì dualFrame() tự phát sinh nền đen ngay trong filter_complex
     // (không chiếm input phụ nào) — chỉ chiếm input khi đã chốt được file thật.
-    if (cfg.dualFrameBgFile) inputs.push({ file: cfg.dualFrameBgFile, inputOptions: ["-loop", "1"] });
+    if (cfg.dualFrameBgFile)
+      inputs.push({
+        file: cfg.dualFrameBgFile,
+        // Nền video lặp vô hạn (giống lớp hiệu ứng của blurFrame) để nền ngắn hơn video
+        // overlay thì chạy lại chứ không đứng hình; ảnh tĩnh vẫn -loop 1 như cũ.
+        inputOptions: isVideoAsset(cfg.dualFrameBgFile)
+          ? ["-stream_loop", "-1"]
+          : ["-loop", "1"],
+      });
     if (layers.frame) inputs.push({ file: cfg.dualFrameFrameFile, inputOptions: ["-loop", "1"] });
     return inputs;
   }
@@ -421,10 +440,10 @@ export function dualFrameLayers(cfgIn = {}) {
 export function resolveDualFrameAssets(cfgIn = {}, rand = Math.random) {
   const cfg = { ...DEFAULT_RENDER_CFG, ...cfgIn };
   const warnings = [];
-  const bgFile = pickAsset(cfg.dualFrameBgPath, FRAME_EXTS, rand);
+  const bgFile = pickAsset(cfg.dualFrameBgPath, BG_EXTS, rand);
   if (!bgFile) {
     warnings.push(
-      `⚠️ Không tìm được ảnh nền hợp lệ tại: ${cfg.dualFrameBgPath || "(trống)"} — dùng nền đen thay thế`
+      `⚠️ Không tìm được ảnh/video nền hợp lệ tại: ${cfg.dualFrameBgPath || "(trống)"} — dùng nền đen thay thế`
     );
   }
   let frameFile = "";
@@ -500,7 +519,10 @@ function dualFrame(cfg) {
   // filter_complex (không chiếm input nào), cùng kỹ thuật lớp "solid" của layer-compiler.js.
   let idx = 2;
   if (cfg.dualFrameBgFile) {
-    filters.push(`[${idx}:v]scale=${BASE_W}:${BASE_H}[df_bg]`);
+    // Nền video: ép về đúng fps của output và bỏ alpha. Nền chạy fps khác 30 thì overlay
+    // lấy khung theo nhịp của nó, ảnh ra giật; nền là lớp dưới cùng nên không cần alpha.
+    const norm = isVideoAsset(cfg.dualFrameBgFile) ? `,fps=${FIXED_FPS},format=yuv420p` : "";
+    filters.push(`[${idx}:v]scale=${BASE_W}:${BASE_H}${norm}[df_bg]`);
     idx++;
   } else {
     filters.push(`color=c=black:s=${BASE_W}x${BASE_H}:r=${FIXED_FPS}[df_bg]`);
@@ -650,7 +672,7 @@ export function renderOne({
     if (onProgress) warnings.forEach((w) => onProgress(w));
   }
   if (renderMode === "dualFrame") {
-    // Chốt ảnh nền + khung viền NGAY TẠI ĐÂY, cùng lý do với blurFrame/crop: run() có thể
+    // Chốt nền + khung viền NGAY TẠI ĐÂY, cùng lý do với blurFrame/crop: run() có thể
     // gọi lại lần hai khi GPU lỗi phải lùi về CPU, chốt muộn hơn sẽ bốc ra ảnh khác.
     const { bgFile, frameFile, warnings } = resolveDualFrameAssets(cfg);
     cfg.dualFrameBgFile = bgFile;

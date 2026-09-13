@@ -351,7 +351,7 @@ let effectBlend = "normal";
 let effectKeyThreshold = 0.15;
 const EFFECT_BLENDS = ["normal", "screen", "lumakey"];
 
-// Chế độ khung đôi (dualFrame): ảnh nền + video overlay (khung to) + video nền (khung
+// Chế độ khung đôi (dualFrame): nền (ảnh hoặc video) + video overlay (khung to) + video nền (khung
 // nhỏ) + khung viền tuỳ chọn. Công tắc khung viền tách khỏi path, giống frameEnabled.
 let dualFrameBgPath = "";
 let dualFrameFrameEnabled = false;
@@ -1087,7 +1087,7 @@ const processVideo = async (
           `🖼️ Sử dụng chế độ Khung đôi (nhỏ + lớn) cho ${path.basename(outputPath)}`,
           LOG_LEVEL.DEBUG
         );
-        // Chốt ảnh nền + khung viền MỘT LẦN rồi mới dựng filter, cùng lý do với
+        // Chốt nền + khung viền MỘT LẦN rồi mới dựng filter, cùng lý do với
         // blurFrame/crop ở trên: filter và danh sách input phải khớp chỉ số [n:v].
         const dfCfg = {
           dualFrameBgPath, dualFrameFrameEnabled, dualFrameFramePath, dualFrameFrameScale,
