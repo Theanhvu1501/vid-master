@@ -5340,6 +5340,8 @@ async function runConcat() {
     $("sw-auto-open").checked = !!s.autoRunOnOpen;
     $("sw-video-speed").value = (typeof s.videoSpeed === "number" && s.videoSpeed > 0) ? s.videoSpeed : 0.95;
     $("sw-use-gpu").checked = !!s.useGPU;
+    $("sw-cleanup").checked = !!s.cleanupEnabled;
+    $("sw-cleanup-days").value = s.cleanupKeepDays ?? 1;
     $("sw-gpm-enabled").checked = !!s.gpmEnabled;
     $("sw-gpm-host").value = s.gpmHost || "127.0.0.1:19995";
     $("sw-gpm-idle-close").value = s.gpmIdleCloseMin ?? 10;
@@ -5357,6 +5359,13 @@ async function runConcat() {
     legacyCookiesFile = s.cookiesFile || "";
     syncCookiesHint();
     syncGpmVisibility();
+    syncCleanupHint();
+  }
+
+  // Chỉ hiện lời cảnh báo khi người dùng thật sự bật — tắt thì nó chỉ là nhiễu.
+  function syncCleanupHint() {
+    const hint = $("sw-cleanup-hint");
+    if (hint) hint.style.display = $("sw-cleanup").checked ? "" : "none";
   }
 
   // Cho biết lượt tải sắp tới lấy cookie ở đâu — hai chỗ cấu hình cookie mà không
@@ -5374,6 +5383,13 @@ async function runConcat() {
       hint.textContent = 'Để trống thì dùng cookie đã cấu hình ở tab "Tải video".';
     }
   }
+  // Ô "giữ N ngày": trống/sai -> 1. KHÔNG dùng `|| 0` như các ô số khác, vì ở đây 0 là
+  // giá trị HỢP LỆ (xoá ngay khi upload xong) — ô bỏ trống mà hoá 0 là xoá nhầm video hôm nay.
+  function cleanupKeepDaysValue() {
+    const n = parseInt($("sw-cleanup-days").value, 10);
+    return Number.isFinite(n) && n >= 0 ? n : 1;
+  }
+
   function currentSettings() {
     return {
       spreadsheetId: $("sw-spreadsheet-id").value.trim(),
@@ -5383,6 +5399,8 @@ async function runConcat() {
       autoRunOnOpen: $("sw-auto-open").checked,
       videoSpeed: parseFloat($("sw-video-speed").value) > 0 ? parseFloat($("sw-video-speed").value) : 0.95,
       useGPU: $("sw-use-gpu").checked,
+      cleanupEnabled: $("sw-cleanup").checked,
+      cleanupKeepDays: cleanupKeepDaysValue(),
       gpmEnabled: $("sw-gpm-enabled").checked,
       gpmHost: $("sw-gpm-host").value.trim() || "127.0.0.1:19995",
       gpmIdleCloseMin: Math.max(0, parseInt($("sw-gpm-idle-close").value, 10) || 0),
@@ -5404,10 +5422,11 @@ async function runConcat() {
   let saveTimer = null;
   async function saveNow() { await api.saveSettings(currentSettings()); }
   function saveDebounced() { clearTimeout(saveTimer); saveTimer = setTimeout(saveNow, 400); }
-  ["sw-spreadsheet-id", "sw-poll", "sw-video-speed", "sw-yt-api-key", "sw-gpm-idle-close"].forEach((id) =>
+  ["sw-spreadsheet-id", "sw-poll", "sw-video-speed", "sw-yt-api-key", "sw-gpm-idle-close", "sw-cleanup-days"].forEach((id) =>
     $(id)?.addEventListener("input", saveDebounced));
   ["sw-auto-open", "sw-use-gpu", "sw-gpm-enabled", "sw-gpm-tg-photo"].forEach((id) =>
     $(id)?.addEventListener("change", saveNow));
+  $("sw-cleanup")?.addEventListener("change", () => { syncCleanupHint(); saveNow(); });
   ["sw-gpm-host", "sw-gpm-tg-token", "sw-gpm-tg-chat", "sw-gpm-tg-topic"].forEach((id) =>
     $(id)?.addEventListener("input", saveDebounced));
   $("sw-gpm-enabled")?.addEventListener("change", syncGpmVisibility);

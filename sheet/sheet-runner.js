@@ -6,6 +6,7 @@ import { normalizeProxy } from "./proxy.js";
 import { loadPreset, applySlotOverrides } from "./preset-store.js";
 import { validatePreset } from "./layer-compiler.js";
 import { resetGpuState } from "./render-core.js";
+import { planCleanup, formatBytes, CLEAN_EXTS } from "./cleanup-output.js";
 import { testRenderChannel } from "./test-render-channel.js";
 
 export function pickRandomBackground(files, rand = Math.random) {
@@ -26,7 +27,7 @@ export function pickDownloadDelay(config = {}, rand = Math.random) {
 export function createSheetRunner(deps) {
   const {
     config, sheetsApi, downloader, copyLocalOverlay, listLocalInputs, renderer, listBackgrounds,
-    ensureDirs, stateStore, emit, now, pLimitFn, rand, unlink, detectChroma, sleep,
+    ensureDirs, stateStore, emit, now, pLimitFn, rand, unlink, detectChroma, sleep, listFilesWithStat,
     uploadQueue, refreshStats, resumeStore, fileExists, checkGpm,
     // Chỉ nhánh testRenderNow dùng: cắt clip ngắn, mở file kết quả, tạo folder test/.
     cutClip, openFile, ensureDir,
@@ -176,6 +177,41 @@ export function createSheetRunner(deps) {
           }
         } else if (item.status === ST.DONE && String(item.uploadStatus ?? "").trim().startsWith("✅") && entry) {
           dropEntry(ch.sheetName, item.url);
+        }
+      }
+
+      // Tự dọn video cũ (tuỳ chọn, mặc định tắt) — xem sheet/cleanup-output.js.
+      // Đặt SAU vòng dọn dẹp bên trên chứ không trước: chính vòng đó vừa xoá entry của
+      // những video đã upload xong, và mất entry mới là dấu hiệu "file này hết nhiệm vụ".
+      // Chạy trước nó thì video hôm qua phải đợi thêm một lượt nữa mới được dọn.
+      if (config.cleanupEnabled && listFilesWithStat) {
+        // Đọc lại resume sau các lần xoá entry phía trên. Mọi outputPath/filePath còn được
+        // trỏ tới đều là việc dang dở (chờ upload, upload lỗi, overlay chờ render lại).
+        const rsKeep = resumeStore.load();
+        const keepPaths = Object.values(rsKeep[ch.sheetName] ?? {})
+          .flatMap((e) => [e?.outputPath, e?.filePath])
+          .filter(Boolean);
+        let count = 0;
+        let bytes = 0;
+        for (const [dir, exts] of [[outputDir, CLEAN_EXTS.output], [overlaysDir, CLEAN_EXTS.overlays]]) {
+          let victims = [];
+          try {
+            victims = planCleanup({
+              files: listFilesWithStat(dir), keepPaths, now: now(),
+              keepDays: config.cleanupKeepDays, exts,
+            });
+          } catch (e) {
+            emit({ type: "log", message: `[${ch.sheetName}] không đọc được ${dir} để dọn: ${String(e?.message || e).slice(0, 120)}` });
+            continue;
+          }
+          for (const v of victims) {
+            // File đang bị ffmpeg/trình duyệt giữ (EBUSY) chỉ là lượt sau dọn lại —
+            // không được để nó cắt ngang cả khâu dọn, càng không được giết lượt chạy.
+            try { unlink(v.path); count += 1; bytes += v.size || 0; } catch { /* ignore */ }
+          }
+        }
+        if (count) {
+          emit({ type: "log", message: `[${ch.sheetName}] dọn ${count} file cũ, giải phóng ${formatBytes(bytes)}` });
         }
       }
 

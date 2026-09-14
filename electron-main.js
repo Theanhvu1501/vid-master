@@ -1381,7 +1381,7 @@ function sheetSettingsPath() {
 }
 function loadSheetSettings() {
   try { return JSON.parse(fs.readFileSync(sheetSettingsPath(), "utf-8")); }
-  catch { return { spreadsheetId: "", credentialsPath: "", channelsRoot: "", pollSec: 300, autoRunOnOpen: false, useGPU: false, videoSpeed: 0.95, gpuVideoCodec: "h264_nvenc", ytApiKey: "", gpmIdleCloseMin: 10 }; }
+  catch { return { spreadsheetId: "", credentialsPath: "", channelsRoot: "", pollSec: 300, autoRunOnOpen: false, useGPU: false, videoSpeed: 0.95, gpuVideoCodec: "h264_nvenc", ytApiKey: "", gpmIdleCloseMin: 10, cleanupEnabled: false, cleanupKeepDays: 1 }; }
 }
 function saveSheetSettings(s) { fs.writeFileSync(sheetSettingsPath(), JSON.stringify(s, null, 2), "utf-8"); }
 
@@ -1521,6 +1521,10 @@ function buildSheetRunner(win) {
       gpmEnabled: !!s.gpmEnabled,
       gpmHost: s.gpmHost || "127.0.0.1:19995",
       gpmLocale: s.gpmLocale || "vi",
+      cleanupEnabled: !!s.cleanupEnabled,
+      // Không ?? 1 ở đây: để nguyên giá trị thô cho planCleanup tự quyết, vì 0 là giá trị
+      // HỢP LỆ (xoá ngay khi upload xong) còn null/"" mới là "chưa cấu hình" -> lùi về 1.
+      cleanupKeepDays: s.cleanupKeepDays,
     },
     sheetsApi: {
       readConfigSheet: () => readConfigSheet(sheets, s.spreadsheetId),
@@ -1587,6 +1591,20 @@ function buildSheetRunner(win) {
     detectChroma: (videoPath, palette) =>
       detectChromaColor(videoPath, palette, { ffmpegPath: resolveFfmpegPaths().ffmpegPath, spawn, sharp }),
     listBackgrounds: (dir) => (fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.toLowerCase().endsWith(".mp4")) : []),
+    // Liệt kê kèm mtime/size cho khâu tự dọn video cũ. stat từng file riêng trong try:
+    // file bị xoá xen giữa readdir và stat chỉ nên biến mất khỏi danh sách, không được
+    // ném hỏng cả lượt dọn.
+    listFilesWithStat: (dir) => {
+      let names = [];
+      try { names = fs.readdirSync(dir); } catch { return []; }
+      return names.flatMap((name) => {
+        const p = path.join(dir, name);
+        try {
+          const st = fs.statSync(p);
+          return st.isFile() ? [{ path: p, mtimeMs: st.mtimeMs, size: st.size }] : [];
+        } catch { return []; }
+      });
+    },
     ensureDirs: (root) => {
       const dirs = {
         backgroundsDir: path.join(root, "backgrounds"),

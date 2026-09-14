@@ -1229,3 +1229,111 @@ test("runNow bỏ qua khi testRenderNow đang chạy dở", async () => {
   release();
   await test1;
 });
+
+// ===== Tự dọn video cũ (config.cleanupEnabled) =====
+// Mặc định TẮT. Bật thì mỗi lượt chạy dọn output/ + rác trong overlays/ của từng kênh,
+// nhưng không bao giờ đụng file còn được resume-state trỏ tới (video đang chờ upload).
+
+const CLEAN_NOW = new Date(2026, 6, 7, 10, 0); // 2026-07-07 10:00 — trùng deps.now mặc định
+const mtime = (d, h = 12) => new Date(2026, 6, d, h, 0).getTime();
+
+function makeCleanupDeps(overrides = {}) {
+  // Không có URL nào -> không render, không unlink overlay theo luồng thường:
+  // mọi lời gọi unlink quan sát được đều là của khâu dọn dẹp.
+  const listed = {
+    "/out": [
+      { path: "/out/cu.mp4", mtimeMs: mtime(5), size: 3_000_000 },
+      { path: "/out/cho-upload.mp4", mtimeMs: mtime(5), size: 1_000_000 },
+      { path: "/out/hom-nay.mp4", mtimeMs: mtime(7, 9), size: 9_000_000 },
+    ],
+    "/ov": [
+      { path: "/ov/mo-coi.mp4", mtimeMs: mtime(5), size: 2_000_000 },
+      { path: "/ov/thumb.jpg", mtimeMs: mtime(5), size: 5_000 },
+    ],
+  };
+  return makeDeps({
+    sheetsApi: {
+      readConfigSheet: async () => [
+        { sheetName: "Kênh A", enabled: true, videosPerDay: 2, renderMode: "topTransparent", cfg: {}, proxy: "" },
+      ],
+      readChannelUrls: async () => [],
+      setUrlStatus: async () => {},
+    },
+    // "cho-upload" đã render xong nhưng cột C chưa "✅" nên entry còn nguyên -> phải giữ file.
+    resumeStore: {
+      load: () => ({ "Kênh A": { u9: { stage: "rendered", outputPath: "/out/cho-upload.mp4", title: "cho-upload" } } }),
+      save: () => {},
+    },
+    listFilesWithStat: (dir) => listed[dir] || [],
+    ...overrides,
+  });
+}
+
+test("dọn video cũ: tắt theo mặc định — không đụng file nào", async () => {
+  const { deps, calls } = makeCleanupDeps();
+  await createSheetRunner(deps).runNow();
+  assert.deepEqual(calls.unlinked, []);
+});
+
+test("dọn video cũ: xoá file cũ trong output/, chừa file đang chờ upload và file hôm nay", async () => {
+  const { deps, calls } = makeCleanupDeps({
+    config: { spreadsheetId: "SID", channelsRoot: "/root", renderConcurrency: 2, cleanupEnabled: true, cleanupKeepDays: 1 },
+  });
+  await createSheetRunner(deps).runNow();
+  assert.ok(calls.unlinked.includes("/out/cu.mp4"), "video cũ đã upload xong phải bị xoá");
+  assert.ok(!calls.unlinked.includes("/out/cho-upload.mp4"), "video còn entry resume phải được giữ");
+  assert.ok(!calls.unlinked.includes("/out/hom-nay.mp4"), "video của hôm nay phải được giữ");
+});
+
+test("dọn video cũ: dọn luôn overlay mồ côi nhưng không đụng thumbnail .jpg", async () => {
+  const { deps, calls } = makeCleanupDeps({
+    config: { spreadsheetId: "SID", channelsRoot: "/root", renderConcurrency: 2, cleanupEnabled: true, cleanupKeepDays: 1 },
+  });
+  await createSheetRunner(deps).runNow();
+  assert.ok(calls.unlinked.includes("/ov/mo-coi.mp4"));
+  assert.ok(!calls.unlinked.includes("/ov/thumb.jpg"), "thumbnail còn cần cho lần upload lại");
+});
+
+test("dọn video cũ: báo số file và dung lượng đã giải phóng", async () => {
+  const logs = [];
+  const { deps } = makeCleanupDeps({
+    config: { spreadsheetId: "SID", channelsRoot: "/root", renderConcurrency: 2, cleanupEnabled: true, cleanupKeepDays: 1 },
+    emit: (e) => { if (e.type === "log") logs.push(e.message); },
+  });
+  await createSheetRunner(deps).runNow();
+  const line = logs.find((m) => m.includes("dọn"));
+  assert.ok(line, `phải có dòng log dọn dẹp, đang có: ${JSON.stringify(logs)}`);
+  assert.match(line, /Kênh A/);
+  assert.match(line, /2 file/);      // /out/cu.mp4 + /ov/mo-coi.mp4
+  assert.match(line, /4[.,]8 MB/);   // 3 MB + 2 MB theo MB = 1024^2
+});
+
+test("dọn video cũ: không dọn thì không gọi listFilesWithStat (không tốn I/O)", async () => {
+  const dirs = [];
+  const { deps } = makeCleanupDeps({ listFilesWithStat: (d) => { dirs.push(d); return []; } });
+  await createSheetRunner(deps).runNow();
+  assert.deepEqual(dirs, []);
+});
+
+test("dọn video cũ: keepDays=0 xoá cả video hôm nay, vẫn chừa video chờ upload", async () => {
+  const { deps, calls } = makeCleanupDeps({
+    config: { spreadsheetId: "SID", channelsRoot: "/root", renderConcurrency: 2, cleanupEnabled: true, cleanupKeepDays: 0 },
+  });
+  await createSheetRunner(deps).runNow();
+  assert.ok(calls.unlinked.includes("/out/hom-nay.mp4"));
+  assert.ok(!calls.unlinked.includes("/out/cho-upload.mp4"));
+});
+
+test("dọn video cũ: lỗi khi xoá một file không làm hỏng lượt chạy", async () => {
+  const { deps, calls } = makeCleanupDeps({
+    config: { spreadsheetId: "SID", channelsRoot: "/root", renderConcurrency: 2, cleanupEnabled: true, cleanupKeepDays: 1 },
+    unlink: (p) => {
+      calls0.unlinked.push(p);
+      if (p === "/out/cu.mp4") throw new Error("EBUSY: file đang mở");
+    },
+  });
+  const calls0 = calls;
+  await createSheetRunner(deps).runNow();
+  assert.deepEqual(calls.errors, []);
+  assert.ok(calls.unlinked.includes("/ov/mo-coi.mp4"), "file sau vẫn phải được dọn");
+});
