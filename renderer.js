@@ -641,6 +641,7 @@ async function saveSettings() {
     getUrl: {
       handle: document.getElementById("channel-handle")?.value || "",
       outputFolder: selectedGetUrlOutputFolder,
+      apiKey: document.getElementById("get-url-api-key")?.value?.trim() || "",
     },
     // Normalize settings
     normalize: {
@@ -1263,6 +1264,9 @@ async function loadSettings() {
         document.getElementById("get-url-output-folder").value =
           settings.getUrl.outputFolder;
         // Removed folder path display
+      }
+      if (settings.getUrl.apiKey) {
+        document.getElementById("get-url-api-key").value = settings.getUrl.apiKey;
       }
     }
 
@@ -4114,6 +4118,7 @@ async function runGetUrl() {
   const handle = document.getElementById("channel-handle").value.trim();
   const sortBy = document.getElementById("get-url-sort")?.value === "newest" ? "newest" : "views";
   const sortLabel = sortBy === "newest" ? "mới nhất" : "view cao nhất";
+  const apiKey = document.getElementById("get-url-api-key")?.value?.trim() || "";
 
   if (!handle) {
     alert("Vui lòng nhập channel handle!");
@@ -4131,8 +4136,8 @@ async function runGetUrl() {
       showOutput("get-url", data);
     });
 
-    // Không cần truyền getUrlConfig nữa - script sẽ đọc trực tiếp từ project JSON
-    const options = {};
+    // Truyền API key qua env nếu có
+    const options = apiKey ? { env: { YT_API_KEY: apiKey } } : {};
 
     await window.electronAPI.runScript("get-url.js", [handle, sortBy], options);
     showOutput("get-url", "\n\n✅ Hoàn thành!");
