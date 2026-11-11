@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import path from "node:path";
 import { prepareJob, createUploadQueue } from "../sheet/upload-queue.js";
 import { ST } from "../sheet/resume-plan.js";
 
@@ -14,7 +15,9 @@ test("prepareJob: lấy thumb trong overlays theo title + cấp slot ngày mai",
     now: NOW,
     listFiles: () => ["Câu Chuyện.mp4", "Câu Chuyện.jpg", "Khác.jpg"],
   });
-  assert.equal(r.thumbnailPath, "/ch/overlays/Câu Chuyện.jpg");
+  // path.join chứ không hardcode "/": prepareJob dựng đường dẫn bằng path.join nên trên
+  // Windows nó trả "\\". Test cũ hardcode "/" nên đỏ trên Windows dù code đúng.
+  assert.equal(r.thumbnailPath, path.join("/ch/overlays", "Câu Chuyện.jpg"));
   assert.equal(r.scheduleISO, "2026-07-09T08:00:00");
 });
 
@@ -536,4 +539,21 @@ test("report: hẹn giờ đóng trình duyệt bị huỷ trong lúc đang ch�
   await q.drain();
   await wait(60);
   assert.deepEqual(closed, ["p1"], "chụp xong mới hẹn lại giờ đóng");
+});
+
+// ─── hasPending: biết URL nào đang trong hàng đợi (chặn enqueue trùng khi đăng lại) ──
+
+test("queue: hasPending đúng theo kênh + url, tắt sau khi job xong", async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const { q } = idleQueue({ runUpload: async () => { await gate; } });
+
+  q.enqueue(job(1));
+  assert.equal(q.hasPending("K", "http://u/1"), true);
+  assert.equal(q.hasPending("K", "http://u/2"), false);
+  assert.equal(q.hasPending("Kênh khác", "http://u/1"), false);
+
+  release();
+  await q.drain();
+  assert.equal(q.hasPending("K", "http://u/1"), false);
 });

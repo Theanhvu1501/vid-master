@@ -15,6 +15,8 @@ test("parseConfigRows maps columns and defaults enabled=true when blank", () => 
   assert.equal(out.length, 3);
   assert.deepEqual(out[0], {
     sheetName: "Kênh A", enabled: true, videosPerDay: 3, renderMode: "topTransparent",
+    // uploadEnabled: cột "upload" không có trong header -> truthy("") = true (mặc định bật).
+    uploadEnabled: true,
     cfg: { opacity: 0.7 }, proxy: "", gpmProfileId: "", postTimes: "",
     rowIndex: 2, channelUrl: "", sourceHandle: "", videoSource: "download",
     // Task 10: 2 khoá mới luôn có mặt (giống rowIndex/channelUrl/sourceHandle trước đây),

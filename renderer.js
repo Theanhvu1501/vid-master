@@ -4901,6 +4901,12 @@ async function runConcat() {
   // sheetName -> { name, profileId, videosPerDay, countToday, enabled, stats, gpm, videos, el, open }
   const channels = new Map();
 
+  // Video "đã render nhưng chưa lên lịch" — nguồn là IPC đọc Sheet + resume-state.json,
+  // KHÔNG phải c.videos (Map này chỉ sống trong một lượt chạy, tắt app là mất).
+  // sheetName -> videos[]; pendingLoading chặn gọi trùng khi card vừa mở đã render nhiều lần.
+  const pending = new Map();
+  const pendingLoading = new Set();
+
   function log(msg) {
     if (!logEl) return;
     logEl.textContent += `${new Date().toLocaleTimeString()}  ${msg}\n`;
@@ -4950,13 +4956,17 @@ async function runConcat() {
     const plug = document.createElement("button");
     plug.className = "sw-icon-btn";
     plug.textContent = "🔌";
+    // Pill "N chờ đăng": chỉ để lộ ra là card còn việc, vì phần chi tiết nằm trong body.
+    const pill = document.createElement("span");
+    pill.className = "sw-pending";
+    pill.style.display = "none";
     const quota = document.createElement("span");
     quota.className = "sw-quota";
     const caret = document.createElement("button");
     caret.className = "sw-caret";
     caret.textContent = "▾";
     caret.title = "Xem video của kênh";
-    top.append(dot, name, plug, quota, caret);
+    top.append(dot, name, pill, plug, quota, caret);
 
     const stats = document.createElement("div");
     stats.className = "sw-stats";
@@ -4975,9 +4985,10 @@ async function runConcat() {
       c.open = !c.open;
       caret.textContent = c.open ? "▴" : "▾";
       renderCard(c);
+      if (c.open) refreshPending(c, true); // mở card = lúc cần danh sách chờ đăng nhất
     });
 
-    c.el = { card, dot, name, plug, quota, stats, updated, activity, body };
+    c.el = { card, dot, name, pill, plug, quota, stats, updated, activity, body };
     return card;
   }
 
@@ -4988,6 +4999,7 @@ async function runConcat() {
       c = {
         name: sheetName, profileId: "", videosPerDay: 0, countToday: 0, countDate: null,
         enabled: true, stats: null, gpm: { state: "idle", msg: "" }, videos: new Map(), open: false,
+        confirmUntil: new Map(), // url -> mốc hết hạn của lần bấm xác nhận đầu (dòng ⏳)
       };
       channels.set(sheetName, c);
       grid.appendChild(buildCard(c));
@@ -5021,6 +5033,8 @@ async function runConcat() {
     body.textContent = "";
     if (!c.open) { body.style.display = "none"; return; }
     body.style.display = "";
+
+    renderPendingSection(c, body);
 
     const list = [...c.videos.values()];
     const errs = list.filter(isErr);
@@ -5114,9 +5128,151 @@ async function runConcat() {
     body.appendChild(actions);
   }
 
+  // ===== Chờ đăng: video đã render nhưng chưa lên lịch =====
+
+  const PENDING_LABEL = {
+    "maybe-uploaded": "⚠ có thể đã đăng",
+    failed: "❌ lỗi",
+    waiting: "⏸ chờ",
+    "gave-up": "bỏ qua (hết lượt)",
+    rendered: "chưa đăng",
+  };
+
+  // Nạp danh sách chờ đăng của MỘT kênh. `force` = bỏ cache (sau khi đăng lại / lượt chạy xong).
+  async function refreshPending(c, force = false) {
+    if (!c) return;
+    if (!force && pending.has(c.name)) { renderCard(c); return; }
+    if (pendingLoading.has(c.name)) return;
+    pendingLoading.add(c.name);
+    try {
+      const r = await api.pendingUploads(c.name);
+      if (r?.ok) {
+        const one = (r.channels || []).find((x) => x.sheetName === c.name);
+        pending.set(c.name, one?.videos ?? []);
+      } else {
+        log(`[${c.name}] ❌ không tải được danh sách chờ đăng: ${r?.error || "lỗi"}`);
+      }
+    } catch (err) {
+      log(`[${c.name}] ❌ lỗi tải danh sách chờ đăng: ${err.message}`);
+    } finally {
+      pendingLoading.delete(c.name);
+      renderCard(c);
+    }
+  }
+
+  // Nạp cho mọi kênh, tuần tự: mỗi kênh là một lượt đọc tab riêng bên Sheet, nã song song
+  // 13 tab cùng lúc dễ ăn 429. Chạy nền, không chặn UI.
+  // `openOnly` dùng sau mỗi lượt chạy: card đang đóng sẽ tự nạp lại khi người dùng mở ra,
+  // khỏi đọc lại cả chục tab mỗi 5 phút.
+  async function refreshAllPending(force = false, { openOnly = false } = {}) {
+    for (const c of channels.values()) {
+      if (openOnly && !c.open) continue;
+      await refreshPending(c, force);
+    }
+  }
+
+  // Đăng lại một hoặc nhiều url; xong thì nạp lại danh sách của kênh.
+  async function retryPending(c, urls, btn) {
+    const old = btn ? btn.textContent : "";
+    if (btn) { btn.disabled = true; btn.textContent = "⏳ đang gửi…"; }
+    let ok = false;
+    try {
+      const r = await api.retryUpload({ sheetName: c.name, urls });
+      if (r?.ok) {
+        ok = true;
+        log(`[${c.name}] ↻ đăng lại ${r.queued} video${r.skipped?.length ? `, bỏ qua ${r.skipped.length}` : ""}.`);
+        for (const s of r.skipped ?? []) log(`   • ${shortUrl(s.url)}: ${s.reason}`);
+        // Lạc quan: bỏ ngay những video đã vào hàng đợi để nút không mời bấm lại lần nữa.
+        // KHÔNG nạp lại ngay từ Sheet — lúc này cột C vừa bị ghi "⏸ chờ: đăng lại thủ công",
+        // nạp lại sẽ đẩy đúng những dòng đó quay về danh sách và panel trông như không có gì
+        // xảy ra. Danh sách thật được nạp lại ở các mốc ở dưới.
+        const skip = new Set((r.skipped ?? []).map((s) => s.url));
+        const mine = pending.get(c.name) ?? [];
+        pending.set(c.name, mine.filter((v) => !urls.includes(v.url) || skip.has(v.url)));
+        renderCard(c);
+      } else {
+        log(`[${c.name}] ❌ đăng lại thất bại: ${r?.error || "lỗi"}`);
+      }
+    } catch (err) {
+      log(`[${c.name}] ❌ đăng lại lỗi: ${err.message}`);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = old; }
+      if (!ok) await refreshPending(c, true); // thất bại thì phải thấy lại đúng thực tế
+    }
+  }
+
+  function renderPendingSection(c, body) {
+    const list = pending.get(c.name) ?? [];
+    if (!list.length) return;
+
+    const head = document.createElement("div");
+    head.className = "sw-pending-head";
+    const label = document.createElement("span");
+    label.textContent = `Chờ đăng (${list.length})`;
+    // Dòng "có thể đã đăng" KHÔNG bao giờ đi theo nút hàng loạt: đăng lại chúng có thể tạo
+    // bản nháp thứ hai, nên mỗi dòng phải được xác nhận riêng.
+    const batch = list.filter((v) => v.kind !== "maybe-uploaded");
+    const risky = list.length - batch.length;
+    const allBtn = document.createElement("button");
+    allBtn.className = "sw-mini-btn";
+    allBtn.textContent = batch.length ? `Đăng lại tất cả (${batch.length})` : "Đăng lại tất cả";
+    allBtn.disabled = !batch.length;
+    allBtn.title = risky
+      ? `${risky} video "có thể đã đăng" phải bấm riêng từng cái để xác nhận.`
+      : "Đăng lại mọi video đang chờ của kênh này.";
+    allBtn.addEventListener("click", () => retryPending(c, batch.map((v) => v.url), allBtn));
+    head.append(label, allBtn);
+    body.appendChild(head);
+
+    for (const v of list) {
+      const row = document.createElement("div");
+      row.className = "sw-pending-row";
+
+      const t = document.createElement("span");
+      t.className = "sw-vid-title";
+      t.textContent = v.title;
+      t.title = v.url;
+
+      const st = document.createElement("span");
+      st.className = "sw-vid-state";
+      st.textContent = PENDING_LABEL[v.kind] || v.kind;
+      st.title = v.statusText || st.textContent;
+
+      const btn = document.createElement("button");
+      btn.className = "sw-mini-btn";
+      // Dòng ⏳/b1..b4 nghĩa là file có thể đã lên Studio -> đăng lại có thể tạo bản nháp
+      // thứ hai, nên bắt bấm hai lần trong 5 giây.
+      const needConfirm = v.kind === "maybe-uploaded";
+      const confirming = needConfirm && (c.confirmUntil.get(v.url) ?? 0) > Date.now();
+      btn.textContent = confirming ? "⚠ Chắc chắn đăng lại?" : "Đăng lại";
+      if (confirming) btn.classList.add("danger");
+      if (needConfirm) btn.title = "Có thể video này đã được đăng dở — đăng lại sẽ tạo thêm một bản nháp trên YouTube.";
+
+      btn.addEventListener("click", () => {
+        if (needConfirm && !confirming) {
+          c.confirmUntil.set(v.url, Date.now() + 5000);
+          renderCard(c);
+          // Hết 5 giây không bấm lại -> trả nút về như cũ.
+          setTimeout(() => {
+            if ((c.confirmUntil.get(v.url) ?? 0) <= Date.now()) {
+              c.confirmUntil.delete(v.url);
+              renderCard(c);
+            }
+          }, 5200);
+          return;
+        }
+        c.confirmUntil.delete(v.url);
+        retryPending(c, [v.url], btn);
+      });
+
+      row.append(t, st, btn);
+      body.appendChild(row);
+    }
+  }
+
   function renderCard(c) {
     if (!c.el) return;
-    const { card, dot, plug, quota, stats, updated, activity } = c.el;
+    const { card, dot, pill, plug, quota, stats, updated, activity } = c.el;
     const act = activityText(c);
     const full = c.videosPerDay > 0 && c.countToday >= c.videosPerDay;
 
@@ -5140,6 +5296,11 @@ async function runConcat() {
     quota.textContent = c.videosPerDay > 0 ? `${c.countToday}/${c.videosPerDay}` : "—";
     quota.classList.toggle("full", full);
     quota.title = "Số video đã render hôm nay / hạn mức mỗi ngày";
+
+    const pv = pending.get(c.name) ?? [];
+    pill.style.display = pv.length ? "" : "none";
+    pill.textContent = `${pv.length} chờ đăng`;
+    pill.title = `${pv.length} video đã render nhưng chưa lên lịch — mở card để đăng lại`;
 
     const s = c.stats;
     stats.textContent = !s ? "…"
@@ -5214,6 +5375,8 @@ async function runConcat() {
       // Tên kênh + @handle nguồn: đọc thẳng từ Sheet, KHÔNG gọi YouTube API (không tốn quota).
       applyStats(await api.listStatsChannels());
       probeGpm(); // ngầm, không chặn: card hiện số liệu trước, chấm GPM sáng sau.
+      // Chạy nền: 13 tab Sheet, mỗi tab một lượt đọc. Không chặn việc hiện card.
+      refreshAllPending();
     } catch (err) {
       setEmpty("Chưa tải được danh sách kênh.");
       setBanner(`❌ Lỗi khi tải danh sách kênh: ${err.message}`, "error");
@@ -5560,6 +5723,18 @@ async function runConcat() {
     } else if (evt.type === "upload-status") {
       const c = ensureChannel(evt.channel);
       touchVideo(c, evt.url, evt.title).upload = evt.status;
+      // Vừa lên lịch xong -> video không còn là việc "chờ đăng" nữa; bỏ ngay khỏi danh sách
+      // để pill không hiện số cũ tới lần nạp lại.
+      if (evt.url && /^✅/.test(evt.status || "")) {
+        const list = pending.get(evt.channel);
+        if (list?.some((v) => v.url === evt.url)) {
+          pending.set(evt.channel, list.filter((v) => v.url !== evt.url));
+        }
+      } else if (evt.url && /^❌/.test(evt.status || "")) {
+        // Đăng lại vừa hỏng -> phải đưa dòng đó trở lại panel (lượt này nó đã bị bỏ khỏi
+        // danh sách một cách lạc quan lúc bấm nút). Một lượt đọc tab, chỉ khi thật sự hỏng.
+        refreshPending(c, true);
+      }
       renderCard(c);
       log(`[${evt.channel}] ${evt.status}${evt.title ? " — " + evt.title : ""}`);
     } else if (evt.type === "stats") {
@@ -5574,6 +5749,9 @@ async function runConcat() {
     } else if (evt.type === "done") {
       log("— Hoàn tất lượt chạy —");
       syncQuota();
+      // Lượt vừa xong có thể đã đăng được video đang kẹt -> đọc lại danh sách chờ đăng
+      // của những card đang mở (card đóng tự nạp lại khi mở ra).
+      refreshAllPending(true, { openOnly: true });
     }
   });
 

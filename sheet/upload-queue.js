@@ -60,6 +60,7 @@ export function createUploadQueue({
   const results = [];             // kết quả từ lượt bận hiện tại (để gộp digest)
   const lastProfile = new Map();  // sheetName -> { gpmHost, profileId } (để biết chụp bằng profile nào)
   const pendingByChannel = new Map(); // sheetName -> số job đang chờ/chạy của kênh đó
+  const pendingUrls = new Map();      // sheetName -> Map(sourceUrl, số job) — chặn enqueue trùng
   const channelEnded = new Set();     // sheetName — runner đã báo lượt này hết job cho kênh
   const reported = new Set();         // sheetName — đã gửi tin của kênh trong lượt này
   const reportTasks = new Set();      // Promise của các tin đang chụp/gửi
@@ -290,6 +291,7 @@ export function createUploadQueue({
     cancelClose(); // đồng bộ, trước mọi await: có việc mới thì đừng đóng trình duyệt
     pending++;
     pendingByChannel.set(job.sheetName, (pendingByChannel.get(job.sheetName) ?? 0) + 1);
+    trackUrl(job.sheetName, job.sourceUrl, +1);
     const prev = chains.get(job.sheetName) || Promise.resolve();
     const next = prev
       .then(() => runJob(job))
@@ -297,12 +299,30 @@ export function createUploadQueue({
       .finally(() => {
         pending--;
         pendingByChannel.set(job.sheetName, (pendingByChannel.get(job.sheetName) ?? 1) - 1);
+        trackUrl(job.sheetName, job.sourceUrl, -1);
         if (pending === 0) { scheduleFlush(); scheduleClose(); } // rảnh → gửi digest + hẹn đóng
         // Sau scheduleClose: cancelClose() bên trong sẽ huỷ đúng cái hẹn vừa đặt.
         maybeReportChannel(job.sheetName);
       });
     chains.set(job.sheetName, next);
     return next;
+  }
+
+  // Đếm job theo (kênh, url). Cần vì `upload` còn tiếp tục chạy sau khi runNow() trả về
+  // (cờ running của runner đã tắt): đường "đăng lại thủ công" phải biết URL này còn trong
+  // hàng đợi hay không, nếu không sẽ enqueue hai lần cho cùng một video.
+  function trackUrl(sheetName, url, delta) {
+    if (!url) return;
+    let m = pendingUrls.get(sheetName);
+    if (!m) { m = new Map(); pendingUrls.set(sheetName, m); }
+    const n = (m.get(url) ?? 0) + delta;
+    if (n > 0) m.set(url, n);
+    else m.delete(url);
+    if (!m.size) pendingUrls.delete(sheetName);
+  }
+
+  function hasPending(sheetName, url) {
+    return (pendingUrls.get(sheetName)?.get(url) ?? 0) > 0;
   }
 
   // Đợi mọi hàng đợi + mọi tin đang gửi xong (test/shutdown).
@@ -322,5 +342,5 @@ export function createUploadQueue({
   // Runner báo: lượt chạy xong → cho phép gửi digest khi upload cũng rỗng.
   function endRun() { runActive = false; if (pending === 0) { scheduleFlush(); scheduleClose(); } }
 
-  return { enqueue, drain, prepareJob, beginRun, endRun, endChannel };
+  return { enqueue, drain, prepareJob, beginRun, endRun, endChannel, hasPending };
 }

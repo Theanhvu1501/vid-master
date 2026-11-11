@@ -1588,6 +1588,71 @@
         flex: 0 0 auto;
         white-space: nowrap;
       }
+      /* Pill "N chờ đăng" trên đầu card. */
+      .sw-pending {
+        flex: none;
+        font-size: 12px;
+        font-weight: 600;
+        color: #7a5c00;
+        background: #fff8e1;
+        border: 1px solid #ffe08a;
+        border-radius: 20px;
+        padding: 2px 9px;
+      }
+      .sw-pending-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin: 10px 0 4px;
+        font-size: 12px;
+        font-weight: 600;
+        color: #4a5568;
+      }
+      .sw-pending-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        padding: 3px 0;
+      }
+      .sw-pending-row .sw-vid-title {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .sw-pending-row .sw-vid-state {
+        flex: none;
+        max-width: 42%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      /* Nút nhỏ trong hàng chờ đăng: KHÔNG dùng .btn-secondary vì nó đặt
+         min-width:145px !important, ép nút thành viên thuốc. */
+      .sw-mini-btn {
+        flex: none;
+        font: inherit;
+        font-size: 12px;
+        font-weight: 600;
+        color: #2c5282;
+        background: #ebf4fd;
+        border: 1px solid #bee3f8;
+        border-radius: 6px;
+        padding: 3px 9px;
+        cursor: pointer;
+      }
+      .sw-mini-btn:hover:not(:disabled) {
+        background: #d6e9fb;
+      }
+      .sw-mini-btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .sw-mini-btn.danger {
+        color: #9b2c2c;
+        background: #fff5f5;
+        border-color: #fc8181;
+      }
       .sw-cfg-group {
         margin: 22px 0 10px;
         padding-bottom: 6px;

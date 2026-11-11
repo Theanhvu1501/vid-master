@@ -23,7 +23,8 @@ import { loadDownloadConfig, getNodeExecutable, getBgutilPaths } from "./sheet/d
 import { startPotServer } from "./sheet/pot-provider.js";
 import { createCookiePool, resolveSheetCookieSource } from "./sheet/cookie-pool.js";
 import { loadState, saveState, todayStr, computeRemaining } from "./sheet/runner-state.js";
-import { loadResume, saveResume } from "./sheet/resume-state.js";
+import { loadResume, saveResume, getEntry } from "./sheet/resume-state.js";
+import { listPendingUploads } from "./sheet/pending-uploads.js";
 import { registerComposerIpc, getPresetsDir } from "./sheet/composer-ipc.js";
 import { pickClipStart } from "./sheet/test-render-channel.js";
 
@@ -1387,6 +1388,8 @@ function saveSheetSettings(s) { fs.writeFileSync(sheetSettingsPath(), JSON.strin
 
 const YTDLP_PATH = path.join(getAppPath(), "bin", "yt-dlp.exe");
 let sheetRunner = null;
+let sheetRunnerWin = null;   // cửa sổ mà runner đang phát sự kiện tới
+let sheetRunnerKey = null;   // ảnh chụp cấu hình lúc dựng runner (đổi -> phải dựng lại)
 
 // --- PO token (bgutil) ------------------------------------------------------
 // Một server duy nhất cho cả app, dựng lúc mở và tắt lúc thoát. Không có nó thì
@@ -1783,6 +1786,36 @@ async function fetchSourceUrlsFor(sheetName, sortBy = "views") {
   return { ok: true, added: fresh.length, skipped: videos.length - fresh.length };
 }
 
+// Ảnh chụp các trường cấu hình mà buildSheetRunner đọc MỘT LẦN lúc dựng. Đổi bất kỳ trường
+// nào trong đây thì runner đang giữ đã lạc hậu và phải dựng lại.
+function sheetSettingsKey(s) {
+  return JSON.stringify([
+    s?.spreadsheetId ?? "", s?.credentialsPath ?? "", s?.channelsRoot ?? "",
+    !!s?.gpmEnabled, s?.gpmHost ?? "", s?.gpmIdleCloseMin ?? 10, s?.gpmLocale ?? "vi",
+    !!s?.gpmTelegramEnabled, s?.gpmTelegramToken ?? "", s?.gpmTelegramChatId ?? "",
+    s?.gpmTelegramTopicId ?? "", !!s?.gpmTelegramPhoto,
+    !!s?.useGPU, s?.gpuVideoCodec ?? "", s?.videoSpeed ?? 0.95,
+    !!s?.cleanupEnabled, s?.cleanupKeepDays ?? 1,
+  ]);
+}
+
+// MỘT runner cho mỗi cửa sổ. Trước đây run-now và test-render dựng runner tạm rồi vứt đi;
+// nếu "đăng lại thủ công" cũng dựng riêng thì có hai uploadQueue và hai phiên GPM cùng
+// profile -> bản nháp trùng, tranh slot giờ, và cờ `running` của runner không còn chặn được
+// gì (mỗi object một cờ).
+function getSheetRunner(win) {
+  const key = sheetSettingsKey(loadSheetSettings());
+  if (sheetRunner && sheetRunnerWin === win && sheetRunnerKey === key) return sheetRunner;
+  // Đang chạy thì KHÔNG dựng lại: runner mới có cờ running=false riêng, sẽ chạy chồng lên
+  // lượt đang dở của runner cũ. Giữ bản cũ; cấu hình mới áp dụng ở lần dựng kế tiếp
+  // (đúng quy ước "đổi cấu hình khi đang chạy thì Stop rồi Start lại").
+  if (sheetRunner && sheetRunner.isRunning?.()) return sheetRunner;
+  sheetRunner = buildSheetRunner(win);
+  sheetRunnerWin = win;
+  sheetRunnerKey = key;
+  return sheetRunner;
+}
+
 ipcMain.handle("sheet:test-connection", async (e, s) => {
   try {
     const st = s || loadSheetSettings();
@@ -1808,18 +1841,18 @@ ipcMain.handle("sheet:select-root", async () => {
 ipcMain.handle("sheet:start", async (e) => {
   const win = BrowserWindow.fromWebContents(e.sender);
   const s = loadSheetSettings();
-  if (sheetRunner) sheetRunner.stop();
-  sheetRunner = buildSheetRunner(win);
-  sheetRunner.start((s.pollSec || 300) * 1000);
+  const runner = getSheetRunner(win);
+  runner.stop();
+  runner.start((s.pollSec || 300) * 1000);
   return { success: true };
 });
 ipcMain.handle("sheet:stop", async () => { if (sheetRunner) sheetRunner.stop(); return { success: true }; });
 // Test render: xem thử 1 video/kênh. Dùng lại runner đang chạy nếu có (để chia chung cờ
-// running, không giẫm lên lượt thật); chưa chạy thì dựng runner tạm như sheet:run-now.
+// running, không giẫm lên lượt thật); chưa chạy thì dựng như sheet:run-now.
 ipcMain.handle("sheet:test-render", async (e, sheetName) => {
   try {
     const win = BrowserWindow.fromWebContents(e.sender);
-    const runner = sheetRunner || buildSheetRunner(win);
+    const runner = getSheetRunner(win);
     await runner.testRenderNow(sheetName || undefined);
     return { success: true };
   } catch (err) {
@@ -1828,10 +1861,59 @@ ipcMain.handle("sheet:test-render", async (e, sheetName) => {
 });
 ipcMain.handle("sheet:run-now", async (e, sheetName) => {
   const win = BrowserWindow.fromWebContents(e.sender);
-  const runner = sheetRunner || buildSheetRunner(win);
+  const runner = getSheetRunner(win);
   await runner.runNow(sheetName || undefined);
   return { success: true };
 });
+
+// Danh sách video đã render nhưng chưa lên lịch — nguồn cho panel "Chờ đăng".
+// Chỉ đọc Sheet + resume-state.json + sự tồn tại của file, không đụng gì.
+ipcMain.handle("sheet:pending-uploads", async (e, sheetName) => {
+  try {
+    const s = loadSheetSettings();
+    if (!s.spreadsheetId || !s.credentialsPath || !s.channelsRoot || !s.gpmEnabled) {
+      return { ok: true, channels: [] }; // chưa cấu hình / GPM tắt -> không có gì để đăng
+    }
+    const sheets = createSheetsClient(s.credentialsPath);
+    let channels = await readConfigSheet(sheets, s.spreadsheetId);
+    // KHÔNG lọc theo `enabled`: kênh đang tạm dừng vẫn có video đã render xong chờ đăng.
+    // Ẩn chúng đi đúng là lỗi đang sửa (việc còn nợ mà không thấy ở đâu). Upload lại không
+    // cần tải/render nên tạm dừng kênh không phải lý do để giấu.
+    channels = channels.filter((c) => c.uploadEnabled !== false);
+    if (sheetName) channels = channels.filter((c) => c.sheetName === sheetName);
+    const resume = loadResume(path.join(s.channelsRoot, "resume-state.json"));
+    const out = [];
+    for (const ch of channels) {
+      let rows = [];
+      try {
+        rows = await readChannelUrls(sheets, s.spreadsheetId, ch.sheetName);
+      } catch {
+        continue; // tab hỏng không được làm mất danh sách các kênh còn lại
+      }
+      const videos = listPendingUploads({
+        rows,
+        resolveEntry: (url) => getEntry(resume, ch.sheetName, url),
+        fileExists: (p) => { try { return fs.existsSync(p); } catch { return false; } },
+      });
+      if (videos.length) out.push({ sheetName: ch.sheetName, videos });
+    }
+    return { ok: true, channels: out };
+  } catch (err) {
+    return { ok: false, error: String(err?.message || err) };
+  }
+});
+
+// Đăng lại thủ công: chỉ đẩy file đã render vào lại hàng đợi upload.
+ipcMain.handle("sheet:retry-upload", async (e, { sheetName, urls } = {}) => {
+  try {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    const runner = getSheetRunner(win);
+    return await runner.retryUploads(String(sheetName || "").trim(), urls);
+  } catch (err) {
+    return { ok: false, queued: 0, skipped: [], error: String(err?.message || err) };
+  }
+});
+
 
 registerComposerIpc({ ipcMain, app, BrowserWindow }); // Giai đoạn 2A — tab Composer: 9 kênh composer:* (sheet/composer-ipc.js)
 ipcMain.handle("yt:list-channels", async () => {

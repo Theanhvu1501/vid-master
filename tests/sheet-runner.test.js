@@ -459,7 +459,9 @@ test("render-only: bỏ qua bước tải khi file overlay còn trên đĩa", as
   deps.resumeStore.save({ "Kênh A": { u1: { attempts: 0, uploadAttempts: 0, stage: "downloaded", filePath: "/ov/u1.mp4", title: "u1" } } });
   await createSheetRunner(deps).runNow();
   assert.deepEqual(calls.downloaded, []);
-  assert.deepEqual(calls.rendered, ["/out/u1.mp4"]);
+  // path.join chứ không hardcode "/": sheet-runner dựng outputPath bằng path.join nên trên
+  // Windows nó là "\\out\\u1.mp4" (test cũ đỏ trên Windows dù code đúng).
+  assert.deepEqual(calls.rendered, [path.join("/out", "u1.mp4")]);
 });
 
 test("đã tải nhưng file bị xoá tay -> tải lại từ đầu", async () => {
@@ -587,7 +589,7 @@ test("render xong: xoá overlay, ghi done, lưu outputPath", async () => {
   assert.deepEqual(calls.unlinked, ["/ov/u1.mp4"]);
   const e = getResume()["Kênh A"].u1;
   assert.equal(e.stage, "rendered");
-  assert.equal(e.outputPath, "/out/u1.mp4");
+  assert.equal(e.outputPath, path.join("/out", "u1.mp4"));
 });
 
 test("chạm trần 3 lần -> ghi 'bỏ qua:' vào cột B", async () => {
@@ -1009,11 +1011,12 @@ test("quên mở GPM: lượt sau mở lên thì tự upload lại", async () =>
 
   // ── Lượt 2: người dùng đã mở GPM, không sửa gì trong Sheet ─────────────────
   gpmUp = true;
-  files.add("/out/u1.mp4"); // file render của lượt 1 vẫn nằm đó
+  const outPath = path.join("/out", "u1.mp4");
+  files.add(outPath); // file render của lượt 1 vẫn nằm đó
   await runner.runNow();
 
   assert.equal(enqueued.length, 1, "phải tự upload lại");
-  assert.equal(enqueued[0].videoPath, "/out/u1.mp4");
+  assert.equal(enqueued[0].videoPath, outPath);
   assert.equal(enqueued[0].sourceUrl, "u1");
   assert.equal(calls.rendered.length, 1, "KHÔNG được render lại");
   assert.deepEqual(calls.downloaded, ["u1"], "KHÔNG được tải lại");
@@ -1337,3 +1340,198 @@ test("dọn video cũ: lỗi khi xoá một file không làm hỏng lượt ch�
   assert.deepEqual(calls.errors, []);
   assert.ok(calls.unlinked.includes("/ov/mo-coi.mp4"), "file sau vẫn phải được dọn");
 });
+
+// ─── retryUploads: đăng lại thủ công các video đã render ─────────────────────
+// Xem docs/superpowers/specs/2026-11-11-retry-upload-thu-cong-design.md
+
+// Kênh đủ điều kiện upload; test nào cần khác thì spread rồi ghi đè một trường.
+const RETRY_CHANNEL = {
+  sheetName: "Kênh A", enabled: true, uploadEnabled: true, videosPerDay: 7,
+  renderMode: "topTransparent", cfg: {}, proxy: "", gpmProfileId: "p1", postTimes: "8:00",
+};
+
+const retryConfig = () => ({
+  spreadsheetId: "SID", channelsRoot: "/root", statePath: "/root/state.json", renderConcurrency: 2,
+  gpmEnabled: true, gpmHost: "h", gpmLocale: "vi",
+});
+
+// Hàng đợi giả: ghi lại thứ tự gọi, không chạy upload thật.
+function retryQueue(order, over = {}) {
+  return {
+    enqueue: (j) => order.push(["enqueue", j]),
+    beginRun: () => order.push(["begin"]),
+    endRun: () => order.push(["end"]),
+    endChannel: () => order.push(["endChannel"]),
+    hasPending: () => false,
+    ...over,
+  };
+}
+
+test("retryUploads: reset uploadAttempts, ghi ⏸ trước khi enqueue, đúng job shape", async () => {
+  const order = [];
+  const { deps, getResume } = makeDeps({
+    config: retryConfig(),
+    existingFiles: ["/out/u1.mp4"],
+    sheetsApi: {
+      readConfigSheet: async () => [RETRY_CHANNEL],
+      readChannelUrls: async () => [
+        { rowIndex: 2, url: "u1", status: "done", uploadStatus: "bỏ qua: x (đã thử 3 lần)" },
+      ],
+      setUrlStatus: async () => {},
+      setUploadStatus: async (n, r, s) => order.push(["sheet", r, s]),
+      appendUrls: async () => {},
+    },
+    uploadQueue: retryQueue(order),
+  });
+  deps.resumeStore.save({
+    "Kênh A": { u1: { attempts: 0, uploadAttempts: 3, stage: "rendered", outputPath: "/out/u1.mp4", title: "T1" } },
+  });
+
+  const r = await createSheetRunner(deps).retryUploads("Kênh A", ["u1"]);
+
+  assert.equal(r.ok, true);
+  assert.equal(r.queued, 1);
+  assert.deepEqual(r.skipped, []);
+  assert.equal(getResume()["Kênh A"].u1.uploadAttempts, 0, "phải xoá trần 3 lượt");
+  assert.deepEqual(order.map((o) => o[0]), ["begin", "sheet", "enqueue", "endChannel", "end"]);
+  assert.equal(order[1][2], "⏸ chờ: đăng lại thủ công");
+
+  const job = order[2][1];
+  assert.equal(job.sheetName, "Kênh A");
+  assert.equal(job.gpmHost, "h");
+  assert.equal(job.profileId, "p1");
+  assert.equal(job.videoPath, "/out/u1.mp4");
+  assert.equal(job.overlaysDir, path.join("/root", "Kênh A", "overlays"));
+  assert.equal(job.title, "T1");
+  assert.equal(job.postTimes, "8:00");
+  assert.equal(job.locale, "vi");
+  assert.equal(job.rowIndex, 2);
+  assert.equal(job.sourceUrl, "u1");
+});
+
+test("retryUploads: kênh tắt upload -> không enqueue, không ghi Sheet", async () => {
+  const order = [];
+  const { deps } = makeDeps({
+    config: retryConfig(),
+    existingFiles: ["/out/u1.mp4"],
+    sheetsApi: {
+      readConfigSheet: async () => [{ ...RETRY_CHANNEL, uploadEnabled: false }],
+      readChannelUrls: async () => [{ rowIndex: 2, url: "u1", status: "done", uploadStatus: "❌ lỗi: x" }],
+      setUrlStatus: async () => {},
+      setUploadStatus: async (n, r, s) => order.push(["sheet", s]),
+      appendUrls: async () => {},
+    },
+    uploadQueue: retryQueue(order),
+  });
+  const r = await createSheetRunner(deps).retryUploads("Kênh A", ["u1"]);
+  assert.equal(r.ok, false);
+  assert.match(r.error, /tắt upload/);
+  assert.deepEqual(order, []);
+});
+
+test("retryUploads: GPM chưa mở -> báo lỗi, không enqueue", async () => {
+  const order = [];
+  const { deps } = makeDeps({
+    config: retryConfig(),
+    existingFiles: ["/out/u1.mp4"],
+    checkGpm: async () => { throw new Error("ECONNREFUSED 19995"); },
+    sheetsApi: {
+      readConfigSheet: async () => [RETRY_CHANNEL],
+      readChannelUrls: async () => [{ rowIndex: 2, url: "u1", status: "done", uploadStatus: "❌ lỗi: x" }],
+      setUrlStatus: async () => {},
+      setUploadStatus: async (n, r, s) => order.push(["sheet", s]),
+      appendUrls: async () => {},
+    },
+    uploadQueue: retryQueue(order),
+  });
+  const r = await createSheetRunner(deps).retryUploads("Kênh A", ["u1"]);
+  assert.equal(r.ok, false);
+  assert.match(r.error, /GPM/);
+  assert.deepEqual(order, []);
+});
+
+test("retryUploads: bỏ qua url đã lên lịch (không đè ✅ bằng ⏸)", async () => {
+  const order = [];
+  const { deps } = makeDeps({
+    config: retryConfig(),
+    existingFiles: ["/out/u1.mp4"],
+    sheetsApi: {
+      readConfigSheet: async () => [RETRY_CHANNEL],
+      readChannelUrls: async () => [
+        { rowIndex: 2, url: "u1", status: "done", uploadStatus: "✅ lên lịch 09/07/2026 08:00" },
+      ],
+      setUrlStatus: async () => {},
+      setUploadStatus: async () => order.push(["sheet"]),
+      appendUrls: async () => {},
+    },
+    uploadQueue: retryQueue(order),
+  });
+  const r = await createSheetRunner(deps).retryUploads("Kênh A", ["u1"]);
+  assert.equal(r.ok, true);
+  assert.equal(r.queued, 0);
+  assert.match(r.skipped[0].reason, /đã lên lịch/);
+  assert.deepEqual(order, []);
+});
+
+test("retryUploads: bỏ qua khi mất file đã render hoặc url còn trong hàng đợi", async () => {
+  const order = [];
+  const { deps } = makeDeps({
+    config: retryConfig(),
+    existingFiles: [], // không file nào tồn tại
+    sheetsApi: {
+      readConfigSheet: async () => [RETRY_CHANNEL],
+      readChannelUrls: async () => [
+        { rowIndex: 2, url: "u1", status: "done", uploadStatus: "❌ lỗi: x" },
+        { rowIndex: 3, url: "u2", status: "done", uploadStatus: "❌ lỗi: y" },
+      ],
+      setUrlStatus: async () => {},
+      setUploadStatus: async () => order.push(["sheet"]),
+      appendUrls: async () => {},
+    },
+    uploadQueue: retryQueue(order, { hasPending: (s, u) => u === "u2" }),
+  });
+  deps.resumeStore.save({
+    "Kênh A": {
+      u1: { outputPath: "/out/u1.mp4", title: "T1" },
+      u2: { outputPath: "/out/u2.mp4", title: "T2" },
+    },
+  });
+  const r = await createSheetRunner(deps).retryUploads("Kênh A", ["u1", "u2"]);
+  assert.equal(r.ok, true);
+  assert.equal(r.queued, 0);
+  assert.match(r.skipped.find((s) => s.url === "u1").reason, /file/);
+  assert.match(r.skipped.find((s) => s.url === "u2").reason, /hàng đợi/);
+  assert.deepEqual(order, []);
+});
+
+test("retryUploads: đang chạy lượt khác -> từ chối, không enqueue", async () => {
+  let release;
+  const blocked = new Promise((r) => { release = r; });
+  const order = [];
+  const { deps } = makeDeps({
+    config: retryConfig(),
+    existingFiles: ["/out/u1.mp4"],
+    renderer: async () => { await blocked; },
+    sheetsApi: {
+      readConfigSheet: async () => [RETRY_CHANNEL],
+      readChannelUrls: async () => [{ rowIndex: 2, url: "u1", status: "", uploadStatus: "" }],
+      setUrlStatus: async () => {},
+      setUploadStatus: async () => order.push(["sheet"]),
+      appendUrls: async () => {},
+    },
+    uploadQueue: retryQueue(order),
+  });
+  const runner = createSheetRunner(deps);
+  const run = runner.runNow();          // running = true ngay (trước await đầu tiên)
+  assert.equal(runner.isRunning(), true);
+  const before = order.slice();          // runNow đã gọi beginRun của chính nó
+
+  const r = await runner.retryUploads("Kênh A", ["u1"]);
+  assert.equal(r.ok, false);
+  assert.match(r.error, /Đang chạy/);
+  assert.deepEqual(order, before, "không được ghi Sheet hay enqueue gì");
+
+  release();
+  await run;
+});
+

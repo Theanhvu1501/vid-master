@@ -431,6 +431,134 @@ export function createSheetRunner(deps) {
     }
   }
 
+  // ─── Đăng lại thủ công ──────────────────────────────────────────────────────
+  // Video đã render nhưng upload hỏng (kể cả đã chạm trần 3 lượt -> "bỏ qua:") không có
+  // đường nào chạy lại: xoá ô C thì decideAction trả skip, xoá ô B thì phải tải + render
+  // lại từ đầu. Hàm này chỉ đẩy lại đúng file đã render vào hàng đợi upload.
+  // Spec: docs/superpowers/specs/2026-11-11-retry-upload-thu-cong-design.md
+  const RETRY_INTENT = `${ST.WAIT_UPLOAD} đăng lại thủ công`;
+
+  async function retryUploads(sheetName, urls) {
+    const name = String(sheetName ?? "").trim();
+    const list = [...new Set((Array.isArray(urls) ? urls : [])
+      .map((u) => String(u ?? "").trim())
+      .filter(Boolean))];
+    const fail = (error) => ({ ok: false, queued: 0, skipped: [], error });
+
+    if (!name) return fail("Thiếu tên kênh.");
+    if (!list.length) return fail("Không có video nào để đăng lại.");
+    if (!uploadQueue) return fail("Chưa có hàng đợi upload.");
+    // Một lượt đang chạy có thể vừa nhặt chính URL này qua nhánh upload-only -> enqueue nữa
+    // là hai job cho một video.
+    if (running) return fail("Đang chạy một lượt — đợi lượt xong rồi bấm lại.");
+
+    let ch;
+    try {
+      const channels = await sheetsApi.readConfigSheet();
+      ch = channels.find((c) => c.sheetName === name);
+    } catch (e) {
+      return fail(`Không đọc được ⚙config: ${String(e?.message || e).slice(0, 200)}`);
+    }
+    if (!ch) return fail(`Không thấy kênh "${name}" trong ⚙config.`);
+    if (ch.uploadEnabled === false) return fail("Kênh đang tắt upload.");
+    if (!(config.gpmEnabled && ch.gpmProfileId && ch.postTimes)) {
+      return fail("Kênh thiếu GPM profile / giờ đăng, hoặc GPM đang tắt.");
+    }
+    // Preflight y như runNow: GPM chết thì báo một câu, đừng enqueue để từng video chờ
+    // 10 lần thử CDP rồi mới hỏng.
+    if (checkGpm) {
+      try {
+        if ((await checkGpm()) === false) return fail("Chưa kết nối được GPM — mở GPM rồi bấm lại.");
+      } catch (e) {
+        return fail(`Chưa kết nối được GPM — ${String(e?.message || e).slice(0, 120)}`);
+      }
+    }
+
+    let rows = [];
+    try {
+      rows = await sheetsApi.readChannelUrls(name);
+    } catch (e) {
+      return fail(`Không đọc được Sheet: ${String(e?.message || e).slice(0, 200)}`);
+    }
+    const byUrl = new Map(rows.map((r) => [r.url, r]));
+    const rs = resumeStore.load();
+    const skipped = [];
+    const candidates = [];
+    for (const url of list) {
+      const row = byUrl.get(url);
+      if (!row) { skipped.push({ url, reason: "không thấy URL trong Sheet" }); continue; }
+      if (String(row.status ?? "").trim() !== ST.DONE) {
+        skipped.push({ url, reason: "chưa render xong" });
+        continue;
+      }
+      // Người dùng có thể vừa lên lịch bằng tay, hoặc lượt chạy vừa xong: ghi ⏸ đè lên ✅
+      // là biến một video đã đăng thành "chờ" vĩnh viễn.
+      if (String(row.uploadStatus ?? "").trim().startsWith("✅")) {
+        skipped.push({ url, reason: "đã lên lịch rồi" });
+        continue;
+      }
+      // Upload còn tiếp tục chạy sau khi runNow() trả về (cờ `running` đã tắt) -> phải hỏi
+      // hàng đợi, không thì cùng một video bị enqueue hai lần.
+      if (uploadQueue.hasPending?.(name, url)) {
+        skipped.push({ url, reason: "đang trong hàng đợi" });
+        continue;
+      }
+      const entry = getEntry(rs, name, url);
+      if (!entry?.outputPath) {
+        skipped.push({ url, reason: "không có đường dẫn file đã render" });
+        continue;
+      }
+      if (!fileExists(entry.outputPath)) {
+        skipped.push({ url, reason: "file đã render không còn trên đĩa" });
+        continue;
+      }
+      candidates.push({ url, row, entry });
+    }
+
+    if (!candidates.length) {
+      emit({ type: "log", message: `[${name}] không có video nào đăng lại được (${skipped.length} bỏ qua)` });
+      return { ok: true, queued: 0, skipped };
+    }
+
+    const overlaysDir = path.join(config.channelsRoot, name, "overlays");
+    // beginRun xoá cache slot / url đã lên lịch của cả lượt. Thiếu bước này, retry đọc cache
+    // cũ (không thấy slot vừa dùng) -> hai video cùng một giờ, hoặc job tự bỏ vì "Sheet báo
+    // đã lên lịch".
+    uploadQueue.beginRun?.();
+    try {
+      for (const { url, row, entry } of candidates) {
+        // Người dùng chủ động đăng lại -> video phải có lại đủ lượt thử tự động.
+        const rs2 = resumeStore.load();
+        setEntry(rs2, name, url, { uploadAttempts: 0 });
+        resumeStore.save(rs2);
+        // Ghi ý định TRƯỚC khi enqueue: tắt app giữa chừng thì lượt sau vẫn thấy ⏸ mà nhặt
+        // lại qua nhánh upload-wait (không tính lượt).
+        try {
+          await sheetsApi.setUploadStatus(name, row.rowIndex, RETRY_INTENT);
+        } catch { /* ignore */ }
+        emit({ type: "upload-status", channel: name, status: RETRY_INTENT, title: entry.title, url });
+        uploadQueue.enqueue({
+          sheetName: name,
+          gpmHost: config.gpmHost,
+          profileId: ch.gpmProfileId,
+          videoPath: entry.outputPath,
+          overlaysDir,
+          title: entry.title,
+          postTimes: ch.postTimes,
+          locale: config.gpmLocale,
+          rowIndex: row.rowIndex,
+          sourceUrl: url,
+        });
+      }
+      // Để tin báo riêng của kênh (ảnh + kết quả) vẫn chạy như một lượt bình thường.
+      uploadQueue.endChannel?.(name);
+    } finally {
+      uploadQueue.endRun?.();
+    }
+    emit({ type: "log", message: `[${name}] đăng lại thủ công ${candidates.length} video…` });
+    return { ok: true, queued: candidates.length, skipped };
+  }
+
   // Nút "Test render": mỗi kênh tải 1 video, cắt ngắn, render, mở lên xem. Không upload,
   // không ghi Sheet, không tính quota — xem sheet/test-render-channel.js.
   // Dùng CHUNG cờ `running` với runNow: hai đường đều nuốt CPU/GPU bằng ffmpeg và đều gọi
@@ -487,5 +615,5 @@ export function createSheetRunner(deps) {
   }
   function stop() { if (timer) { clearInterval(timer); timer = null; } }
 
-  return { runNow, testRenderNow, start, stop };
+  return { runNow, testRenderNow, start, stop, retryUploads, isRunning: () => running };
 }

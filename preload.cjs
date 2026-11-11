@@ -64,6 +64,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
     stop: () => ipcRenderer.invoke("sheet:stop"),
     runNow: (sheetName) => ipcRenderer.invoke("sheet:run-now", sheetName),
     testRender: (sheetName) => ipcRenderer.invoke("sheet:test-render", sheetName),
+    // Video đã render nhưng chưa lên lịch (panel "Chờ đăng").
+    pendingUploads: (sheetName) => ipcRenderer.invoke("sheet:pending-uploads", sheetName),
+    // Đăng lại thủ công — chỉ upload lại file đã render, không tải/render lại.
+    retryUpload: ({ sheetName, urls } = {}) => ipcRenderer.invoke("sheet:retry-upload", { sheetName, urls }),
     listStatsChannels: () => ipcRenderer.invoke("yt:list-channels"),
     refreshStats: () => ipcRenderer.invoke("yt:refresh-stats"),
     fetchSourceUrls: (sheetName, sortBy) => ipcRenderer.invoke("yt:fetch-source-urls", { sheetName, sortBy }),
