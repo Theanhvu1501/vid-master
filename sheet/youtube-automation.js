@@ -31,6 +31,7 @@ let cancelled = false;
 export function stopAutomation() { cancelled = true; }
 export function resetCancel() { cancelled = false; }
 export function checkCancelled() { if (cancelled) throw new Error("đã dừng theo yêu cầu"); }
+export function isCancelled() { return cancelled; }
 
 // Sinh mã TOTP (RFC 6238, SHA-1, 6 số, bước 30s) từ secret base32.
 export function generateTOTP(secret, nowMs = Date.now()) {

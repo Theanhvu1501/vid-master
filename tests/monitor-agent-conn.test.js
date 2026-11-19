@@ -252,3 +252,52 @@ test("agent: collectSnapshot ném lỗi -> chỉ ghi log, kết nối vẫn số
   assert.ok(logs.some((l) => l.includes("Sheet hỏng")));
   agent.stop();
 });
+
+// ---------- Tác vụ chạy tay ----------
+test("agent: tác vụ tay gửi 'task' lên; kết thúc thêm một sự kiện đúng mức (ok=success, partial=warning, error=error)", async () => {
+  const { agent } = mkAgent({ token: TOK });
+  agent.start(); await tick(); await welcomeOn(last());
+  const sent = () => last().sent;
+  agent.onTaskEvent({ type: "task", phase: "start", id: "render.js#1", key: "render.js", label: "Render video", startedAt: 1 });
+  assert.deepEqual(sent().at(-1), { type: "task", phase: "start", id: "render.js#1", key: "render.js", label: "Render video", startedAt: 1 });
+  assert.equal(sent().filter((m) => m.type === "event").length, 0, "bắt đầu thì chưa có sự kiện");
+  for (const [outcome, level] of [["ok", "success"], ["partial", "warning"], ["error", "error"], ["skipped", "info"]]) {
+    agent.onTaskEvent({ type: "task", phase: "end", id: "x", label: "Đổi thumbnail", outcome, summary: "tóm tắt" });
+    const ev = sent().filter((m) => m.type === "event").at(-1);
+    assert.equal(ev.level, level, outcome);
+    assert.equal(ev.kind, "task");
+    assert.match(ev.message, /Đổi thumbnail: tóm tắt/);
+  }
+  agent.stop();
+});
+
+test("agent: kết quả từng kênh của tác vụ tay thành sự kiện; mất mạng thì giữ lại gửi bù", async () => {
+  const { agent } = mkAgent({ token: TOK });
+  agent.start(); await tick(); const a = last(); await welcomeOn(a);
+  agent.onTaskChannelResult("t", { level: "success", kind: "task", channel: "K1", message: "Đổi thumbnail: K1 xong" });
+  assert.equal(a.sent.at(-1).message, "Đổi thumbnail: K1 xong");
+  a.close(1006);
+  agent.onTaskChannelResult("t", { level: "error", kind: "task", channel: "K2", message: "Đổi thumbnail: K2 lỗi · hết slot" });
+  await tick(50); await welcomeOn(last());
+  assert.ok(last().sent.some((m) => m.type === "event" && /K2 lỗi/.test(m.message)), "sự kiện lúc mất mạng được gửi bù");
+  agent.stop();
+});
+
+test("agent: chưa bật/đã dừng thì bỏ qua sự kiện tác vụ, không ném lỗi; dữ liệu rỗng cũng vậy", async () => {
+  const { agent } = mkAgent({ token: TOK });
+  assert.doesNotThrow(() => { agent.onTaskEvent({ phase: "start", id: "a" }); agent.onTaskChannelResult("t", { message: "x" }); });
+  agent.start(); await tick(); await welcomeOn(last());
+  assert.doesNotThrow(() => { agent.onTaskEvent(null); agent.onTaskChannelResult("t", null); });
+  const n = last().sent.length;
+  agent.onTaskEvent(null); agent.onTaskChannelResult("t", null);
+  assert.equal(last().sent.length, n);
+  agent.stop();
+});
+
+test("agent: heartbeat mang theo danh sách tác vụ đang chạy (để web biết cái nào còn sống)", async () => {
+  const { agent } = mkAgent({ token: TOK, opts: { getState: () => ({ running: false, tasks: [{ id: "render.js#1" }] }) } });
+  agent.start(); await tick(); await welcomeOn(last());
+  const st = last().sent.find((m) => m.type === "status");
+  assert.deepEqual(st.state.tasks, [{ id: "render.js#1" }]);
+  agent.stop();
+});

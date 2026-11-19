@@ -12,6 +12,7 @@ import { decideAction } from "./resume-plan.js";
 import { ST } from "./resume-plan.js";
 import { getEntry } from "./resume-state.js";
 import { parseScheduledISO } from "./schedule-slots.js";
+import { safeText } from "./task-monitor.js";
 
 // ---------------------------------------------------------------------------------------------
 // Dựng snapshot (hàm thuần, test được)
@@ -116,17 +117,18 @@ export function sheetEventToMonitor(evt) {
   const channel = evt.channel || null;
   switch (evt.type) {
     case "video-rendered":
-      return { level: "success", kind: "render", channel, message: `Render xong: ${evt.title || evt.sourceUrl || "video"}` };
+      return { level: "success", kind: "render", channel: safeText(channel, 120) || null, message: safeText(`Render xong: ${evt.title || evt.sourceUrl || "video"}`, 300) };
     case "upload-status": {
       const s = String(evt.status || "");
       const t = evt.title ? ` · ${evt.title}` : "";
-      if (s.startsWith("✅")) return { level: "success", kind: "upload", channel, message: `${s}${t}` };
-      if (s.startsWith("❌")) return { level: "error", kind: "upload", channel, message: `${s}${t}` };
-      if (s.startsWith(ST.WAIT_UPLOAD)) return { level: "warning", kind: "upload", channel, message: `${s}${t}` };
+      const ch = safeText(channel, 120) || null;
+      if (s.startsWith("✅")) return { level: "success", kind: "upload", channel: ch, message: safeText(`${s}${t}`, 300) };
+      if (s.startsWith("❌")) return { level: "error", kind: "upload", channel: ch, message: safeText(`${s}${t}`, 300) };
+      if (s.startsWith(ST.WAIT_UPLOAD)) return { level: "warning", kind: "upload", channel: ch, message: safeText(`${s}${t}`, 300) };
       return null; // ⏳ và các bước trung gian: quá ồn
     }
     case "error":
-      return { level: "error", kind: "error", channel, message: String(evt.message || "Lỗi không rõ") };
+      return { level: "error", kind: "error", channel: safeText(channel, 120) || null, message: safeText(evt.message || "Lỗi không rõ", 300) };
     case "done":
       return { level: "info", kind: "run", channel: null, message: "Hoàn tất một lượt chạy" };
     default:
@@ -142,12 +144,12 @@ export function sheetEventToProgress(evt, { autoUpload = true } = {}) {
   const channel = String(evt.channel || "").trim();
   const key = String(evt.url || evt.sourceUrl || "").trim();
   if (!channel || !key) return null;
-  const base = { channel, key, title: String(evt.title || "") };
+  const base = { channel, key, title: safeText(evt.title || "", 300) };
   const s = String(evt.status || "");
 
   switch (evt.type) {
     case "channel-status":
-      if (/^chờ \d+s trước khi tải/.test(s)) return { ...base, stage: "download", state: "waiting", detail: s };
+      if (/^chờ \d+s trước khi tải/.test(s)) return { ...base, stage: "download", state: "waiting", detail: safeText(s, 200) };
       if (s === "đang tải") return { ...base, stage: "download", state: "active", detail: "Đang tải video nguồn" };
       if (s === "đang lấy file") return { ...base, stage: "download", state: "active", detail: "Đang lấy file từ máy" };
       if (s === "đang render") return { ...base, stage: "render", state: "active", detail: "Đang render video" };
@@ -158,9 +160,9 @@ export function sheetEventToProgress(evt, { autoUpload = true } = {}) {
         ? { ...base, stage: "upload", state: "waiting", detail: "Đã render, chờ upload" }
         : { ...base, stage: "render", state: "done", detail: "Đã render xong", upload: false };
     case "upload-status":
-      if (s.startsWith("✅")) return { ...base, stage: "done", state: "done", detail: s };
-      if (s.startsWith("❌")) return { ...base, stage: null, state: "error", detail: s };
-      if (s.startsWith(ST.WAIT_UPLOAD)) return { ...base, stage: "upload", state: "waiting", detail: s };
+      if (s.startsWith("✅")) return { ...base, stage: "done", state: "done", detail: safeText(s, 200) };
+      if (s.startsWith("❌")) return { ...base, stage: null, state: "error", detail: safeText(s, 200) };
+      if (s.startsWith(ST.WAIT_UPLOAD)) return { ...base, stage: "upload", state: "waiting", detail: safeText(s, 200) };
       if (s.startsWith("⏳")) return { ...base, stage: "upload", state: "active", detail: "Đang upload lên YouTube" };
       if (s.startsWith("b1")) return { ...base, stage: "upload", state: "active", detail: "Đang tải video lên YouTube" };
       if (s.startsWith("b2")) return { ...base, stage: "thumb", state: "active", detail: "Upload xong, đang thay thumbnail" };
@@ -168,7 +170,7 @@ export function sheetEventToProgress(evt, { autoUpload = true } = {}) {
       if (s.startsWith("b4")) return { ...base, stage: "schedule", state: "active", detail: "Đã đặt giờ lịch, đang hoàn tất" };
       return null;
     case "error":
-      return { ...base, stage: null, state: "error", detail: String(evt.message || "Lỗi không rõ") };
+      return { ...base, stage: null, state: "error", detail: safeText(evt.message || "Lỗi không rõ", 200) };
     default:
       return null;
   }
@@ -416,6 +418,25 @@ export function createMonitorAgent({
       const msg = { ...e, at: new Date().toISOString() };
       if (!send({ type: "event", ...msg })) { buffer.push(msg); if (buffer.length > maxBuffered) buffer.shift(); }
       if (evt.type === "done" || evt.type === "video-rendered" || evt.type === "upload-status") requestSnapshot();
+    },
+    // Tác vụ chạy tay (render, tải, đổi thumbnail, lên lịch...). Bắt đầu/đang chạy -> gửi "task"; kết thúc -> thêm một sự kiện
+    // để lên chuông/Telegram. Chỉ gửi những chuỗi đã được lọc bí mật (xem task-monitor.js).
+    onTaskEvent(m) {
+      if (stopped || !m) return;
+      send({ type: "task", ...m });
+      if (m.phase === "end") {
+        const level = m.outcome === "ok" ? "success" : m.outcome === "partial" ? "warning" : m.outcome === "skipped" ? "info" : "error";
+        const mark = { ok: "✅", partial: "⚠️", error: "❌", skipped: "⏹" }[m.outcome] || "";
+        const ev = { level, kind: "task", channel: null, message: `${mark} ${m.label}: ${m.summary}`.trim(), at: new Date().toISOString() };
+        if (!send({ type: "event", ...ev })) { buffer.push(ev); if (buffer.length > maxBuffered) buffer.shift(); }
+        requestSnapshot();
+      }
+    },
+    // Kết quả của TỪNG kênh trong một tác vụ (đã là sự kiện hoàn chỉnh từ channelResultEvent)
+    onTaskChannelResult(taskId, ev) {
+      if (stopped || !ev) return;
+      const msg = { ...ev, at: new Date().toISOString() };
+      if (!send({ type: "event", ...msg })) { buffer.push(msg); if (buffer.length > maxBuffered) buffer.shift(); }
     },
     requestSnapshot,
     getStatus: () => status,

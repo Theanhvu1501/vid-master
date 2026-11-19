@@ -13,11 +13,12 @@ import { createSheetsClient, readConfigSheet, readConfigValues, writeConfigCell,
 import { createYoutubeClient, fetchChannelStats, fetchSourceVideos, pickNewUrls, DEFAULT_YT_API_KEY } from "./sheet/youtube-api.js";
 import { parseScheduledISO, formatStamp } from "./sheet/schedule-slots.js";
 import { testGpmConnection, connectAndOpenStudio, connectProfile, getGpmApiVersion, listGpmGroups, listGpmProfilesFull, createGpmProfile, updateGpmProfileProxy } from "./sheet/gpm-client.js";
-import { runLogin, runChangeThumb, runSchedule, stopAutomation, resetCancel, forEachProfile, loginOne, checkCancelled } from "./sheet/youtube-automation.js";
+import { runLogin, runChangeThumb, runSchedule, stopAutomation, resetCancel, forEachProfile, loginOne, checkCancelled, isCancelled } from "./sheet/youtube-automation.js";
 import { runDistribute, buildPlan, listVideos } from "./sheet/distribute.js";
 import { runSheetAutomation, previewSheetAutomation } from "./sheet/sheet-automation.js";
 import { runProxyCheck, maskProxy, checkProxy } from "./sheet/proxy-tools.js";
 import { createMonitorAgent, createProxyHealth, buildSnapshot, proxyIdentity, DEFAULT_SERVER_URL } from "./sheet/monitor-agent.js";
+import { createTaskTracker, channelResultEvent, isTrackedTask, lastMeaningfulLine } from "./sheet/task-monitor.js";
 import { readLoginAccounts, readChannelPlans, attachProfileData, countNames } from "./sheet/excel-import.js";
 import { resolveThumbRun, resolveScheduleRun } from "./sheet/run-options.js";
 import { runCreateChannel, createChannelOne } from "./sheet/create-channel.js";
@@ -737,6 +738,7 @@ app.on("before-quit", () => {
   // Tắt server PO token, không để tiến trình node mồ côi giữ cổng 4416 — lần mở app
   // sau sẽ tưởng cổng bận và nhảy sang 4417.
   stopPotServer();
+  taskTracker.abortAll();
   monitorAgent.stop();
 });
 
@@ -1459,6 +1461,8 @@ async function collectMonitorSnapshot() {
   });
 }
 
+// Theo dõi tác vụ chạy tay. emit gửi qua agent (agent tự bỏ qua khi chưa bật giám sát), lỗi ở đây không bao giờ lan sang tác vụ thật.
+const taskTracker = createTaskTracker({ emit: (m) => monitorAgent?.onTaskEvent(m) });
 const monitorAgent = createMonitorAgent({
   getSettings: loadSheetSettings,
   getToken: loadMonitorToken,
@@ -1467,7 +1471,11 @@ const monitorAgent = createMonitorAgent({
   getMachineId,
   appVersion: app.getVersion(),
   collectSnapshot: collectMonitorSnapshot,
-  getState: () => ({ running: !!sheetRunner?.isRunning?.(), watching: !!sheetRunner?.isWatching?.() }),
+  getState: () => ({
+    running: !!sheetRunner?.isRunning?.(), watching: !!sheetRunner?.isWatching?.(),
+    // Tác vụ chạy tay (render, tải, đổi thumbnail, lên lịch...). Có cái này thì web không còn báo "rảnh" khi máy đang bận.
+    tasks: taskTracker.list(),
+  }),
   log: (m) => console.log(`[monitor] ${m}`),
   onStatus: (st) => {
     for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send("monitor:status", st);
@@ -2152,7 +2160,29 @@ function guardedHandler(channel, run) {
       const onLog = (msg) => { if (win && !win.isDestroyed()) win.webContents.send("automation:log", { task: channel, msg }); };
       automationBusy = channel;
       resetCancel(); // mỗi lượt bắt đầu với cờ dừng sạch
-      return await run({ ...opts, onLog });
+      // Theo dõi cho web giám sát. Mọi lỗi của phần theo dõi bị nuốt, không bao giờ ảnh hưởng tới việc chạy thật.
+      // Đăng nhập kênh, tạo channel, tự động hóa theo Sheet làm TRỰC TIẾP trong app và KHÔNG báo lên web
+      // (chúng dùng tài khoản/mật khẩu). Xem UNTRACKED_TASKS trong sheet/task-monitor.js.
+      const tracked = isTrackedTask(channel);
+      const taskId = tracked ? taskTracker.start(channel, { total: Array.isArray(opts.profiles) ? opts.profiles.length : null }) : null;
+      const userOnResult = opts.onResult;
+      const onResult = tracked
+        ? async (p, r) => {
+            try { monitorAgent?.onTaskChannelResult(taskId, channelResultEvent(channel, p, r)); taskTracker.progress(taskId, { channel: p?.name }); } catch { /* ignore */ }
+            return userOnResult?.(p, r);
+          }
+        : userOnResult;
+      let result, stopped = false;
+      try {
+        result = await run({ ...opts, onLog, onResult });
+        return result;
+      } catch (err) {
+        result = { success: false, error: String(err?.message || err) };
+        return result;
+      } finally {
+        try { stopped = isCancelled(); } catch { /* ignore */ }
+        if (taskId) taskTracker.finish(taskId, result, { stopped });
+      }
     } catch (err) {
       return { success: false, error: String(err?.message || err) };
     } finally {
@@ -2619,6 +2649,9 @@ ipcMain.handle(
           stdio: "pipe",
           env: env,
         });
+        const scriptKey = path.basename(scriptPath);
+        const taskId = isTrackedTask(scriptKey) ? taskTracker.start(scriptKey) : null;
+        const finishTask = (r) => { if (taskId) taskTracker.finish(taskId, r); };
 
         let stdout = "";
         let stderr = "";
@@ -2638,9 +2671,11 @@ ipcMain.handle(
           // Config được truyền qua environment variable hoặc đọc từ project JSON
 
           if (code === 0) {
+            finishTask({ success: true, message: "Hoàn tất" });
             resolve({ success: true, output: stdout });
           } else {
             const errorMsg = stderr || `Script exited with code ${code}`;
+            finishTask({ success: false, error: lastMeaningfulLine(stderr) || `Script thoát với mã ${code}` });
             reject({ success: false, error: errorMsg, code });
           }
         });
@@ -2650,6 +2685,7 @@ ipcMain.handle(
 
           const errorMsg = getErrorMessage(error);
           console.error(`Error spawning script: ${errorMsg}`);
+          finishTask({ success: false, error: errorMsg });
           reject({ success: false, error: errorMsg });
         });
       });
