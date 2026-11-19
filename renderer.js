@@ -5511,6 +5511,18 @@ async function runConcat() {
     if (e.key === "Escape" && cfgModal?.classList.contains("active")) closeCfg();
   });
 
+  // ----- Giám sát trên web -----
+  const MONITOR_COLORS = { connected: "#51cf66", connecting: "#fcc419", error: "#ff6b6b", off: "#64748b" };
+  function showMonitorStatus(st) {
+    const el = $("sw-monitor-status");
+    if (!el || !st) return;
+    el.textContent = `● ${st.message || ""}`;
+    el.style.color = MONITOR_COLORS[st.state] || MONITOR_COLORS.off;
+    if (st.machineId) $("sw-monitor-machine").textContent = `Machine ID của máy này: ${st.machineId}`;
+  }
+  api.monitorStatus?.().then(showMonitorStatus).catch(() => {});
+  api.onMonitorStatus?.((st) => showMonitorStatus({ ...st, machineId: undefined }));
+
   // "Connect tất cả" chỉ có nghĩa khi GPM bật.
   function syncGpmVisibility() {
     const on = $("sw-gpm-enabled").checked;
@@ -5542,6 +5554,7 @@ async function runConcat() {
     $("sw-gpm-tg-topic").value = s.gpmTelegramTopicId || "";
     $("sw-gpm-tg-photo").checked = !!s.gpmTelegramPhoto;
     $("sw-gpm-tg-fields").style.display = s.gpmTelegramEnabled ? "" : "none";
+    $("sw-monitor-enabled").checked = !!s.monitorEnabled;
     $("sw-yt-api-key").value = s.ytApiKey || "";
     $("sw-cookies-folder").value = s.cookiesFolder || "";
     // Ô chọn 1 file cookie đã bỏ khỏi UI (chỉ còn thư mục), nhưng giá trị cũ vẫn
@@ -5600,6 +5613,7 @@ async function runConcat() {
       gpmTelegramChatId: $("sw-gpm-tg-chat").value.trim(),
       gpmTelegramTopicId: $("sw-gpm-tg-topic").value.trim(),
       gpmTelegramPhoto: $("sw-gpm-tg-photo").checked,
+      monitorEnabled: $("sw-monitor-enabled").checked,
       ytApiKey: $("sw-yt-api-key").value.trim(),
       // Trống = cố ý lùi về cookie ở tab "Tải video", nên phải ghi xuống chuỗi rỗng
       // chứ không được bỏ khoá đi.
@@ -5615,7 +5629,7 @@ async function runConcat() {
   function saveDebounced() { clearTimeout(saveTimer); saveTimer = setTimeout(saveNow, 400); }
   ["sw-spreadsheet-id", "sw-poll", "sw-video-speed", "sw-yt-api-key", "sw-gpm-idle-close", "sw-cleanup-days"].forEach((id) =>
     $(id)?.addEventListener("input", saveDebounced));
-  ["sw-auto-open", "sw-use-gpu", "sw-gpm-enabled", "sw-gpm-tg-photo"].forEach((id) =>
+  ["sw-auto-open", "sw-use-gpu", "sw-gpm-enabled", "sw-gpm-tg-photo", "sw-monitor-enabled"].forEach((id) =>
     $(id)?.addEventListener("change", saveNow));
   $("sw-cleanup")?.addEventListener("change", () => { syncCleanupHint(); saveNow(); });
   ["sw-gpm-host", "sw-gpm-tg-token", "sw-gpm-tg-chat", "sw-gpm-tg-topic"].forEach((id) =>

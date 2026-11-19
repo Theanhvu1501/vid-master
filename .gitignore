@@ -11,3 +11,7 @@ node_modules
 dist
 bin
 .superpowers/
+
+# Cấu hình/token riêng của từng máy (token giám sát do server cấp, không được đưa lên git)
+.monitor-token.json
+sheet-settings.json

@@ -5,7 +5,7 @@ import https from "https";
 import { createRequire } from "module";
 import path from "path";
 import { fileURLToPath } from "url";
-import { checkLicense } from "./license-check.js";
+import { checkLicense, getMachineId } from "./license-check.js";
 import pLimit from "p-limit";
 import sharp from "sharp";
 import { createSheetRunner } from "./sheet/sheet-runner.js";
@@ -16,7 +16,8 @@ import { testGpmConnection, connectAndOpenStudio, connectProfile, getGpmApiVersi
 import { runLogin, runChangeThumb, runSchedule, stopAutomation, resetCancel, forEachProfile, loginOne, checkCancelled } from "./sheet/youtube-automation.js";
 import { runDistribute, buildPlan, listVideos } from "./sheet/distribute.js";
 import { runSheetAutomation, previewSheetAutomation } from "./sheet/sheet-automation.js";
-import { runProxyCheck, maskProxy } from "./sheet/proxy-tools.js";
+import { runProxyCheck, maskProxy, checkProxy } from "./sheet/proxy-tools.js";
+import { createMonitorAgent, createProxyHealth, buildSnapshot, proxyIdentity, DEFAULT_SERVER_URL } from "./sheet/monitor-agent.js";
 import { readLoginAccounts, readChannelPlans, attachProfileData, countNames } from "./sheet/excel-import.js";
 import { resolveThumbRun, resolveScheduleRun } from "./sheet/run-options.js";
 import { runCreateChannel, createChannelOne } from "./sheet/create-channel.js";
@@ -708,6 +709,9 @@ app.whenReady().then(async () => {
     // Kiểm tra và hiển thị thông báo update thành công
     checkAndShowUpdateSuccess();
 
+    // Kết nối giám sát (chỉ khi người dùng đã bật + nhập token)
+    try { if (loadSheetSettings().monitorEnabled) monitorAgent.start(); } catch (err) { console.error("monitor start:", err); }
+
     // Làm nóng server PO token ngay lúc mở app: lần đầu trên máy mới, antivirus quét
     // node.exe nên server lên chậm — dựng sẵn ở đây thì lúc bấm tải là đã có token.
     // KHÔNG await: server lên chậm không được chặn cửa sổ hiện ra.
@@ -733,6 +737,7 @@ app.on("before-quit", () => {
   // Tắt server PO token, không để tiến trình node mồ côi giữ cổng 4416 — lần mở app
   // sau sẽ tưởng cổng bận và nhảy sang 4417.
   stopPotServer();
+  monitorAgent.stop();
 });
 
 app.on("activate", () => {
@@ -1397,6 +1402,77 @@ function saveSheetSettings(s) { fs.writeFileSync(sheetSettingsPath(), JSON.strin
 
 const YTDLP_PATH = path.join(getAppPath(), "bin", "yt-dlp.exe");
 let sheetRunner = null;
+
+// ===== Giám sát trên web (chỉ gửi LÊN server, không nhận lệnh) =====
+// Token kết nối do server cấp tự động lần đầu, lưu riêng khỏi sheet-settings.json: file đó là cấu hình
+// người dùng hay sao chép/gửi nhờ hỗ trợ, token thì không được lẫn vào.
+const monitorTokenPath = () => path.join(getConfigDir(), ".monitor-token.json");
+function loadMonitorToken() {
+  try { return String(JSON.parse(fs.readFileSync(monitorTokenPath(), "utf-8")).token || ""); } catch { return ""; }
+}
+function saveMonitorToken(token) {
+  if (!token) { try { fs.unlinkSync(monitorTokenPath()); } catch { /* chưa có file */ } return; }
+  fs.writeFileSync(monitorTokenPath(), JSON.stringify({ token }), { encoding: "utf-8", mode: 0o600 });
+}
+// Địa chỉ server mặc định cố định trong app; biến môi trường chỉ để chạy thử trên máy dev.
+const monitorServerUrl = () => process.env.VIDMASTER_SERVER_URL || DEFAULT_SERVER_URL;
+// Chỉ cờ bật/tắt mới ảnh hưởng kết nối.
+const monitorSettingsKey = (s) => JSON.stringify([!!s?.monitorEnabled]);
+const proxyHealth = createProxyHealth({ checkFn: (raw) => checkProxy(raw) });
+
+// Dựng ảnh chụp trạng thái từ Sheet + file trạng thái trên máy. Trả null khi chưa cấu hình Sheet
+// (khác với "Sheet rỗng": gửi snapshot rỗng sẽ xoá hết kênh đang hiện trên web).
+async function collectMonitorSnapshot() {
+  const s = loadSheetSettings();
+  if (requireSheetSettings(s) || !s.channelsRoot) return null;
+  const sheets = createSheetsClient(s.credentialsPath);
+  const channels = await readConfigSheet(sheets, s.spreadsheetId);
+
+  // Đọc tab từng kênh, 3 kênh một lượt để không dội quota Sheets (60 lượt đọc/phút).
+  const urlsByChannel = new Map();
+  for (let i = 0; i < channels.length; i += 3) {
+    await Promise.all(channels.slice(i, i + 3).map(async (c) => {
+      try { urlsByChannel.set(c.sheetName, await readChannelUrls(sheets, s.spreadsheetId, c.sheetName)); }
+      catch { /* tab lỗi/thiếu: để null -> web hiện "—", không báo hết video nhầm */ }
+    }));
+  }
+
+  // Số liệu YouTube đã nằm sẵn trong ⚙config (đọc lại, không tốn quota YouTube).
+  const statsByChannel = new Map();
+  try {
+    const st = await listStatsChannels();
+    if (st.ok) for (const r of st.rows) statsByChannel.set(r.sheetName, r);
+  } catch { /* thiếu số liệu không phải lỗi */ }
+
+  // Kiểm tra proxy chạy nền; xong thì gửi snapshot bù để web thấy kết quả sớm.
+  const idents = channels.filter((c) => c.enabled && c.videoSource !== "local").map((c) => proxyIdentity(c.proxy)).filter(Boolean);
+  const uniq = [...new Map(idents.map((p) => [p.key, p])).values()];
+  proxyHealth.refresh(uniq).then((n) => { if (n > 0) monitorAgent?.requestSnapshot(); }).catch(() => {});
+
+  return buildSnapshot({
+    channels, urlsByChannel, statsByChannel,
+    state: loadState(path.join(s.channelsRoot, "runner-state.json")),
+    resume: loadResume(path.join(s.channelsRoot, "resume-state.json")),
+    today: todayStr(new Date()),
+    fileExists: (p) => { try { return fs.existsSync(p); } catch { return false; } },
+    proxyHealth: proxyHealth.snapshot(),
+  });
+}
+
+const monitorAgent = createMonitorAgent({
+  getSettings: loadSheetSettings,
+  getToken: loadMonitorToken,
+  saveToken: saveMonitorToken,
+  getServerUrl: monitorServerUrl,
+  getMachineId,
+  appVersion: app.getVersion(),
+  collectSnapshot: collectMonitorSnapshot,
+  getState: () => ({ running: !!sheetRunner?.isRunning?.(), watching: !!sheetRunner?.isWatching?.() }),
+  log: (m) => console.log(`[monitor] ${m}`),
+  onStatus: (st) => {
+    for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send("monitor:status", st);
+  },
+});
 let sheetRunnerWin = null;   // cửa sổ mà runner đang phát sự kiện tới
 let sheetRunnerKey = null;   // ảnh chụp cấu hình lúc dựng runner (đổi -> phải dựng lại)
 
@@ -1464,7 +1540,11 @@ function buildSheetRunner(win) {
   const sheets = createSheetsClient(s.credentialsPath);
   const statePath = path.join(s.channelsRoot, "runner-state.json");
   const resumePath = path.join(s.channelsRoot, "resume-state.json");
-  const emitEvent = (evt) => { if (win && !win.isDestroyed()) win.webContents.send("sheet:event", evt); };
+  const emitEvent = (evt) => {
+    if (win && !win.isDestroyed()) win.webContents.send("sheet:event", evt);
+    // Chép sự kiện lên web giám sát. Lỗi ở đây không bao giờ được ảnh hưởng tới runner.
+    try { monitorAgent?.onSheetEvent(evt); } catch { /* ignore */ }
+  };
   // Topic của group Telegram: nhiều máy chung 1 group thì mỗi máy một topic.
   // Bỏ trống → undefined → tin vào General như trước.
   const tgTopicId = parseTopicId(s.gpmTelegramTopicId);
@@ -1838,7 +1918,14 @@ ipcMain.handle("sheet:test-connection", async (e, s) => {
   }
 });
 ipcMain.handle("sheet:load-settings", async () => loadSheetSettings());
-ipcMain.handle("sheet:save-settings", async (e, s) => { saveSheetSettings(s); return { success: true }; });
+ipcMain.handle("sheet:save-settings", async (e, s) => {
+  const before = loadSheetSettings();
+  saveSheetSettings(s);
+  // Chỉ nối lại khi cấu hình giám sát thật sự đổi: ô nhập tự lưu sau mỗi lần gõ, đổi các ô khác không được làm rớt kết nối.
+  if (monitorSettingsKey(before) !== monitorSettingsKey(s)) monitorAgent?.reconfigure();
+  return { success: true };
+});
+ipcMain.handle("monitor:get-status", async () => ({ ...(monitorAgent?.getStatus() || { state: "off", message: "Chưa bật" }), machineId: getMachineId() }));
 ipcMain.handle("sheet:select-credentials", async () => {
   const r = await dialog.showOpenDialog({ properties: ["openFile"], filters: [{ name: "JSON", extensions: ["json"] }] });
   return r.canceled ? null : r.filePaths[0];

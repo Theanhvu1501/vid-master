@@ -617,5 +617,5 @@ export function createSheetRunner(deps) {
   }
   function stop() { if (timer) { clearInterval(timer); timer = null; } }
 
-  return { runNow, testRenderNow, start, stop, retryUploads, isRunning: () => running };
+  return { runNow, testRenderNow, start, stop, retryUploads, isRunning: () => running, isWatching: () => !!timer };
 }

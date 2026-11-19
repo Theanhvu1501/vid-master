@@ -4677,6 +4677,16 @@ label.with-icon::before {
               </label>
             </div>
           </div>
+
+          <h4 class="sw-cfg-group" data-g="gpm">Giám sát trên web</h4>
+          <div class="form-group">
+            <label style="display:flex;align-items:center;gap:8px;font-weight:600;">
+              <input id="sw-monitor-enabled" type="checkbox"> Gửi trạng thái kênh lên web để theo dõi
+            </label>
+            <small class="sw-cfg-hint">Chỉ gửi lên, web không điều khiển được máy này. Mật khẩu proxy và tài khoản Gmail/2FA không bao giờ được gửi.</small>
+            <span id="sw-monitor-status" style="display:block;margin-top:6px;font-size:13px;"></span>
+            <small class="sw-cfg-hint" id="sw-monitor-machine"></small>
+          </div>
         </div>
       </div>
     </div>
