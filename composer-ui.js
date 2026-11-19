@@ -217,37 +217,37 @@
   // ── CSS riêng của composer, tiêm một lần lúc dựng UI (không đụng <style> tĩnh của renderer.html) ──
   const COMPOSER_CSS = `
     #composer .composer-shell { display: flex; gap: 20px; align-items: flex-start; }
-    #composer .composer-sidebar { width: 260px; flex-shrink: 0; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; position: sticky; top: 0; }
-    #composer .composer-sidebar h3 { margin: 0 0 12px; font-size: 14px; color: #2d3748; }
-    #composer .composer-preset-item { padding: 10px 12px; border-radius: 8px; cursor: pointer; margin-bottom: 6px; font-size: 14px; color: #2d3748; border: 1px solid transparent; word-break: break-all; }
-    #composer .composer-preset-item:hover { background: #edf2f7; }
-    #composer .composer-preset-item.active { background: #667eea; color: #fff; border-color: #667eea; }
+    #composer .composer-sidebar { width: 260px; flex-shrink: 0; background: var(--bg-secondary); border: 1px solid var(--border-default); border-radius: 12px; padding: 16px; position: sticky; top: 0; }
+    #composer .composer-sidebar h3 { margin: 0 0 12px; font-size: 14px; color: var(--text-primary); }
+    #composer .composer-preset-item { padding: 10px 12px; border-radius: 8px; cursor: pointer; margin-bottom: 6px; font-size: 14px; color: var(--text-primary); border: 1px solid transparent; word-break: break-all; }
+    #composer .composer-preset-item:hover { background: var(--bg-hover); }
+    #composer .composer-preset-item.active { background: #fa6e03; color: #fff; border-color: #fa6e03; }
     #composer .composer-sidebar-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
     #composer .composer-sidebar-actions .btn { min-width: auto; padding: 8px 10px; font-size: 12px; }
     #composer .composer-editor { flex: 1; min-width: 0; }
-    #composer .composer-layer-card { border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; margin-bottom: 14px; background: #fff; }
+    #composer .composer-layer-card { border: 1px solid var(--border-default); border-radius: 12px; padding: 16px; margin-bottom: 14px; background: var(--bg-secondary); }
     #composer .composer-layer-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
     #composer .composer-layer-head input[type="text"] { flex: 1; padding: 8px 10px; }
     #composer .composer-layer-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
     #composer .composer-layer-grid label, #composer .composer-treatment-row label { font-size: 11px; margin-bottom: 4px; }
     #composer .composer-layer-grid input, #composer .composer-layer-grid select { padding: 8px 10px; }
-    #composer .composer-treatment-row { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; border-top: 1px dashed #e2e8f0; padding-top: 10px; margin-top: 10px; }
+    #composer .composer-treatment-row { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; border-top: 1px dashed var(--border-default); padding-top: 10px; margin-top: 10px; }
     #composer .composer-treatment-row input, #composer .composer-treatment-row select { padding: 6px 8px; width: auto; min-width: 90px; }
-    #composer .composer-errors { background: #fff5f5; border: 1px solid #feb2b2; color: #c53030; padding: 12px 16px; border-radius: 10px; margin-bottom: 16px; }
-    #composer .composer-warnings { background: #fffaf0; border: 1px solid #fbd38d; color: #9c4221; padding: 12px 16px; border-radius: 10px; margin-bottom: 16px; }
+    #composer .composer-errors { background: rgba(255, 107, 107, 0.10); border: 1px solid rgba(255, 107, 107, 0.45); color: var(--accent-danger); padding: 12px 16px; border-radius: 10px; margin-bottom: 16px; }
+    #composer .composer-warnings { background: rgba(252, 196, 25, 0.10); border: 1px solid rgba(252, 196, 25, 0.40); color: var(--accent-warning); padding: 12px 16px; border-radius: 10px; margin-bottom: 16px; }
     #composer .composer-errors ul, #composer .composer-warnings ul { margin: 6px 0 0; padding-left: 20px; }
-    #composer .composer-icon-btn { width: 30px; height: 30px; border-radius: 8px; border: 1px solid #e2e8f0; background: #fff; cursor: pointer; font-size: 13px; flex-shrink: 0; }
-    #composer .composer-icon-btn:hover:not(:disabled) { background: #edf2f7; }
+    #composer .composer-icon-btn { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--border-default); background: var(--bg-tertiary); color: var(--text-primary); cursor: pointer; font-size: 13px; flex-shrink: 0; }
+    #composer .composer-icon-btn:hover:not(:disabled) { background: var(--bg-hover); }
     #composer .composer-icon-btn:disabled { opacity: 0.35; cursor: not-allowed; }
-    #composer .composer-preview-frame { max-width: 480px; width: 100%; border: 1px solid #e2e8f0; border-radius: 10px; margin-top: 12px; display: block; }
-    #composer .composer-section { margin-top: 28px; padding-top: 20px; border-top: 2px solid #edf2f7; }
-    #composer .composer-section h3 { margin: 0 0 14px; color: #2d3748; }
+    #composer .composer-preview-frame { max-width: 480px; width: 100%; border: 1px solid var(--border-default); border-radius: 10px; margin-top: 12px; display: block; }
+    #composer .composer-section { margin-top: 28px; padding-top: 20px; border-top: 2px solid var(--border-default); }
+    #composer .composer-section h3 { margin: 0 0 14px; color: var(--text-primary); }
 
     /* ── Giai đoạn 2B: canvas kéo thả ──────────────────────────────────────────────────── */
-    #composer .composer-canvas-section { margin: 20px 0 28px; padding-top: 20px; border-top: 2px solid #edf2f7; }
-    #composer .composer-canvas-section h3 { margin: 0 0 10px; color: #2d3748; }
-    #composer .composer-canvas-legend { font-size: 12px; color: #4a5568; margin-bottom: 14px; line-height: 1.6; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px 12px; }
-    #composer .composer-canvas-legend kbd { background: #edf2f7; border: 1px solid #cbd5e0; border-radius: 4px; padding: 0 4px; font-size: 11px; }
+    #composer .composer-canvas-section { margin: 20px 0 28px; padding-top: 20px; border-top: 2px solid var(--border-default); }
+    #composer .composer-canvas-section h3 { margin: 0 0 10px; color: var(--text-primary); }
+    #composer .composer-canvas-legend { font-size: 12px; color: var(--text-secondary); margin-bottom: 14px; line-height: 1.6; background: var(--bg-secondary); border: 1px solid var(--border-default); border-radius: 8px; padding: 10px 12px; }
+    #composer .composer-canvas-legend kbd { background: var(--bg-elevated); border: 1px solid var(--border-default); color: var(--text-primary); border-radius: 4px; padding: 0 4px; font-size: 11px; }
     /* Giai đoạn 3 (polish): ĐỔI từ hàng ngang (canvas | cột xem-thử cạnh nhau, canvas bị ép còn
        ~640px) sang CỘT DỌC — canvas xuống dòng riêng, chiếm trọn bề rộng panel (ưu tiên chiều
        rộng vì đây là thứ người dùng nhìn/kéo thả nhiều nhất); cột "Xem thử 1 khung hình" xuống
@@ -267,7 +267,7 @@
     #composer .composer-canvas-layer.locked { cursor: not-allowed; border-style: dashed; border-color: #fc8181; pointer-events: none; }
     #composer .composer-canvas-layer.blend-fade .composer-canvas-media, #composer .composer-canvas-layer.blend-fade .composer-canvas-img, #composer .composer-canvas-layer.blend-fade .composer-canvas-placeholder { opacity: 0.35; }
     #composer .composer-canvas-layer.approx { border-style: dashed; border-color: #f6ad55; }
-    #composer .composer-canvas-layer.selected { outline: 2px solid #667eea; outline-offset: 1px; z-index: 999 !important; }
+    #composer .composer-canvas-layer.selected { outline: 2px solid #fa6e03; outline-offset: 1px; z-index: 999 !important; }
     #composer .composer-canvas-media { width: 100%; height: 100%; }
     #composer .composer-canvas-img { width: 100%; height: 100%; object-fit: cover; display: block; }
     #composer .composer-canvas-waveform { display: flex; align-items: center; background: #1a202c; color: #fff; }
@@ -285,14 +285,14 @@
        có overflow:hidden để clip nội dung tràn; tay cầm đặt lệch RA NGOÀI mép (số âm) sẽ bị clip
        mất, không bấm được. Bug thật bắt được khi tự kiểm bằng CDP: elementFromPoint tại toạ độ
        tay cầm của lớp full-frame trả về phần tử CHA (ngoài canvas), không phải tay cầm. */
-    #composer .composer-canvas-resize-handle { position: absolute; right: 0; bottom: 0; width: 10px; height: 10px; background: #667eea; border: 1px solid #fff; border-radius: 2px; cursor: nwse-resize; }
+    #composer .composer-canvas-resize-handle { position: absolute; right: 0; bottom: 0; width: 10px; height: 10px; background: #fa6e03; border: 1px solid #fff; border-radius: 2px; cursor: nwse-resize; }
     #composer .composer-canvas-guide-v { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed #48bb78; pointer-events: none; }
     #composer .composer-canvas-guide-h { position: absolute; left: 0; right: 0; height: 0; border-top: 1px dashed #48bb78; pointer-events: none; }
-    #composer .composer-canvas-note { min-height: 16px; font-size: 12px; color: #c05621; margin-top: 8px; }
-    #composer .composer-layer-card.selected { border-color: #667eea; box-shadow: 0 0 0 2px rgba(102,126,234,0.25); }
-    #composer .composer-layer-card.drop-target { border-top: 3px solid #667eea; }
+    #composer .composer-canvas-note { min-height: 16px; font-size: 12px; color: var(--accent-warning); margin-top: 8px; }
+    #composer .composer-layer-card.selected { border-color: #fa6e03; box-shadow: 0 0 0 2px rgba(250,110,3,0.25); }
+    #composer .composer-layer-card.drop-target { border-top: 3px solid #fa6e03; }
     #composer .composer-drag-handle { cursor: grab; }
-    #composer .composer-layer-locknote { margin-top: 10px; font-size: 11px; color: #9c4221; background: #fffaf0; border: 1px solid #fbd38d; border-radius: 6px; padding: 6px 10px; }
+    #composer .composer-layer-locknote { margin-top: 10px; font-size: 11px; color: var(--accent-warning); background: rgba(252, 196, 25, 0.10); border: 1px solid rgba(252, 196, 25, 0.40); border-radius: 6px; padding: 6px 10px; }
 
     /* Giai đoạn 3 (polish): dấu hiệu nhỏ "mới" cạnh nhãn nút tab Composer — phần tử này nằm
        NGOÀI #composer (nó ở trên thanh tab .tabs, trong renderer.html), nên không thể dùng tiền
@@ -300,7 +300,7 @@
        (không đụng lớp có sẵn nào của renderer.html) để tự cách ly, đúng quy tắc "mọi class mới
        phải có tiền tố riêng" của polish này. Cố tình nhạt (không màu chói) và không animation —
        chỉ để dễ nhận ra tab mới, không phải cảnh báo. */
-    .cmp-tab-badge { margin-left: 6px; font-size: 10px; font-weight: 400; color: #a0aec0; vertical-align: super; }
+    .cmp-tab-badge { margin-left: 6px; font-size: 10px; font-weight: 400; color: var(--text-muted); vertical-align: super; }
   `;
 
   function injectStyles() {
@@ -334,7 +334,7 @@
     if (!el) return;
     el.innerHTML = presetNames.length
       ? presetNames.map((n) => `<div class="composer-preset-item${n === currentName ? " active" : ""}" data-name="${esc(n)}">${esc(n)}</div>`).join("")
-      : `<div style="color:#a0aec0;font-size:13px;">Chưa có preset nào.</div>`;
+      : `<div style="color:var(--text-muted);font-size:13px;">Chưa có preset nào.</div>`;
     el.querySelectorAll(".composer-preset-item").forEach((row) => {
       row.addEventListener("click", () => selectPreset(row.dataset.name));
     });
@@ -402,7 +402,7 @@
     <div class="composer-layer-card${selected ? " selected" : ""}" data-layer-index="${index}">
       <div class="composer-layer-head">
         <button type="button" class="composer-icon-btn composer-drag-handle" data-action="layer-drag-handle" data-layer-index="${index}" title="Kéo để đổi thứ tự lớp">⠿</button>
-        <span style="font-weight:700;color:#667eea;white-space:nowrap;">#${index}${index === 0 ? " (dưới cùng)" : index === total - 1 ? " (trên cùng)" : ""}</span>
+        <span style="font-weight:700;color:#fa6e03;white-space:nowrap;">#${index}${index === 0 ? " (dưới cùng)" : index === total - 1 ? " (trên cùng)" : ""}</span>
         <input type="text" data-path="${base}.label" value="${esc(layer.label || "")}" placeholder="Nhãn lớp">
         <button type="button" class="composer-icon-btn" data-action="layer-up" data-layer-index="${index}" title="Di chuyển lên trong danh sách" ${index === 0 ? "disabled" : ""}>▲</button>
         <button type="button" class="composer-icon-btn" data-action="layer-down" data-layer-index="${index}" title="Di chuyển xuống trong danh sách" ${index === total - 1 ? "disabled" : ""}>▼</button>
@@ -485,7 +485,7 @@
     return `
       <div style="margin-top:14px;">
         <label style="display:block;margin-bottom:8px;font-size:12px;">Treatments (áp theo đúng thứ tự khai báo)</label>
-        ${rows || '<div style="color:#a0aec0;font-size:13px;margin-bottom:8px;">Chưa có treatment nào.</div>'}
+        ${rows || '<div style="color:var(--text-muted);font-size:13px;margin-bottom:8px;">Chưa có treatment nào.</div>'}
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">${addButtons}</div>
       </div>`;
   }
@@ -1017,7 +1017,7 @@
             <div id="composer-canvas-note" class="composer-canvas-note">${esc(canvasState.note || "")}</div>
           </div>
           <div class="composer-canvas-col composer-canvas-preview-col">
-            <h4 style="margin:0 0 8px;color:#2d3748;">Xem thử 1 khung hình</h4>
+            <h4 style="margin:0 0 8px;color:var(--text-primary);">Xem thử 1 khung hình</h4>
             <div class="info-box">
               <p><strong>Hai điều KHÔNG phải lỗi khi xem thử:</strong></p>
               <p>1) Ảnh xuất ra không thể hiện tốc độ video (videoSpeed / setpts, atempo) — bước đó chỉ được chèn khi render video thật.</p>
@@ -1050,13 +1050,13 @@
       </div>
 
       <div style="display:flex;justify-content:space-between;align-items:center;margin:10px 0 16px;flex-wrap:wrap;gap:8px;">
-        <span style="font-weight:600;color:#2d3748;">Lớp — xếp theo thứ tự dưới → trên (#0 dưới cùng, cuối cùng trên cùng): ${preset.layers.length}. Kéo tay cầm ⠿ hoặc dùng ▲▼ để đổi thứ tự.</span>
+        <span style="font-weight:600;color:var(--text-primary);">Lớp — xếp theo thứ tự dưới → trên (#0 dưới cùng, cuối cùng trên cùng): ${preset.layers.length}. Kéo tay cầm ⠿ hoặc dùng ▲▼ để đổi thứ tự.</span>
         <button type="button" class="btn btn-secondary" data-action="layer-add">+ Thêm lớp</button>
       </div>
       ${layersHtml}
       <div style="margin-top:10px;">
         <button type="button" class="btn btn-primary" data-action="save">💾 Lưu preset</button>
-        ${dirty ? '<span style="margin-left:10px;color:#c05621;font-size:13px;">● có thay đổi chưa lưu</span>' : ""}
+        ${dirty ? '<span style="margin-left:10px;color:var(--accent-warning);font-size:13px;">● có thay đổi chưa lưu</span>' : ""}
       </div>
 
       <div class="composer-section">
