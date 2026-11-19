@@ -85,7 +85,7 @@ function mkAgent(over = {}) {
   const claimCalls = [];
   const claimRes = over.claim ?? { status: 200, body: { token: ISSUED } };
   const fetchImpl = async (url, init) => {
-    claimCalls.push({ url, body: JSON.parse(init.body) });
+    claimCalls.push({ url, body: JSON.parse(init.body), headers: init.headers });
     const r = typeof claimRes === "function" ? claimRes() : claimRes;
     if (r.throw) throw new Error("ECONNREFUSED");
     return { ok: r.status >= 200 && r.status < 300, status: r.status, json: async () => r.body ?? {} };
@@ -94,6 +94,7 @@ function mkAgent(over = {}) {
   const agent = createMonitorAgent({
     getSettings: () => settings,
     getToken: () => store.token,
+    getAppToken: () => (over.appToken === undefined ? "APP-LOGIN-TOKEN" : over.appToken),
     saveToken: (t) => { store.token = t; store.saved.push(t); },
     getServerUrl: () => over.serverUrl ?? "http://localhost:3000",
     getMachineId: () => "MID1", appVersion: "9.9.9", sessionId: "SESS-1",
@@ -299,5 +300,33 @@ test("agent: heartbeat mang theo danh sách tác vụ đang chạy (để web bi
   agent.start(); await tick(); await welcomeOn(last());
   const st = last().sent.find((m) => m.type === "status");
   assert.deepEqual(st.state.tasks, [{ id: "render.js#1" }]);
+  agent.stop();
+});
+
+// ---------- Claim cần đăng nhập ----------
+test("agent: claim gửi kèm token đăng nhập của app trong header (không nằm trong body/URL)", async () => {
+  const { agent, claimCalls } = mkAgent({ appToken: "APP-LOGIN-TOKEN" });
+  agent.start(); await tick(60);
+  assert.equal(claimCalls.length, 1);
+  assert.equal(claimCalls[0].headers.Authorization, "Bearer APP-LOGIN-TOKEN");
+  assert.ok(!JSON.stringify(claimCalls[0].body).includes("APP-LOGIN-TOKEN"));
+  assert.ok(!claimCalls[0].url.includes("APP-LOGIN-TOKEN"));
+  agent.stop();
+});
+
+test("agent: chưa đăng nhập (không có token app) -> KHÔNG gọi server xin token, báo cần đăng nhập", async () => {
+  const { agent, claimCalls } = mkAgent({ appToken: "" });
+  agent.start(); await tick(60);
+  assert.equal(claimCalls.length, 0, "không gửi yêu cầu vô ích");
+  assert.equal(agent.getStatus().state, "error");
+  assert.match(agent.getStatus().message, /đăng nhập/i);
+  agent.stop();
+});
+
+test("agent: server trả 401 cho claim (phiên đăng nhập hỏng) -> báo hãy đăng nhập lại, không mở socket", async () => {
+  const { agent } = mkAgent({ claim: { status: 401, body: { message: "x" } } });
+  agent.start(); await tick(60);
+  assert.equal(FakeWS.instances.length, 0);
+  assert.match(agent.getStatus().message, /đăng nhập lại/i);
   agent.stop();
 });

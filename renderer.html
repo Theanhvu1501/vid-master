@@ -2230,6 +2230,19 @@ label.with-icon::before {
               <span class="icon">🔄</span>
               <span>Kiểm tra cập nhật</span>
             </button>
+            <div class="settings-divider"></div>
+            <div class="settings-menu-item" id="account-menu-info" style="cursor:default;opacity:.8" aria-live="polite">
+              <span class="icon">👤</span>
+              <span id="account-menu-name">Tài khoản</span>
+            </div>
+            <button
+              class="settings-menu-item delete"
+              id="logout-menu-item"
+              onclick="logoutAccount(); closeSettingsMenu();"
+            >
+              <span class="icon">🚪</span>
+              <span>Đăng xuất</span>
+            </button>
           </div>
         </div>
       </div>

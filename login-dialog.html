@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:" />
+  <title>Đăng nhập - VidMaster</title>
+  <style>
+    :root { --bg:#0b0b0d; --card:#141417; --line:#26262b; --text:#f2f2f4; --muted:#9a9aa3; --accent:#e50914; --accent-h:#ff1f2b; --ok:#22c55e; --err:#ff6b6b; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body { background: var(--bg); color: var(--text); font-family: "Segoe UI", system-ui, sans-serif; display: flex; align-items: center; justify-content: center; padding: 20px; -webkit-app-region: drag; }
+    .card { width: 100%; max-width: 400px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 28px 26px 22px; -webkit-app-region: no-drag; }
+    .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+    .logo { width: 34px; height: 34px; border-radius: 9px; background: var(--accent); display: grid; place-items: center; font-weight: 800; }
+    h1 { font-size: 20px; }
+    .sub { color: var(--muted); font-size: 13px; margin: 6px 0 18px; line-height: 1.45; }
+    label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 6px; }
+    input { width: 100%; background: #0e0e11; color: var(--text); border: 1px solid var(--line); border-radius: 9px; padding: 11px 12px; font-size: 14px; outline: none; }
+    input:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(229,9,20,.25); }
+    .pw { position: relative; }
+    .pw button { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); background: none; border: 0; color: var(--muted); font-size: 12px; padding: 6px 8px; cursor: pointer; border-radius: 6px; }
+    .pw button:hover { color: var(--text); }
+    .pw input { padding-right: 64px; }
+    .msg { min-height: 20px; margin-top: 12px; font-size: 13px; color: var(--err); line-height: 1.4; }
+    .btn { width: 100%; margin-top: 8px; padding: 12px; border-radius: 9px; border: 0; font-size: 14px; font-weight: 600; cursor: pointer; color: #fff; background: var(--accent); }
+    .btn:hover:not(:disabled) { background: var(--accent-h); }
+    .btn:disabled { opacity: .6; cursor: default; }
+    .btn:focus-visible, .link:focus-visible, .copy:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+    .link { background: none; border: 0; color: var(--muted); font-size: 13px; cursor: pointer; margin: 14px auto 0; display: block; padding: 6px 10px; border-radius: 6px; }
+    .link:hover { color: var(--text); }
+    .mid { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+    .mid .t { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+    .mid .row { display: flex; gap: 8px; align-items: stretch; }
+    .mid code { flex: 1; min-width: 0; background: #0e0e11; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: all; }
+    .copy { background: #1c1c21; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 0 12px; font-size: 12px; cursor: pointer; }
+    .copy:hover { border-color: #3a3a42; }
+    .copy.done { color: var(--ok); }
+    .hint { font-size: 12px; color: var(--muted); margin-top: 8px; line-height: 1.45; }
+    @media (prefers-reduced-motion: no-preference) { .btn { transition: background .15s; } }
+  </style>
+</head>
+<body>
+  <main class="card" aria-labelledby="ttl">
+    <div class="brand"><div class="logo" aria-hidden="true">V</div><h1 id="ttl">Đăng nhập VidMaster</h1></div>
+    <p class="sub">Dùng tài khoản do quản trị viên cấp. Máy này phải được gán cho tài khoản của bạn trên web.</p>
+
+    <form id="f" autocomplete="off" novalidate>
+      <label for="u">Tài khoản</label>
+      <input id="u" name="u" type="text" autocomplete="username" spellcheck="false" autofocus />
+      <label for="p">Mật khẩu</label>
+      <div class="pw">
+        <input id="p" name="p" type="password" autocomplete="current-password" />
+        <button type="button" id="eye" aria-label="Hiện mật khẩu" aria-pressed="false">Hiện</button>
+      </div>
+      <div id="msg" class="msg" role="alert" aria-live="assertive"></div>
+      <button class="btn" id="go" type="submit">Đăng nhập</button>
+    </form>
+    <button class="link" id="quit" type="button">Thoát ứng dụng</button>
+
+    <div class="mid">
+      <div class="t">Mã máy (gửi cho quản trị viên để gán vào tài khoản)</div>
+      <div class="row"><code id="mid" title="Mã máy">…</code><button class="copy" id="cp" type="button">Sao chép</button></div>
+      <div class="hint" id="srv"></div>
+    </div>
+  </main>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const f = $("f"), u = $("u"), p = $("p"), msg = $("msg"), go = $("go");
+  let busy = false, lockTimer = null;
+
+  const setMsg = (t, ok) => { msg.textContent = t || ""; msg.style.color = ok ? "var(--ok)" : "var(--err)"; };
+  const setBusy = (b) => { busy = b; go.disabled = b; u.disabled = b; p.disabled = b; go.textContent = b ? "Đang đăng nhập..." : "Đăng nhập"; };
+
+  loginApi.info().then((i) => {
+    $("mid").textContent = i.machineId || "Không lấy được mã máy";
+    if (i.serverHost) $("srv").textContent = "Máy chủ: " + i.serverHost;
+    if (i.lastUser) { u.value = i.lastUser; p.focus(); }
+    if (i.notice) setMsg(i.notice);
+  });
+
+  $("eye").addEventListener("click", () => {
+    const show = p.type === "password";
+    p.type = show ? "text" : "password";
+    $("eye").textContent = show ? "Ẩn" : "Hiện";
+    $("eye").setAttribute("aria-pressed", String(show));
+    $("eye").setAttribute("aria-label", show ? "Ẩn mật khẩu" : "Hiện mật khẩu");
+  });
+
+  $("cp").addEventListener("click", async () => {
+    await loginApi.copy($("mid").textContent);
+    $("cp").textContent = "Đã chép"; $("cp").classList.add("done");
+    setTimeout(() => { $("cp").textContent = "Sao chép"; $("cp").classList.remove("done"); }, 1800);
+  });
+
+  $("quit").addEventListener("click", () => loginApi.quit());
+
+  function lockFor(sec) {
+    clearInterval(lockTimer);
+    let left = Math.max(1, sec | 0);
+    const tick = () => {
+      if (left <= 0) { clearInterval(lockTimer); go.disabled = false; setMsg(""); return; }
+      go.disabled = true; setMsg("Đăng nhập sai quá nhiều lần. Thử lại sau " + Math.ceil(left / 60) + " phút.");
+      left--;
+    };
+    tick(); lockTimer = setInterval(tick, 1000);
+  }
+
+  f.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (busy) return;
+    if (!u.value.trim() || !p.value) return setMsg("Nhập tài khoản và mật khẩu.");
+    setMsg(""); setBusy(true);
+    let r;
+    try { r = await loginApi.submit(u.value.trim(), p.value); } catch { r = { ok: false, message: "Có lỗi xảy ra, thử lại." }; }
+    setBusy(false);
+    if (r.ok) { setMsg("Đăng nhập thành công", true); p.value = ""; return; }
+    p.value = ""; p.focus();
+    if (r.kind === "rate" && r.retryAfter) lockFor(r.retryAfter); else setMsg(r.message);
+  });
+</script>
+</body>
+</html>

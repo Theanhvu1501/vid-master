@@ -251,6 +251,8 @@ export function toHttpBase(input) {
 
 export function createMonitorAgent({
   getSettings, getToken = () => "", saveToken = () => {}, getServerUrl = () => DEFAULT_SERVER_URL,
+  // Token đăng nhập của app (tài khoản + mã máy). Server chỉ cấp token giám sát cho app đã đăng nhập đúng máy này.
+  getAppToken = () => "",
   getMachineId, appVersion = "", collectSnapshot, getState = () => ({}),
   WebSocketImpl = WebSocket, fetchImpl = globalThis.fetch, sessionId = crypto.randomUUID(),
   log = () => {}, onStatus = () => {},
@@ -311,12 +313,15 @@ export function createMonitorAgent({
   // Xin token lần đầu: server chỉ cấp cho máy đã có license còn hiệu lực và chưa từng nhận token.
   async function claim(base) {
     try {
+      const appToken = String(getAppToken() || "");
+      if (!appToken) return { message: "Cần đăng nhập tài khoản để kết nối giám sát", retryMs: authBackoffMs };
       const res = await fetchImpl(`${base}/api/agent/claim`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${appToken}` },
         body: JSON.stringify({ machineId: getMachineId() }), signal: AbortSignal.timeout(10_000),
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && typeof data.token === "string") return { token: data.token };
+      if (res.status === 401) return { message: "Phiên đăng nhập không còn hợp lệ, hãy đăng nhập lại", retryMs: authBackoffMs };
       if (res.status === 404) return { message: "Máy này chưa được cấp license trên web", retryMs: authBackoffMs };
       if (res.status === 403) return { message: "License của máy này đã bị thu hồi", retryMs: authBackoffMs };
       if (res.status === 409) return { message: "Máy này đã từng kết nối. Nhờ quản trị viên bấm “Đặt lại kết nối” trên web", retryMs: authBackoffMs };

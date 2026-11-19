@@ -75,6 +75,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
     removeEventListener: () => ipcRenderer.removeAllListeners("sheet:event"),
     // Giám sát trên web: trạng thái kết nối tới server (chỉ đọc).
     monitorStatus: () => ipcRenderer.invoke("monitor:get-status"),
+    // Tài khoản đang đăng nhập trên máy này
+    accountGet: () => ipcRenderer.invoke("account:get"),
+    accountLogout: () => ipcRenderer.invoke("account:logout"),
     onMonitorStatus: (cb) => ipcRenderer.on("monitor:status", (e, data) => cb(data)),
     gpmTest: (gpmHost) => ipcRenderer.invoke("gpm:test", { gpmHost }),
     gpmListChannels: () => ipcRenderer.invoke("gpm:list-channels"),

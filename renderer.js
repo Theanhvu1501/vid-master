@@ -137,6 +137,21 @@ async function openNewWindow() {
 }
 
 // Kiểm tra cập nhật ứng dụng (thủ công)
+// Tài khoản đăng nhập trên máy này (hiện trong menu cài đặt) + đăng xuất.
+async function loadAccountMenu() {
+  try {
+    const a = await window.electronAPI?.sheet?.accountGet?.();
+    const el = document.getElementById("account-menu-name");
+    if (el && a?.loggedIn) el.textContent = a.displayName || a.username || "Tài khoản";
+    const out = document.getElementById("logout-menu-item");
+    if (out && a && !a.loggedIn) out.style.display = "none";
+  } catch { /* không quan trọng */ }
+}
+async function logoutAccount() {
+  try { await window.electronAPI?.sheet?.accountLogout?.(); } catch { /* ignore */ }
+}
+window.addEventListener("DOMContentLoaded", loadAccountMenu);
+
 async function checkForAppUpdate() {
   if (!checkElectronAPI()) return;
 

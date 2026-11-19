@@ -1,11 +1,12 @@
 import { spawn } from "child_process";
-import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, shell } from "electron";
 import fs from "fs";
 import https from "https";
 import { createRequire } from "module";
 import path from "path";
 import { fileURLToPath } from "url";
-import { checkLicense, getMachineId } from "./license-check.js";
+import { getMachineId } from "./license-check.js";
+import { createSessionManager } from "./app-session.js";
 import pLimit from "p-limit";
 import sharp from "sharp";
 import { createSheetRunner } from "./sheet/sheet-runner.js";
@@ -17,7 +18,7 @@ import { runLogin, runChangeThumb, runSchedule, stopAutomation, resetCancel, for
 import { runDistribute, buildPlan, listVideos } from "./sheet/distribute.js";
 import { runSheetAutomation, previewSheetAutomation } from "./sheet/sheet-automation.js";
 import { runProxyCheck, maskProxy, checkProxy } from "./sheet/proxy-tools.js";
-import { createMonitorAgent, createProxyHealth, buildSnapshot, proxyIdentity, DEFAULT_SERVER_URL } from "./sheet/monitor-agent.js";
+import { createMonitorAgent, createProxyHealth, buildSnapshot, proxyIdentity, toHttpBase, DEFAULT_SERVER_URL } from "./sheet/monitor-agent.js";
 import { createTaskTracker, channelResultEvent, isTrackedTask, lastMeaningfulLine } from "./sheet/task-monitor.js";
 import { readLoginAccounts, readChannelPlans, attachProfileData, countNames } from "./sheet/excel-import.js";
 import { resolveThumbRun, resolveScheduleRun } from "./sheet/run-options.js";
@@ -461,49 +462,85 @@ function showLicenseRevokedDialog(errorMessage) {
 /**
  * Kiểm tra license trước khi mở app
  */
+// ================= Đăng nhập tài khoản (thay cho kiểm tra license chỉ bằng mã máy) =================
+// Vào được app khi: tài khoản + mật khẩu đúng VÀ mã máy này đang được admin gán cho tài khoản đó trên web.
+// Mật khẩu không bao giờ được lưu; chỉ giữ token, mã hóa bằng kho của hệ điều hành (safeStorage).
+const appSessionPath = () => path.join(getConfigDir(), ".app-session.bin");
+const loginHintPath = () => path.join(getConfigDir(), ".app-login-hint.json");
+const appSessionStore = {
+  load() {
+    if (!safeStorage.isEncryptionAvailable()) return null;
+    try { return JSON.parse(safeStorage.decryptString(fs.readFileSync(appSessionPath()))); } catch { return null; }
+  },
+  save(v) {
+    // Không mã hóa được thì KHÔNG lưu (không bao giờ ghi token dạng thô): lần mở sau đăng nhập lại.
+    if (!v || !safeStorage.isEncryptionAvailable()) return false;
+    fs.writeFileSync(appSessionPath(), safeStorage.encryptString(JSON.stringify(v)), { mode: 0o600 });
+    return true;
+  },
+  clear() { try { fs.unlinkSync(appSessionPath()); } catch { /* chưa có */ } },
+};
+const appServerBase = () => toHttpBase(monitorServerUrl());
+const sessionMgr = createSessionManager({ getBase: appServerBase, getMachineId, store: appSessionStore });
+
+const readLoginHint = () => { try { return String(JSON.parse(fs.readFileSync(loginHintPath(), "utf-8")).user || ""); } catch { return ""; } };
+const writeLoginHint = (user) => { try { fs.writeFileSync(loginHintPath(), JSON.stringify({ user }), "utf-8"); } catch { /* không quan trọng */ } };
+
+let loginWin = null, loginNotice = "";
+ipcMain.handle("app-login:info", (e) => {
+  if (!loginWin || e.sender !== loginWin.webContents) return {};
+  let host = ""; try { host = new URL(appServerBase()).host; } catch { /* ignore */ }
+  return { machineId: getMachineId(), serverHost: host, lastUser: readLoginHint(), notice: loginNotice };
+});
+ipcMain.handle("app-login:copy", (e, text) => { if (loginWin && e.sender === loginWin.webContents) clipboard.writeText(String(text).slice(0, 300)); });
+ipcMain.handle("app-login:quit", (e) => { if (loginWin && e.sender === loginWin.webContents) loginWin.close(); });
+
+// Hiện cửa sổ đăng nhập; trả true khi đăng nhập xong, false khi người dùng đóng cửa sổ.
+function showLoginDialog(notice = "") {
+  return new Promise((resolve) => {
+    loginNotice = notice;
+    let done = false;
+    const finish = (ok) => { if (done) return; done = true; resolve(ok); };
+    loginWin = new BrowserWindow({
+      width: 460, height: 640, resizable: false, minimizable: false, maximizable: false, autoHideMenuBar: true,
+      title: "Đăng nhập - VidMaster", icon: path.join(__dirname, "assets/icon.ico"), backgroundColor: "#0b0b0d", show: false,
+      webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, preload: path.join(__dirname, "login-preload.cjs") },
+    });
+    loginWin.setMenuBarVisibility(false);
+    loginWin.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    loginWin.webContents.on("will-navigate", (ev) => ev.preventDefault());
+    loginWin.loadFile("login-dialog.html");
+    loginWin.once("ready-to-show", () => loginWin?.show());
+
+    const handler = async (e, { username, password } = {}) => {
+      if (!loginWin || e.sender !== loginWin.webContents) return { ok: false, message: "Không hợp lệ" };
+      const r = await sessionMgr.login(String(username || ""), String(password || ""));
+      if (r.ok) {
+        writeLoginHint(String(username || "").trim());
+        setTimeout(() => { finish(true); loginWin?.close(); }, 350);
+        return { ok: true };
+      }
+      return { ok: false, kind: r.kind, message: r.message, retryAfter: r.retryAfter };
+    };
+    ipcMain.removeHandler("app-login:submit");
+    ipcMain.handle("app-login:submit", handler);
+    loginWin.on("closed", () => { ipcMain.removeHandler("app-login:submit"); loginWin = null; finish(false); });
+  });
+}
+
+// Mở app: khôi phục phiên đã lưu, hỏi server còn hợp lệ không; không có/không hợp lệ thì bắt đăng nhập.
 async function checkLicenseBeforeStart() {
   try {
-    const licenseResult = await checkLicense();
-
-    if (!licenseResult.registered) {
-      // Nếu có machineId, hiển thị dialog và chặn app
-      if (licenseResult.machineId) {
-        await showUnregisteredDialog(licenseResult.machineId);
-        // Dialog đóng sẽ quit app, không cần return false
-        return false;
-      } else {
-        // Nếu không lấy được machineId, hiển thị lỗi và quit
-        await dialog.showMessageBox(null, {
-          type: "error",
-          title: "Lỗi",
-          message: "Không thể lấy Machine ID",
-          detail: licenseResult.error || "Đã xảy ra lỗi không xác định",
-          buttons: ["OK"],
-        });
-        app.quit();
-        return false;
-      }
-    }
-
-    // Nếu license hợp lệ (từ server hoặc cache), cho phép mở app
-    if (licenseResult.fromCache) {
-      console.log(
-        `⚠️ Đang sử dụng license cache (offline ${licenseResult.cacheAgeDays} ngày). Vui lòng kết nối mạng để cập nhật.`
-      );
-    }
-
+    const r = await sessionMgr.restore();
+    if (r.state === "valid") return true;
+    if (r.state === "offline") { console.log(`⚠️ Không kết nối được server, dùng phiên đã lưu (offline ${r.ageDays} ngày)`); return true; }
+    const notice = r.state === "invalid" || r.state === "need-online" ? r.message : "";
+    const ok = await showLoginDialog(notice);
+    if (!ok) { app.quit(); return false; }
     return true;
   } catch (error) {
-    console.error("Error in license check:", error);
-    // Nếu có lỗi nghiêm trọng, có thể cho phép mở app hoặc chặn
-    // Hiện tại chặn app để đảm bảo an toàn
-    await dialog.showMessageBox(null, {
-      type: "error",
-      title: "Lỗi",
-      message: "Lỗi kiểm tra license",
-      detail: error.message,
-      buttons: ["OK"],
-    });
+    console.error("Error in login check:", error);
+    await dialog.showMessageBox(null, { type: "error", title: "Lỗi", message: "Lỗi kiểm tra đăng nhập", detail: String(error?.message || error), buttons: ["OK"] });
     app.quit();
     return false;
   }
@@ -553,44 +590,28 @@ function createWindow() {
 
 // Biến lưu interval check license
 let licenseCheckInterval = null;
+// Hỏi lại server mỗi giờ: admin gỡ máy / khóa tài khoản / thu hồi license thì có hiệu lực trong vòng 1 giờ.
+const LICENSE_CHECK_INTERVAL = 60 * 60 * 1000;
 
-// Cấu hình thời gian kiểm tra license (có thể thay đổi ở đây)
-// Mặc định: 30 phút = 30 * 60 * 1000 ms
-const LICENSE_CHECK_INTERVAL = 24 * 60 * 60 * 1000; // 24 giờ
-// Để thay đổi thời gian, sửa giá trị trên (ví dụ: 15 * 60 * 1000 = 15 phút)
+async function forceLogout(message) {
+  try { monitorAgent.stop(); } catch { /* ignore */ }
+  sessionMgr.logout();
+  await dialog.showMessageBox(null, { type: "warning", title: "Đã đăng xuất", message: message || "Phiên đăng nhập không còn hợp lệ.", buttons: ["OK"] });
+  app.relaunch();
+  app.quit();
+}
 
-// Kiểm tra license định kỳ
+// Hỏi lại server định kỳ: admin gỡ máy / khóa tài khoản / thu hồi license thì có hiệu lực trong vòng 1 giờ.
 async function checkLicensePeriodically() {
   try {
-    console.log("🔍 Đang kiểm tra license định kỳ...");
-    const licenseResult = await checkLicense();
-
-    if (!licenseResult.registered) {
-      // Chỉ đóng app nếu chắc chắn license bị revoke (không phải lỗi network)
-      // Nếu là lỗi network, checkLicense() đã xử lý cache và có thể trả về registered: true từ cache
-      console.log("❌ License không hợp lệ, đóng ứng dụng...");
-      // Hiển thị dialog đẹp thông báo license bị khóa
-      await showLicenseRevokedDialog(
-        licenseResult.error || "License của bạn đã bị admin khóa hoặc thu hồi."
-      );
-      // app.quit() sẽ được gọi trong showLicenseRevokedDialog
-    } else {
-      if (licenseResult.fromCache) {
-        console.log(
-          `✅ License hợp lệ (từ cache, offline ${licenseResult.cacheAgeDays} ngày)`
-        );
-      } else {
-        console.log("✅ License hợp lệ");
-      }
-    }
+    const r = await sessionMgr.verify();
+    if (r.state === "invalid") await forceLogout(r.message);
+    else if (r.state === "need-online") console.log("⚠️ " + r.message);
   } catch (error) {
-    console.error("Error in periodic license check:", error);
-    // Nếu lỗi network, không đóng app (có thể là mạng tạm thời)
-    // checkLicense() đã xử lý cache, nên không cần làm gì thêm
+    console.error("Error in periodic session check:", error); // lỗi mạng: không đăng xuất oan
   }
 }
 
-// Bắt đầu kiểm tra license định kỳ
 function startPeriodicLicenseCheck() {
   // Dừng interval cũ nếu có
   if (licenseCheckInterval) {
@@ -1466,6 +1487,7 @@ const taskTracker = createTaskTracker({ emit: (m) => monitorAgent?.onTaskEvent(m
 const monitorAgent = createMonitorAgent({
   getSettings: loadSheetSettings,
   getToken: loadMonitorToken,
+  getAppToken: () => sessionMgr.getToken(),
   saveToken: saveMonitorToken,
   getServerUrl: monitorServerUrl,
   getMachineId,
@@ -1932,6 +1954,20 @@ ipcMain.handle("sheet:save-settings", async (e, s) => {
   // Chỉ nối lại khi cấu hình giám sát thật sự đổi: ô nhập tự lưu sau mỗi lần gõ, đổi các ô khác không được làm rớt kết nối.
   if (monitorSettingsKey(before) !== monitorSettingsKey(s)) monitorAgent?.reconfigure();
   return { success: true };
+});
+ipcMain.handle("account:get", () => {
+  const u = sessionMgr.getUser();
+  return { loggedIn: sessionMgr.isLoggedIn(), username: u?.username || "", displayName: u?.displayName || u?.username || "", role: u?.role || "" };
+});
+ipcMain.handle("account:logout", async () => {
+  const w = BrowserWindow.getFocusedWindow() || undefined;
+  const { response } = await dialog.showMessageBox(w, { type: "question", title: "Đăng xuất", message: "Đăng xuất khỏi tài khoản trên máy này?", detail: "Các tác vụ đang chạy sẽ bị dừng và ứng dụng sẽ khởi động lại.", buttons: ["Đăng xuất", "Hủy"], defaultId: 1, cancelId: 1 });
+  if (response !== 0) return { ok: false };
+  try { taskTracker.abortAll(); monitorAgent.stop(); } catch { /* ignore */ }
+  sessionMgr.logout();
+  app.relaunch();
+  app.quit();
+  return { ok: true };
 });
 ipcMain.handle("monitor:get-status", async () => ({ ...(monitorAgent?.getStatus() || { state: "off", message: "Chưa bật" }), machineId: getMachineId() }));
 ipcMain.handle("sheet:select-credentials", async () => {
