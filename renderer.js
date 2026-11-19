@@ -150,11 +150,11 @@ async function checkForAppUpdate() {
     position: fixed;
     top: 20px;
     right: 20px;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background: linear-gradient(135deg, #fa6e03 0%, #e85d04 100%);
     color: white;
     padding: 16px 24px;
     border-radius: 12px;
-    box-shadow: 0 8px 24px rgba(102, 126, 234, 0.4);
+    box-shadow: 0 8px 24px rgba(250, 110, 3, 0.4);
     z-index: 10000;
     font-size: 14px;
     font-weight: 500;
@@ -294,7 +294,7 @@ function showUpdateDialog(type, data) {
     icon.style.display = "block";
     title.textContent = "Đã là phiên bản mới nhất";
     const currentVersion = data.version || "N/A";
-    message.innerHTML = `<strong>Bạn đang sử dụng phiên bản mới nhất!</strong><br><br>Phiên bản hiện tại: <span style="color: #667eea; font-weight: 600;">${currentVersion}</span>`;
+    message.innerHTML = `<strong>Bạn đang sử dụng phiên bản mới nhất!</strong><br><br>Phiên bản hiện tại: <span style="color: #fa6e03; font-weight: 600;">${currentVersion}</span>`;
     releaseNotes.style.display = "none";
     progressContainer.classList.remove("active");
     btnPrimary.textContent = "Tuyệt vời!";
@@ -2269,10 +2269,33 @@ let selectedRenderDualFrameBgPath = null;
 let selectedRenderDualFrameFramePath = null;
 
 // Toggle functions for render options
+// Segmented control: tick radio tương ứng rồi chạy logic hiện/ẩn cũ.
+function selectRenderMode(mode) {
+  const radio = document.querySelector(
+    `input[name="render-mode"][value="${mode}"]`
+  );
+  if (radio) radio.checked = true;
+
+  document
+    .querySelectorAll("#render-mode-segmented .segmented-btn")
+    .forEach((btn) => {
+      btn.classList.toggle("active", btn.getAttribute("data-mode") === mode);
+    });
+
+  toggleRenderMode();
+}
+
 function toggleRenderMode() {
   const mode =
     document.querySelector('input[name="render-mode"]:checked')?.value ||
     "topTransparent";
+
+  // Đồng bộ nút segmented khi mode đổi từ nơi khác (ví dụ load config dự án).
+  document
+    .querySelectorAll("#render-mode-segmented .segmented-btn")
+    .forEach((btn) => {
+      btn.classList.toggle("active", btn.getAttribute("data-mode") === mode);
+    });
 
   // Hide all option groups
   document.getElementById("render-opacity-group").style.display = "none";
@@ -5765,5 +5788,344 @@ async function runConcat() {
   // để tránh một banner lỗi đập vào mặt người dùng mới cài.
   loadSettings().then(() => {
     if ($("sw-spreadsheet-id").value && $("sw-cred-path").value) loadChannelsOnce();
+  });
+})();
+
+// ============================================================================
+// TỰ ĐỘNG HOÁ (GPM + Google Sheet)
+// Mọi chức năng lấy danh sách kênh từ tab ⚙config của Google Sheet, chạy trên các kênh đã tick,
+// rồi ghi trạng thái từng kênh về Sheet. Mỗi chức năng hiện rõ nó ĐỌC và GHI những cột nào.
+// ============================================================================
+
+// Mỗi mục sidebar = một chức năng. `sub` trùng id khối tuỳ chọn (#automation-sub-<sub>).
+const AUTOMATION_TASKS = {
+  login:      { title: "Auto Login", task: "login", api: "login", btn: "▶ Đăng nhập",
+    desc: "Với mỗi kênh đã chọn: mở profile GPM và đăng nhập Gmail vào YouTube Studio (hỗ trợ 2FA và mail khôi phục). Tài khoản lấy từ cột tk của Sheet." },
+  thumb:      { title: "Auto đổi Thumbnail", task: "thumb", api: "changeThumb", btn: "▶ Đổi thumbnail",
+    desc: "Với mỗi kênh: vào Content, lọc video Scheduled, đổi thumbnail theo ảnh trùng tên video, rồi gắn end screen ngẫu nhiên." },
+  schedule:   { title: "Auto Lên lịch", task: "schedule", api: "schedule", btn: "▶ Lên lịch",
+    desc: "Với mỗi kênh: lọc video Draft và đặt lịch lần lượt theo cột Giờ đăng của kênh đó, mỗi ngày một lượt, tính từ ngày kế tiếp." },
+  distribute: { title: "Rải video cho kênh", task: "distribute", api: "distribute", btn: "▶ Rải và đăng", needsPreview: true,
+    desc: "Chia video trong một thư mục cho các kênh đã chọn, tải lên và đặt lịch theo cột Giờ đăng của từng kênh. Nên bấm Xem trước để kiểm tra cách chia." },
+  proxycheck: { title: "Kiểm tra proxy", task: "proxycheck", api: "proxyCheck", btn: "▶ Kiểm tra proxy", noConcurrencyLabel: "Số proxy kiểm tra cùng lúc",
+    desc: "Kiểm tra proxy đang gán trong profile GPM của từng kênh: sống hay chết và IP thoát ra. Mật khẩu proxy không bao giờ hiện." },
+  proxysync:  { title: "Đồng bộ proxy", task: "proxysync", api: "proxySync", btn: "▶ Gán proxy", hideConcurrency: true, confirm: true,
+    desc: "Lấy proxy ở cột Proxy tải (hoặc Proxy profile) của Sheet rồi gán vào profile GPM của từng kênh. Mỗi kênh cần proxy riêng; ô trống thì giữ nguyên proxy hiện có." },
+  addchannel: { title: "Thêm kênh mới", task: "addchannel", api: "addChannel", btn: "▶ Tạo profile và đăng nhập", confirm: true, hideConcurrency: true, usesPreviewNames: true,
+    desc: "Với kênh có cột tk nhưng chưa có GPM Profile ID: tạo profile GPM (Chrome 129), gán proxy, ghi Profile ID về Sheet, mở sẵn YouTube Studio và đăng nhập." },
+};
+let automationCurrent = "login";
+let automationChannels = [];     // [{ sheetName, profileId, groupName, hasAccount, hasProxy, proxyMasked, ...status }]
+let automationTasksInfo = {};    // { task: { reads, writes, missingRequired, creatable, ready } }
+const automationSelected = new Set(); // sheetName đã tick (giữ nguyên khi đổi bộ lọc)
+let automationRunning = false;
+
+const autoVal = (id) => document.getElementById(id)?.value?.trim() || "";
+const autoHost = () => autoVal("automation-gpm-host") || "127.0.0.1:19995";
+
+// ----- Chọn chức năng -----
+function selectAutomationSubTab(sub) {
+  if (!AUTOMATION_TASKS[sub]) sub = "login";
+  automationCurrent = sub;
+  const t = AUTOMATION_TASKS[sub];
+  document.querySelectorAll("#automation .automation-sub").forEach((el) => {
+    el.style.display = el.id === `automation-sub-${sub}` ? "" : "none";
+  });
+  document.getElementById("automation-title").textContent = t.title;
+  document.getElementById("automation-desc").textContent = t.desc;
+  document.getElementById("automation-run-btn").textContent = t.btn;
+  const cw = document.getElementById("automation-concurrency-wrap");
+  if (cw) {
+    cw.style.display = t.hideConcurrency ? "none" : "";
+    cw.querySelector("label").textContent = t.noConcurrencyLabel || "Số kênh chạy cùng lúc";
+  }
+  renderAutomationColumns();
+}
+document.querySelectorAll('.tab-button[data-tab="automation"]').forEach((btn) => {
+  btn.addEventListener("click", () => {
+    selectAutomationSubTab(btn.dataset.sub || "login");
+    if (!automationChannels.length) loadAutomationChannels();
+  });
+});
+
+// ----- Nạp kênh + thông tin cột từ Sheet -----
+async function loadAutomationChannels() {
+  if (!checkElectronAPI()) return;
+  const statusEl = document.getElementById("automation-gpm-status");
+  statusEl.textContent = "⏳ Đang đọc Sheet...";
+  statusEl.style.color = "var(--text-secondary)";
+  try {
+    const r = await window.electronAPI.automation.sheetInfo({ gpmHost: autoHost() });
+    if (!r.success) throw new Error(r.error);
+    automationChannels = r.channels || [];
+    automationTasksInfo = r.tasks || {};
+    const names = new Set(automationChannels.map((c) => c.sheetName));
+    for (const n of [...automationSelected]) if (!names.has(n)) automationSelected.delete(n);
+
+    const sel = document.getElementById("automation-group-filter");
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">Tất cả group GPM</option>' +
+      (r.groups || []).map((g) => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join("");
+    sel.value = (r.groups || []).includes(cur) ? cur : "";
+
+    statusEl.textContent = `✅ ${automationChannels.length} kênh`;
+    statusEl.style.color = "var(--accent-success)";
+    renderAutomationChannels();
+    renderAutomationColumns();
+  } catch (error) {
+    statusEl.textContent = `❌ ${getErrorMessage(error)}`;
+    statusEl.style.color = "var(--accent-danger)";
+  }
+}
+
+function getFilteredAutomationChannels() {
+  const group = autoVal("automation-group-filter");
+  const q = autoVal("automation-profile-search").toLowerCase();
+  return automationChannels.filter((c) => (!group || c.groupName === group) && (!q || c.sheetName.toLowerCase().includes(q)));
+}
+
+function renderAutomationChannels() {
+  const list = document.getElementById("automation-profile-list");
+  if (!list) return;
+  const shown = getFilteredAutomationChannels();
+  const badge = (c) => !c.profileId ? " 🆕" : !c.profileFound ? " ⚠" : "";
+  const tip = (c) => !c.profileId ? "Chưa có GPM Profile ID (kênh mới)" : !c.profileFound ? "Profile ID không có trong GPM" : (c.proxyMasked || "Chưa có proxy");
+  list.innerHTML = shown.length
+    ? shown.map((c) => `
+        <label class="auto-profile-item">
+          <input type="checkbox" data-name="${escapeHtml(c.sheetName)}" ${automationSelected.has(c.sheetName) ? "checked" : ""} />
+          <span title="${escapeHtml(tip(c))}">${escapeHtml(c.sheetName)}${badge(c)}</span>
+          <span class="grp">${escapeHtml(c.groupName || "")}</span>
+        </label>`).join("")
+    : '<div style="padding:12px;color:var(--text-muted);font-size:12px;">Không có kênh nào.</div>';
+  list.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+    cb.addEventListener("change", () => {
+      cb.checked ? automationSelected.add(cb.dataset.name) : automationSelected.delete(cb.dataset.name);
+      updateAutomationSelectionUi();
+    });
+  });
+  updateAutomationSelectionUi();
+}
+
+function updateAutomationSelectionUi() {
+  const shown = getFilteredAutomationChannels();
+  const countEl = document.getElementById("automation-selected-count");
+  if (countEl) countEl.textContent = String(automationSelected.size);
+  const all = document.getElementById("automation-select-all");
+  if (all) all.checked = shown.length > 0 && shown.every((c) => automationSelected.has(c.sheetName));
+}
+
+function toggleAutomationSelectAll(checked) {
+  for (const c of getFilteredAutomationChannels()) checked ? automationSelected.add(c.sheetName) : automationSelected.delete(c.sheetName);
+  renderAutomationChannels();
+}
+
+// ----- Khung "chức năng này đọc/ghi cột nào" -----
+function renderAutomationColumns() {
+  const box = document.getElementById("automation-columns");
+  const actions = document.getElementById("automation-columns-actions");
+  if (!box || !actions) return;
+  const info = automationTasksInfo[AUTOMATION_TASKS[automationCurrent].task];
+  if (!info) {
+    box.innerHTML = '<span style="color:var(--text-muted)">Chưa đọc được Sheet — kiểm tra cấu hình ở tab Theo dõi Sheet rồi bấm 🔄.</span>';
+    actions.innerHTML = "";
+    return;
+  }
+  const chip = (c) => {
+    const color = c.present ? "var(--accent-success)" : c.required ? "var(--accent-danger)" : "var(--text-muted)";
+    const mark = c.present ? "✓" : c.required ? "✗ thiếu" : "(tuỳ chọn, chưa có)";
+    return `<span style="display:inline-block;margin:0 8px 0 0;color:${color};">${escapeHtml(c.label)} <small style="display:inline;margin:0;">${mark}</small></span>`;
+  };
+  const row = (title, cols) => `<div><strong style="color:var(--text-secondary);display:inline-block;min-width:72px;">${title}</strong>${cols.length ? cols.map(chip).join("") : '<span style="color:var(--text-muted)">—</span>'}</div>`;
+  box.innerHTML = row("Đọc từ", info.reads) + row("Ghi vào", info.writes);
+  actions.innerHTML = info.creatable.length
+    ? `<button class="btn btn-secondary" style="padding:4px 12px;" onclick="createAutomationColumns()">➕ Tạo cột còn thiếu (${info.creatable.map(escapeHtml).join(", ")})</button>`
+    : "";
+}
+
+async function createAutomationColumns() {
+  if (!checkElectronAPI() || automationRunning) return;
+  const t = AUTOMATION_TASKS[automationCurrent];
+  const info = automationTasksInfo[t.task];
+  if (!info?.creatable.length) return;
+  if (!confirm(`Thêm ${info.creatable.length} cột vào CUỐI dòng tiêu đề của tab ⚙config:\n• ${info.creatable.join("\n• ")}\n\nKhông xoá hay sửa cột nào đang có. Tiếp tục?`)) return;
+  const r = await window.electronAPI.automation.createColumns({ gpmHost: autoHost(), task: t.task });
+  if (!r.success) { alert(`Không tạo được cột: ${r.error}`); return; }
+  await loadAutomationChannels();
+}
+
+// ----- Chọn file / thư mục -----
+async function pickAutomationFile(inputId) {
+  if (!checkElectronAPI()) return;
+  const file = await window.electronAPI.selectFile({ filters: [{ name: "Excel", extensions: ["xlsx", "xls"] }] });
+  if (file) document.getElementById(inputId).value = file;
+}
+async function pickAutomationFolder(inputId) {
+  if (!checkElectronAPI()) return;
+  const dir = await window.electronAPI.selectFolder();
+  if (dir) document.getElementById(inputId).value = dir;
+}
+function clearAutomationField(inputId) { document.getElementById(inputId).value = ""; }
+
+// ----- Log / trạng thái chạy -----
+function showAutomationOutput(message) {
+  const out = document.getElementById("automation-output");
+  if (!out) return;
+  out.style.display = "block";
+  out.textContent += message + "\n";
+  out.scrollTop = out.scrollHeight;
+}
+function clearAutomationOutput() {
+  const out = document.getElementById("automation-output");
+  if (out) { out.textContent = ""; out.style.display = "block"; }
+}
+function setAutomationRunning(running) {
+  automationRunning = running;
+  document.querySelectorAll("#automation [data-auto-run]").forEach((b) => { b.disabled = running; });
+  document.querySelectorAll("#automation [data-auto-stop]").forEach((b) => { b.style.display = running ? "" : "none"; });
+}
+
+// ----- Gom tuỳ chọn của chức năng hiện tại -----
+function getAutomationOptions() {
+  const t = AUTOMATION_TASKS[automationCurrent];
+  const o = { task: t.task, gpmHost: autoHost(), names: [...automationSelected] };
+  if (!t.hideConcurrency) o.concurrency = parseInt(autoVal("automation-concurrency"), 10) || 1;
+  if (automationCurrent === "thumb") {
+    o.thumbFolder = autoVal("automation-thumb-folder") || undefined;
+    o.numVideos = parseInt(autoVal("automation-thumb-num"), 10) || 8;
+    o.linksFile = autoVal("automation-thumb-links") || undefined;
+  } else if (automationCurrent === "schedule") {
+    o.numDays = parseInt(autoVal("automation-sch-days"), 10) || 1;
+    o.startDate = autoVal("automation-sch-start") || undefined;
+  } else if (automationCurrent === "distribute") {
+    o.videoFolder = autoVal("automation-dist-videos");
+    o.thumbFolder = autoVal("automation-dist-thumbs") || undefined;
+    o.mode = autoVal("automation-dist-mode") || "roundrobin";
+    o.perChannel = parseInt(autoVal("automation-dist-per"), 10) || 1;
+  } else if (automationCurrent === "addchannel") {
+    o.defaultVersion = autoVal("automation-ac-version") || "129";
+    o.selectedNames = [...automationSelected];
+    o.doLogin = !!document.getElementById("automation-ac-login")?.checked;
+  }
+  return o;
+}
+
+function checkAutomationInputs() {
+  const t = AUTOMATION_TASKS[automationCurrent];
+  const info = automationTasksInfo[t.task];
+  if (info && !info.ready) return `Sheet thiếu cột bắt buộc: ${info.missingRequired.join(", ")}. Bấm "Tạo cột còn thiếu" hoặc tự thêm vào dòng tiêu đề.`;
+  if (automationSelected.size === 0 && automationCurrent !== "addchannel") return "Hãy tick chọn ít nhất 1 kênh ở thanh bên trái.";
+  if (automationCurrent === "distribute" && !autoVal("automation-dist-videos")) return "Hãy chọn thư mục video.";
+  return "";
+}
+
+// ----- Xem trước (không mở trình duyệt, không ghi gì) -----
+async function previewAutomation() {
+  if (!checkElectronAPI() || automationRunning) return;
+  const err = checkAutomationInputs();
+  if (err) { alert(err); return; }
+  clearAutomationOutput();
+  setAutomationRunning(true);
+  try {
+    const r = await window.electronAPI.automation.preview(getAutomationOptions());
+    if (!r.success) { showAutomationOutput(`❌ ${r.error}`); return; }
+    showAutomationOutput("👁 XEM TRƯỚC (chưa chạy gì)\n");
+    if (r.kind === "addchannel") {
+      const label = { create: "TẠO MỚI", reuse: "DÙNG LẠI", skip: "BỎ QUA", error: "LỖI" };
+      for (const p of r.plan) {
+        showAutomationOutput(`[${label[p.action] || p.action}] ${p.sheetName} (dòng ${p.rowIndex})${p.note ? " — " + p.note : ""}${p.proxyMasked ? " · proxy " + p.proxyMasked : p.action === "create" ? " · không có proxy" : ""}`);
+      }
+      const n = (a) => r.plan.filter((p) => p.action === a).length;
+      showAutomationOutput(`\nTạo mới ${n("create")}, dùng lại ${n("reuse")}, bỏ qua ${n("skip")}, lỗi ${n("error")}.`);
+      return;
+    }
+    if (r.kind === "distribute") {
+      let total = 0;
+      for (const c of r.plan.channels) {
+        showAutomationOutput(`■ ${c.name}: ${c.items.length} video`);
+        for (const it of c.items) {
+          total++;
+          showAutomationOutput(`   ${it.scheduleISO.replace("T", " ").slice(0, 16)}  ${it.title}${it.hasThumb ? "" : "  (không có thumbnail)"}`);
+        }
+      }
+      showAutomationOutput(`\nTổng ${total} video${r.plan.leftover ? `, ${r.plan.leftover} video dư không đăng lượt này` : ""}.`);
+    } else {
+      showAutomationOutput(`Sẽ chạy ${r.ready.length} kênh: ${r.ready.join(", ") || "(không có)"}`);
+    }
+    for (const s of r.skipped || []) showAutomationOutput(`⏭ ${s.name}: ${s.reason}`);
+  } catch (error) {
+    showAutomationOutput(`❌ ${getErrorMessage(error)}`);
+  } finally {
+    setAutomationRunning(false);
+  }
+}
+
+// ----- Chạy -----
+async function runAutomation() {
+  if (!checkElectronAPI() || automationRunning) return;
+  const t = AUTOMATION_TASKS[automationCurrent];
+  const err = checkAutomationInputs();
+  if (err) { alert(err); return; }
+  const o = getAutomationOptions();
+
+  const warn = {
+    distribute: `Sẽ mở ${automationSelected.size} kênh và ĐĂNG video thật lên YouTube theo lịch.\nBạn đã bấm "Xem trước" để kiểm tra cách chia chưa? Tiếp tục chạy?`,
+    proxysync: `Gán proxy từ Sheet vào ${automationSelected.size} profile GPM, ghi đè proxy hiện tại. Tiếp tục?`,
+    addchannel: `Sẽ TẠO PROFILE MỚI trong GPM${o.doLogin ? " và đăng nhập tài khoản Google" : ""} cho các kênh mới trong Sheet.\nBạn đã bấm "Xem trước" chưa? Tiếp tục chạy?`,
+  }[automationCurrent];
+  if (warn && !confirm(warn)) return;
+
+  clearAutomationOutput();
+  window.electronAPI.automation.removeLogListener();
+  window.electronAPI.automation.onLog((payload) => showAutomationOutput(typeof payload === "string" ? payload : payload.msg));
+  setAutomationRunning(true);
+  showAutomationOutput(`🚀 ${t.title}\n`);
+  try {
+    const r = await window.electronAPI.automation[t.api](o);
+    showAutomationOutput(r.success ? `\n✅ ${r.message || "Hoàn tất"}` : `\n❌ ${r.error || "Có lỗi xảy ra"}`);
+  } catch (error) {
+    showAutomationOutput(`\n❌ ${getErrorMessage(error)}`);
+  } finally {
+    setAutomationRunning(false);
+    loadAutomationChannels(); // làm mới Profile ID / trạng thái vừa được ghi vào Sheet
+  }
+}
+
+async function stopAutomationRun() {
+  if (!checkElectronAPI()) return;
+  await window.electronAPI.automation.stop();
+  showAutomationOutput("⏹ Đã yêu cầu dừng — các kênh đang chạy sẽ dừng ở bước kế tiếp.");
+}
+
+// ============================================================================
+// MENU TRÁI: gập/mở từng nhóm lớn. Trạng thái được nhớ giữa các lần mở app.
+// Chỉ thêm lớp hiển thị, không đụng vào nút tab hay logic chuyển tab.
+// ============================================================================
+(function setupMenuCollapse() {
+  const KEY_COLLAPSED = "vidmaster.menu.collapsed";
+  // localStorage có thể bị chặn hoặc hỏng: luôn bọc try/catch, hỏng thì menu vẫn chạy bình thường.
+  const load = (k, fallback) => { try { const v = localStorage.getItem(k); return v == null ? fallback : JSON.parse(v); } catch { return fallback; } };
+  const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* bỏ qua */ } };
+
+  const groups = [...document.querySelectorAll(".tab-group[data-group]")];
+  if (!groups.length) return;
+
+  const saved = load(KEY_COLLAPSED, []);
+  const collapsed = new Set(Array.isArray(saved) ? saved : []);
+
+  function applyGroup(g) {
+    const isCollapsed = collapsed.has(g.dataset.group);
+    g.classList.toggle("collapsed", isCollapsed);
+    g.querySelector(".tab-group-title")?.setAttribute("aria-expanded", String(!isCollapsed));
+  }
+
+  groups.forEach((g) => {
+    applyGroup(g);
+    g.querySelector(".tab-group-title")?.addEventListener("click", () => {
+      const id = g.dataset.group;
+      collapsed.has(id) ? collapsed.delete(id) : collapsed.add(id);
+      applyGroup(g);
+      save(KEY_COLLAPSED, [...collapsed]);
+    });
   });
 })();

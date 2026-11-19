@@ -12,11 +12,17 @@ function pad(n) {
 
 // "8:00" | "08:00" -> "08:00"; không hợp lệ -> null
 function normalizeTime(t) {
-  const m = String(t ?? "").trim().match(/^(\d{1,2}):(\d{2})$/);
+  const m = String(t ?? "").trim().match(/^(\d{1,2}):(\d{2})(?:\s*([AaPp][Mm]))?$/);
   if (!m) return null;
-  const h = Number(m[1]);
+  let h = Number(m[1]);
   const min = Number(m[2]);
-  if (h > 23 || min > 59) return null;
+  if (min > 59) return null;
+  if (m[3]) {
+    if (h < 1 || h > 12) return null; // 12 giờ: chỉ 1..12
+    h = (h % 12) + (/p/i.test(m[3]) ? 12 : 0);
+  } else if (h > 23) {
+    return null;
+  }
   return `${pad(h)}:${pad(min)}`;
 }
 
@@ -39,14 +45,28 @@ export function parseScheduledISO(statusText) {
   return `${m[3]}-${m[2]}-${m[1]}T${m[4]}:${m[5]}:00`;
 }
 
+// Tách ô "Giờ đăng": nhận "8:00, 18:30" hoặc "8:00 AM; 6:30 PM". Trả cả giờ hợp lệ lẫn các mục
+// KHÔNG đọc được, để chỗ gọi báo lỗi thay vì im lặng bỏ giờ sai.
+export function splitPostTimes(raw) {
+  const tokens = Array.isArray(raw)
+    ? raw.map((x) => String(x ?? "").trim())
+    : String(raw ?? "").split(/[,;]/).map((x) => x.trim());
+  const times = [], invalid = [];
+  for (const t of tokens.filter(Boolean)) {
+    const n = normalizeTime(t);
+    if (n) times.push(n); else invalid.push(t);
+  }
+  return { times, invalid };
+}
+
 export function parsePostTimes(raw) {
-  if (Array.isArray(raw)) return raw.map(normalizeTime).filter(Boolean);
-  return String(raw ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map(normalizeTime)
-    .filter(Boolean);
+  return splitPostTimes(raw).times;
+}
+
+// "08:00" -> "8:00 AM", "18:30" -> "6:30 PM" (dạng ô giờ của YouTube Studio bản tiếng Anh).
+export function toStudioTime(hhmm) {
+  const [h, m] = String(hhmm).split(":").map(Number);
+  return `${h % 12 || 12}:${pad(m)} ${h >= 12 ? "PM" : "AM"}`;
 }
 
 // "YYYY-MM-DDTHH:MM:00" theo giờ local

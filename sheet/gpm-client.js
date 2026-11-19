@@ -1,4 +1,5 @@
 import { chromium } from "playwright-core";
+import { normalizeProxy } from "./proxy.js";
 
 // Map profileId -> { browser } để đóng phiên cũ trước khi mở lại (tránh khoá profile).
 const openedBrowsers = new Map();
@@ -109,6 +110,91 @@ export async function testGpmConnection(gpmHost, deps = {}) {
 }
 
 const toProfiles = (list) => list.map((p) => ({ id: p.id, name: p.name || p.id }));
+
+// Lấy danh sách groups từ GPM
+export async function listGpmGroups(gpmHost, deps = {}) {
+  const fetchFn = deps.fetch || globalThis.fetch;
+  try {
+    // Thử v3 trước
+    let res = await fetchFn(`http://${gpmHost}/api/v3/groups`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success && Array.isArray(data.data)) {
+        return data.data.map(g => ({ id: g.id, name: g.name }));
+      }
+    }
+    // Thử v1
+    res = await fetchFn(`http://${gpmHost}/api/v1/groups`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success && Array.isArray(data.data?.data)) {
+        return data.data.data.map(g => ({ id: g.id, name: g.name }));
+      }
+    }
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+// Lấy danh sách profiles đầy đủ (có group_id)
+const toFullProfile = (p) => ({
+  id: p.id,
+  name: p.name || p.id,
+  groupId: p.group_id,
+  note: p.note || "",
+  rawProxy: p.raw_proxy || "",
+  browserVersion: p.browser_version || p.browser?.version || "",
+  createdAt: p.created_at,
+});
+
+// Lấy TOÀN BỘ profile. Lỗi giữa chừng thì ném lỗi, KHÔNG trả danh sách thiếu: caller như
+// "Thêm kênh mới" dùng danh sách này để biết profile nào đã tồn tại, thiếu một trang là tạo trùng.
+export async function listGpmProfilesFull(gpmHost, deps = {}) {
+  const fetchFn = deps.fetch || globalThis.fetch;
+  const { version } = await detectVersion(gpmHost, fetchFn);
+
+  const pageSize = 100;
+  const MAX_PAGES = 200; // chốt chặn: GPM bỏ qua tham số trang thì không lặp vô hạn
+  const seen = new Set();
+  const all = [];
+  let page = version === "v1" ? 1 : 0;
+
+  for (let n = 0; n < MAX_PAGES; n++, page++) {
+    const url = version === "v1"
+      ? `http://${gpmHost}/api/v1/profiles?page=${page}&page_size=${pageSize}`
+      : `http://${gpmHost}/api/v3/profiles?page=${page}&per_page=${pageSize}`;
+
+    const res = await fetchFn(url);
+    if (!res.ok) throw new Error(`GPM HTTP ${res.status} khi đọc danh sách profile (trang ${n + 1})`);
+    const data = await res.json();
+    if (data?.success === false) throw new Error(`GPM lỗi khi đọc danh sách profile: ${data.message || "không rõ"}`);
+
+    const list = ADAPTERS[version].pickList(data);
+    const fresh = list.filter((p) => !seen.has(p.id));
+    if (list.length && !fresh.length) break; // trang lặp lại -> GPM không phân trang, dừng
+    for (const p of fresh) { seen.add(p.id); all.push(toFullProfile(p)); }
+    if (list.length < pageSize) break;
+  }
+  return all;
+}
+
+// Đọc đúng MỘT profile. GPM v3 có GET /profiles/{id}; phiên bản khác thì quay về quét danh sách.
+export async function getGpmProfile(gpmHost, profileId, deps = {}) {
+  const fetchFn = deps.fetch || globalThis.fetch;
+  const version = await versionFor(gpmHost, fetchFn);
+  {
+    try {
+      const res = await fetchFn(`http://${gpmHost}/api/${version}/profiles/${profileId}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.success && data.data?.id === profileId) return toFullProfile(data.data);
+        if (data?.message === "PROFILE_NOT_FOUND") return null;
+      }
+    } catch { /* rơi xuống quét danh sách */ }
+  }
+  return (await listGpmProfilesFull(gpmHost, deps)).find((p) => p.id === profileId) || null;
+}
 
 // Version đã chốt cho host, để UI hiện ra — nhiều máy mỗi máy một bản GPM, nhìn
 // phát biết ngay. undefined khi chưa dò chắc chắn (máy chưa có profile nào).
@@ -228,4 +314,89 @@ export async function connectProfile(gpmHost, profileId, deps = {}) {
   const ctx = browser.contexts()[0] ?? (await browser.newContext());
   const page = ctx.pages()[0] ?? (await ctx.newPage());
   return { browser, page };
+}
+
+// Đặt (hoặc xoá, rawProxy="") proxy của một profile. GPM có thể trả success mà không đổi gì
+// (sai tên trường / khác phiên bản API) nên luôn ĐỌC LẠI để xác nhận trước khi báo thành công.
+export async function updateGpmProfileProxy(gpmHost, profileId, rawProxy, deps = {}) {
+  const fetchFn = deps.fetch || globalThis.fetch;
+  const version = await versionFor(gpmHost, fetchFn);
+  const res = await fetchFn(`http://${gpmHost}/api/${version}/profiles/update/${profileId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ raw_proxy: rawProxy }),
+  });
+  if (!res.ok) { forgetVersionOn404(gpmHost, res.status); throw new Error(`GPM HTTP ${res.status}`); }
+  const data = await res.json().catch(() => null);
+  if (!data || data.success === false) throw new Error(`GPM từ chối: ${data?.message || "phản hồi không hợp lệ"}`);
+
+  const after = await getGpmProfile(gpmHost, profileId, deps);
+  if (!after) throw new Error("không đọc lại được profile sau khi cập nhật");
+  const canon = (s) => { const t = String(s ?? "").trim(); if (!t) return ""; try { return normalizeProxy(t); } catch { return t; } };
+  if (canon(after.rawProxy) !== canon(rawProxy)) {
+    throw new Error("GPM báo thành công nhưng proxy chưa đổi (có thể API cập nhật của bản GPM này khác)");
+  }
+  return { ok: true };
+}
+
+// Tạo profile Chrome mới. Gửi các trường tối thiểu, phần còn lại (vân tay, WebRTC...) để GPM tự
+// đặt mặc định. Không tin phản hồi "success": đọc lại profile và kiểm tra ĐÚNG phiên bản + proxy,
+// vì API tạo profile của GPM có thể khác giữa các bản.
+// Body tạo profile khác nhau giữa các bản GPM.
+//  - v1 (GPM mới, cổng 9495): đúng theo https://api-docs.gpmloginapp.com/#profiles-create —
+//    chỉ `name` là bắt buộc, browser_type 1 = Chrome, các trường còn lại bỏ trống thì GPM tự random.
+//  - v3 (GPM cũ, cổng 19995): tài liệu chỉ mô tả v1 nên dạng body v3 được dò thực tế. createGpmProfile
+//    luôn đọc lại profile để xác nhận phiên bản + proxy.
+export function buildCreateBody(version, { name, rawProxy = "", browserVersion, startupUrl }) {
+  if (version === "v1") {
+    return {
+      name,
+      raw_proxy: rawProxy || "",
+      browser_type: 1,
+      browser_version: browserVersion,
+      startup_urls: startupUrl,
+    };
+  }
+  // v3 ĐÃ THỬ THẬT trên GPM 19995: gửi browser_version của bản chưa cài (vd 129.0.6668.59) thì GPM
+  // báo "Object reference not set..." và không tạo gì; bỏ trống thì dùng bản Chrome đã cài sẵn
+  // (129.0.6533.73). Vì vậy v3 KHÔNG gửi phiên bản — createGpmProfile kiểm tra bản chính sau khi tạo.
+  return {
+    profile_name: name,
+    group_name: "All",
+    raw_proxy: rawProxy,
+    startup_urls: startupUrl,
+  };
+}
+
+export async function createGpmProfile(gpmHost, { name, rawProxy = "", browserVersion, startupUrl = "https://studio.youtube.com" }, deps = {}) {
+  const fetchFn = deps.fetch || globalThis.fetch;
+  if (!name) throw new Error("Thiếu tên profile");
+  if (!browserVersion) throw new Error("Thiếu phiên bản Chrome");
+  const version = await versionFor(gpmHost, fetchFn);
+  const res = await fetchFn(`http://${gpmHost}/api/${version}/profiles/create`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(buildCreateBody(version, { name, rawProxy, browserVersion, startupUrl })),
+  });
+  if (!res.ok) { forgetVersionOn404(gpmHost, res.status); throw new Error(`GPM HTTP ${res.status}`); }
+  const data = await res.json().catch(() => null);
+  if (!data || data.success === false) throw new Error(`GPM từ chối tạo profile: ${data?.message || "phản hồi không hợp lệ"}`);
+
+  const returnedId = data?.data?.id || data?.data?.profile_id || "";
+  const all = await listGpmProfilesFull(gpmHost, deps);
+  const after = returnedId ? all.find((p) => p.id === returnedId) : all.filter((p) => p.name === name).slice(-1)[0];
+  if (!after) throw new Error("GPM báo tạo xong nhưng không thấy profile trong danh sách");
+
+  const tag = `profile ${after.id} (${after.name})`;
+  // v1 gửi đúng phiên bản nên so khớp tuyệt đối; v3 dùng bản đã cài nên chỉ so bản chính (129).
+  const major = String(browserVersion).split(".")[0];
+  const versionOk = version === "v1" ? after.browserVersion === browserVersion : String(after.browserVersion).startsWith(`${major}.`);
+  if (!versionOk) {
+    throw new Error(`${tag} được tạo với Chrome ${after.browserVersion || "?"}, không phải ${version === "v1" ? browserVersion : "Chrome " + major} — hãy xoá profile này trong GPM, hoặc cài đúng bản Chrome trong GPM rồi chạy lại`);
+  }
+  if (rawProxy) {
+    const canon = (x) => { try { return normalizeProxy(x); } catch { return String(x ?? "").trim(); } };
+    if (canon(after.rawProxy) !== canon(rawProxy)) throw new Error(`${tag} được tạo nhưng proxy chưa được gán — hãy xoá profile này trong GPM`);
+  }
+  return { id: after.id };
 }

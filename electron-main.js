@@ -9,10 +9,15 @@ import { checkLicense } from "./license-check.js";
 import pLimit from "p-limit";
 import sharp from "sharp";
 import { createSheetRunner } from "./sheet/sheet-runner.js";
-import { createSheetsClient, readConfigSheet, readConfigValues, parseConfigRows, findStatsColumns, STATS_KEYS, writeChannelStats, appendUrls, readChannelUrls, setUrlStatus, setUploadStatus, readUploadStatuses, testSheetConnection } from "./sheet/sheets-service.js";
+import { createSheetsClient, readConfigSheet, readConfigValues, writeConfigCell, ensureGridColumns, parseConfigRows, findStatsColumns, STATS_KEYS, writeChannelStats, appendUrls, readChannelUrls, setUrlStatus, setUploadStatus, readUploadStatuses, testSheetConnection } from "./sheet/sheets-service.js";
 import { createYoutubeClient, fetchChannelStats, fetchSourceVideos, pickNewUrls, DEFAULT_YT_API_KEY } from "./sheet/youtube-api.js";
 import { parseScheduledISO, formatStamp } from "./sheet/schedule-slots.js";
-import { testGpmConnection, connectAndOpenStudio, connectProfile, getGpmApiVersion } from "./sheet/gpm-client.js";
+import { testGpmConnection, connectAndOpenStudio, connectProfile, getGpmApiVersion, listGpmGroups, listGpmProfilesFull, createGpmProfile, updateGpmProfileProxy } from "./sheet/gpm-client.js";
+import { runLogin, runChangeThumb, runSchedule, stopAutomation, resetCancel, forEachProfile, loginOne, checkCancelled } from "./sheet/youtube-automation.js";
+import { runDistribute, buildPlan, listVideos } from "./sheet/distribute.js";
+import { runAddChannels, previewAddChannels } from "./sheet/add-channel.js";
+import { runProxyCheck, runProxySync } from "./sheet/proxy-tools.js";
+import { runSheetTask, loadTask, readChannelRows, describeTask, createMissingColumns, listChannelsForUi, TASKS } from "./sheet/channel-sheet.js";
 import { createUploadQueue } from "./sheet/upload-queue.js";
 import { sendTelegram, sendTelegramPhoto, buildDigest, buildChannelReport, parseTopicId } from "./sheet/telegram-notify.js";
 import { renderOne, resolveFfmpegPaths } from "./sheet/render-core.js";
@@ -1991,6 +1996,128 @@ ipcMain.handle("gpm:connect", async (e, { gpmHost, profileId } = {}) => {
     return { ok: false, error: String(err?.message || err) };
   }
 });
+
+ipcMain.handle("gpm:list-groups", async (e, { gpmHost } = {}) => {
+  try {
+    const host = (gpmHost || "").trim() || "127.0.0.1:19995";
+    const groups = await listGpmGroups(host);
+    return { ok: true, groups };
+  } catch (err) {
+    return { ok: false, error: String(err?.message || err) };
+  }
+});
+
+ipcMain.handle("gpm:list-profiles-full", async (e, { gpmHost } = {}) => {
+  try {
+    const host = (gpmHost || "").trim() || "127.0.0.1:19995";
+    const profiles = (await listGpmProfilesFull(host)).map(({ rawProxy, ...p }) => ({ ...p, proxyMasked: maskProxy(rawProxy), hasProxy: !!rawProxy }));
+    const groups = await listGpmGroups(host);
+    return { ok: true, profiles, groups };
+  } catch (err) {
+    return { ok: false, error: String(err?.message || err) };
+  }
+});
+
+// ============================================================================
+// YouTube Automation IPC Handlers (Auto Login, Auto Thumb, Auto Schedule)
+// ============================================================================
+
+// ============================================================================
+// Mọi chức năng automation đọc kênh từ tab ⚙config của Google Sheet (nguồn duy nhất) và ghi
+// trạng thái về đó. Log đẩy về renderer qua "automation:log".
+// ============================================================================
+const SHEET_TAB = "⚙config";
+
+function sheetDeps(gpmHost) {
+  const host = (gpmHost || "").trim() || "127.0.0.1:19995";
+  const st = loadSheetSettings();
+  if (!st.spreadsheetId) throw new Error("Chưa nhập Spreadsheet ID (tab Theo dõi Sheet → ⚙).");
+  if (!st.credentialsPath) throw new Error("Chưa chọn file service account JSON (tab Theo dõi Sheet → ⚙).");
+  const sheets = createSheetsClient(st.credentialsPath);
+  return {
+    host, channelsRoot: st.channelsRoot || "",
+    readValues: () => readConfigValues(sheets, st.spreadsheetId, SHEET_TAB),
+    listProfiles: () => listGpmProfilesFull(host),
+    createProfile: (a) => createGpmProfile(host, a),
+    updateProxy: (id, raw) => updateGpmProfileProxy(host, id, raw),
+    writeCell: (row, col, v) => writeConfigCell(sheets, st.spreadsheetId, SHEET_TAB, row, col, v),
+    ensureColumns: (n) => ensureGridColumns(sheets, st.spreadsheetId, SHEET_TAB, n),
+    forEach: forEachProfile, login: loginOne, checkCancelled,
+  };
+}
+
+// Chặn chạy chồng: hai tác vụ cùng mở/đóng profile GPM sẽ đá nhau; và Theo dõi Sheet đang chạy
+// thì đóng profile của nó giữa chừng upload.
+let automationBusy = null;
+function guardedHandler(channel, run) {
+  ipcMain.handle(channel, async (e, opts = {}) => {
+    try {
+      if (automationBusy) return { success: false, error: `Đang chạy "${automationBusy}" — đợi xong hoặc bấm Dừng rồi chạy lại` };
+      if (sheetRunner?.isRunning?.()) return { success: false, error: "Theo dõi Sheet đang chạy một lượt — đợi xong rồi chạy lại để tránh đóng nhầm profile đang upload" };
+      const win = BrowserWindow.fromWebContents(e.sender);
+      const onLog = (msg) => { if (win && !win.isDestroyed()) win.webContents.send("automation:log", { task: channel, msg }); };
+      automationBusy = channel;
+      resetCancel(); // mỗi lượt bắt đầu với cờ dừng sạch
+      return await run({ ...opts, onLog });
+    } catch (err) {
+      return { success: false, error: String(err?.message || err) };
+    } finally {
+      automationBusy = null;
+    }
+  });
+}
+
+// Chức năng chạy trên các kênh đã chọn: runFn nhận { profiles, onLog, onResult, ...tuỳ chọn }.
+function registerSheetTask(channel, task, runFn) {
+  guardedHandler(channel, (o) => {
+    const d = sheetDeps(o.gpmHost);
+    return runSheetTask({ task, o: { ...o, gpmHost: d.host }, deps: d, runFn, onLog: o.onLog });
+  });
+}
+registerSheetTask("automation:login", "login", runLogin);
+registerSheetTask("automation:change-thumb", "thumb", runChangeThumb);
+registerSheetTask("automation:schedule", "schedule", runSchedule);
+registerSheetTask("automation:distribute", "distribute", runDistribute);
+registerSheetTask("automation:proxy-check", "proxycheck", runProxyCheck);
+registerSheetTask("automation:proxy-sync", "proxysync", runProxySync);
+guardedHandler("automation:add-channel", (o) => runAddChannels(o, sheetDeps(o.gpmHost)));
+
+// Danh sách kênh + khung "Đọc/Ghi cột" cho giao diện (không chứa mật khẩu hay proxy gốc).
+ipcMain.handle("automation:sheet-info", async (e, o = {}) => {
+  try {
+    const d = sheetDeps(o.gpmHost);
+    const values = await d.readValues();
+    const { rows } = readChannelRows(values);
+    const [profiles, groups] = await Promise.all([d.listProfiles(), listGpmGroups(d.host)]);
+    const tasks = Object.fromEntries(Object.keys(TASKS).map((t) => [t, describeTask(values, t)]));
+    return { success: true, channels: listChannelsForUi({ rows, profiles, groups }), groups: groups.map((g) => g.name).filter(Boolean), tasks, channelsRoot: d.channelsRoot };
+  } catch (err) { return { success: false, error: String(err?.message || err) }; }
+});
+
+// Tạo các cột còn thiếu cho một chức năng (chỉ khi người dùng bấm nút).
+ipcMain.handle("automation:create-columns", async (e, { gpmHost, task } = {}) => {
+  try { return { success: true, created: await createMissingColumns(sheetDeps(gpmHost), task) }; }
+  catch (err) { return { success: false, error: String(err?.message || err) }; }
+});
+
+// Xem trước (không mở trình duyệt, không ghi gì).
+ipcMain.handle("automation:preview", async (e, o = {}) => {
+  try {
+    const d = sheetDeps(o.gpmHost);
+    if (o.task === "addchannel") return { success: true, kind: "addchannel", plan: await previewAddChannels(o, d) };
+    const { profiles, skipped } = await loadTask({ task: o.task, o, deps: d });
+    if (o.task !== "distribute") {
+      return { success: true, kind: "list", ready: profiles.map((p) => p.name), skipped };
+    }
+    if (!o.videoFolder || !fs.existsSync(o.videoFolder)) throw new Error("Chưa chọn thư mục video (hoặc thư mục không tồn tại)");
+    const plan = buildPlan({ ...o, profiles, videos: listVideos(o.videoFolder), startDate: new Date() });
+    return { success: true, kind: "distribute", skipped, plan: {
+      leftover: plan.leftover.length,
+      channels: plan.channels.map((c) => ({ name: c.name, items: c.items.map((i) => ({ title: i.title, hasThumb: !!i.thumbnailPath, scheduleISO: i.scheduleISO })) })),
+    } };
+  } catch (err) { return { success: false, error: String(err?.message || err) }; }
+});
+ipcMain.handle("automation:stop", () => { stopAutomation(); return { ok: true }; });
 
 // IPC Handlers
 ipcMain.handle("select-folder", async () => {

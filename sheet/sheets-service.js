@@ -86,6 +86,12 @@ const HEADER_ALIASES = {
   dualFrameSmallRadius: ["độ bo viền khung nhỏ", "bo viền khung nhỏ"],
   proxy: ["proxy tải", "proxy"],
   gpmProfileId: ["gpm profile id", "gpm", "profile gpm"],
+  account: ["tk", "tài khoản"],
+  profileProxy: ["proxy profile", "proxy gpm", "proxy trình duyệt"],
+  loginStatus: ["trạng thái login", "trạng thái đăng nhập"],
+  thumbStatus: ["trạng thái thumb", "trạng thái thumbnail"],
+  scheduleStatus: ["trạng thái lịch", "trạng thái lên lịch"],
+  chromeVersion: ["phiên bản chrome", "chrome version", "version chrome", "bản chrome"],
   postTimes: ["giờ đăng", "lịch đăng", "post times", "giờ post"],
   channelUrl: ["link kênh", "url kênh"],
   sourceHandle: ["@handle nguồn", "handle nguồn", "kênh nguồn", "nguồn kênh chính", "nguồn kênh"],
@@ -282,6 +288,16 @@ export function parseConfigRows(values) {
   return out;
 }
 
+// Tìm chỉ số cột (0-based) của các cột `names`; cột không có thì vắng mặt trong `cols`.
+export function locateConfigColumns(values, names) {
+  if (!Array.isArray(values) || !values.length) return { headerRowIndex: -1, cols: {} };
+  const hIdx = findHeaderRowIndex(values);
+  if (hIdx < 0) return { headerRowIndex: -1, cols: {} };
+  const cols = {};
+  for (const n of names) { const i = findColIndex(values, hIdx, n); if (i >= 0) cols[n] = i; }
+  return { headerRowIndex: hIdx, cols };
+}
+
 export const STATS_KEYS = ["subscribers", "totalViews", "videoCount", "statsUpdatedAt"];
 
 // Tìm chỉ số cột (0-based) của 4 cột stats. Cột không có trong Sheet thì vắng
@@ -398,6 +414,31 @@ export function colLetter(i) {
   let s = "";
   for (let n = i; n >= 0; n = Math.floor(n / 26) - 1) s = String.fromCharCode(65 + (n % 26)) + s;
   return s;
+}
+
+// Mở rộng số cột của lưới tab để ghi được cột mới (mặc định tab chỉ có 26 cột). Chỉ gọi khi người
+// dùng chủ động bấm "Tạo cột còn thiếu". Trả số cột đã thêm.
+export async function ensureGridColumns(sheets, spreadsheetId, tabTitle, needed) {
+  const res = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets.properties(sheetId,title,gridProperties.columnCount)" });
+  const sh = (res.data.sheets || []).map((x) => x.properties).find((p) => p.title === tabTitle);
+  if (!sh) throw new Error(`Không thấy tab ${tabTitle}`);
+  const have = sh.gridProperties?.columnCount ?? 0;
+  if (have >= needed) return 0;
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: { requests: [{ appendDimension: { sheetId: sh.sheetId, dimension: "COLUMNS", length: needed - have } }] },
+  });
+  return needed - have;
+}
+
+// Ghi MỘT ô của tab ⚙config (rowIndex 1-based, colIndex 0-based).
+export async function writeConfigCell(sheets, spreadsheetId, configTab, rowIndex, colIndex, value) {
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `${configTab}!${colLetter(colIndex)}${rowIndex}`,
+    valueInputOption: "RAW",
+    requestBody: { values: [[value]] },
+  });
 }
 
 // Ghi 4 ô stats vào dòng `rowIndex` của tab ⚙config. Chỉ chạm các cột có trong
