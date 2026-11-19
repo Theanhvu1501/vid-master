@@ -5551,8 +5551,6 @@ async function runConcat() {
 
   async function loadSettings() {
     const s = await api.loadSettings();
-    $("sw-spreadsheet-id").value = s.spreadsheetId || "";
-    $("sw-cred-path").value = s.credentialsPath || "";
     $("sw-root").value = s.channelsRoot || "";
     $("sw-poll").value = s.pollSec || 300;
     $("sw-auto-open").checked = !!s.autoRunOnOpen;
@@ -5611,8 +5609,6 @@ async function runConcat() {
 
   function currentSettings() {
     return {
-      spreadsheetId: $("sw-spreadsheet-id").value.trim(),
-      credentialsPath: $("sw-cred-path").value.trim(),
       channelsRoot: $("sw-root").value.trim(),
       pollSec: parseInt($("sw-poll").value, 10) || 300,
       autoRunOnOpen: $("sw-auto-open").checked,
@@ -5638,11 +5634,48 @@ async function runConcat() {
     };
   }
 
+  // ----- Mật khẩu proxy (lưu ở máy này, mã hóa) -----
+  async function renderProxyAuth() {
+    const box = $("sw-proxy-list"), st = $("sw-proxy-status");
+    if (!box) return;
+    const r = await api.proxyAuthStatus().catch((e) => ({ ok: false, error: e.message }));
+    if (!r?.ok) { box.innerHTML = ""; if (st) { st.textContent = r?.error || "Không lấy được danh sách"; st.style.color = "#c00"; } return; }
+    const need = r.rows.filter((x) => !x.hasAuth).length;
+    if (st) { st.textContent = r.rows.length ? (need ? `${need}/${r.rows.length} kênh còn thiếu mật khẩu proxy` : `✅ Đủ mật khẩu cho ${r.rows.length} kênh`) : "Chưa có kênh nào dùng proxy"; st.style.color = need ? "#b7791f" : "#1a7f37"; }
+    box.innerHTML = r.rows.map((x) => `<div class="sw-proxy-row" data-n="${escapeHtml(x.name)}"><span class="nm" title="${escapeHtml(x.name)}">${escapeHtml(x.name)}</span><span class="hp">${escapeHtml(x.hostPort)}</span>
+      <span class="${x.hasAuth ? "ok" : "no"}">${x.hasAuth ? "✓ " + escapeHtml(x.user) : x.changed ? "proxy đã đổi, nhập lại" : "chưa nhập"}</span>
+      <button class="btn btn-secondary" data-edit="${escapeHtml(x.name)}">${x.hasAuth ? "Sửa" : "Nhập"}</button></div>`).join("");
+  }
+  $("sw-proxy-refresh")?.addEventListener("click", renderProxyAuth);
+  $("sw-proxy-list")?.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-edit]"); if (!b) return;
+    const row = b.closest(".sw-proxy-row"); if (row.nextElementSibling?.classList.contains("sw-proxy-edit")) return;
+    const name = b.dataset.edit;
+    row.insertAdjacentHTML("afterend", `<div class="sw-proxy-edit"><input type="text" placeholder="User proxy" autocomplete="off" spellcheck="false" aria-label="User proxy" /><input type="password" placeholder="Mật khẩu proxy" autocomplete="new-password" aria-label="Mật khẩu proxy" /><button class="btn btn-primary" data-save>Lưu</button><button class="btn btn-secondary" data-cancel>Hủy</button></div>`);
+    const ed = row.nextElementSibling, [u, p] = ed.querySelectorAll("input"); u.focus();
+    ed.querySelector("[data-cancel]").onclick = () => ed.remove();
+    ed.querySelector("[data-save]").onclick = async () => {
+      const r = await api.proxyAuthSet(name, u.value, p.value).catch((er) => ({ ok: false, error: er.message }));
+      if (!r?.ok) return appToast(r?.error || "Không lưu được", { kind: "error" });
+      p.value = ""; appToast("Đã lưu mật khẩu proxy (chỉ trên máy này)", { kind: "success" }); renderProxyAuth();
+    };
+  });
+  $("sw-proxy-import")?.addEventListener("click", async () => {
+    const r = await api.proxyAuthImport().catch((er) => ({ ok: false, error: er.message }));
+    if (r?.canceled) return;
+    if (!r?.ok) return appToast(r?.error || "Không nhập được", { kind: "error" });
+    const miss = (r.skipped || []).filter((x) => !/proxy không có user/.test(x.why));
+    appToast(`Đã nhập mật khẩu proxy cho ${r.imported} kênh${miss.length ? `, bỏ qua ${miss.length}` : ""}`, { kind: r.imported ? "success" : "error" });
+    if (miss.length) log("ℹ️ Bỏ qua: " + miss.slice(0, 12).map((x) => `${x.name} (${x.why})`).join("; "));
+    renderProxyAuth();
+  });
+  $("sw-config-modal") && new MutationObserver(() => { if ($("sw-config-modal").classList.contains("active") || $("sw-config-modal").style.display === "flex") renderProxyAuth(); }).observe($("sw-config-modal"), { attributes: true, attributeFilter: ["class", "style"] });
+
   // Tự động lưu cấu hình mỗi khi thay đổi (không có nút "Lưu").
   let saveTimer = null;
   async function saveNow() { await api.saveSettings(currentSettings()); }
   function saveDebounced() { clearTimeout(saveTimer); saveTimer = setTimeout(saveNow, 400); }
-  ["sw-spreadsheet-id", "sw-poll", "sw-video-speed", "sw-yt-api-key", "sw-gpm-idle-close", "sw-cleanup-days"].forEach((id) =>
+  ["sw-poll", "sw-video-speed", "sw-yt-api-key", "sw-gpm-idle-close", "sw-cleanup-days"].forEach((id) =>
     $(id)?.addEventListener("input", saveDebounced));
   ["sw-auto-open", "sw-use-gpu", "sw-gpm-enabled", "sw-gpm-tg-photo", "sw-monitor-enabled"].forEach((id) =>
     $(id)?.addEventListener("change", saveNow));
@@ -5655,9 +5688,6 @@ async function runConcat() {
     saveNow();
   });
 
-  $("sw-pick-cred")?.addEventListener("click", async () => {
-    const p = await api.selectCredentials(); if (p) { $("sw-cred-path").value = p; await saveNow(); }
-  });
   // Cookie riêng cho luồng Sheet. Dùng thẳng selectFolder/selectFile ở gốc
   // electronAPI — cùng IPC mà tab "Tải video" đang dùng, khỏi thêm kênh sheet: mới.
   $("sw-pick-cookies-folder")?.addEventListener("click", async () => {
@@ -5680,9 +5710,8 @@ async function runConcat() {
       await saveNow();
       const r = await api.testConnection(currentSettings());
       if (r?.success) {
-        log(`✅ Kết nối OK — ${r.channelCount} kênh (${r.enabledCount} đang bật).`);
-        log(`   Tab: ${r.tabs.join(", ")}`);
-        if (!r.hasConfigTab) log("⚠️ Không thấy tab ⚙config — kiểm tra lại tên tab cấu hình.");
+        log(`✅ Kết nối OK — ${r.channelCount} kênh trên web cho máy này (${r.enabledCount} đang bật).`);
+        if (!r.channelCount) log("ℹ️ Chưa có kênh nào được gán cho máy này. Vào trang web → Kênh để thêm/nhập và gán máy.");
         if (statusEl) { statusEl.textContent = `✅ OK — ${r.channelCount} kênh`; statusEl.style.color = "#1a7f37"; }
       } else {
         log(`❌ Kết nối thất bại: ${r?.error || "lỗi không rõ"}`);
@@ -5816,129 +5845,11 @@ async function runConcat() {
   // ⚙config), không gọi YouTube API — không tốn quota. Chưa cấu hình thì bỏ qua,
   // để tránh một banner lỗi đập vào mặt người dùng mới cài.
   loadSettings().then(() => {
-    if ($("sw-spreadsheet-id").value && $("sw-cred-path").value) loadChannelsOnce();
+    loadChannelsOnce(); // dữ liệu kênh lấy từ web; chưa đăng nhập/mất mạng thì hiện thông báo ngay trong tab
   });
 })();
 
-// ===== Theo dõi Sheet: khung "Tự động hóa" — cấu hình nằm ở Sheet, không có ô cấu hình trong app =====
-// Độc lập với initSheetWatch: chỉ dùng chung ô log #sw-log và cấu hình Sheet đã lưu.
-(function initSheetAuto() {
-  const api = window.electronAPI?.sheetAuto;
-  const auto = window.electronAPI?.automation;
-  const panel = document.getElementById("sw-auto-panel");
-  if (!api || !auto || !panel) return;
-  const $ = (id) => document.getElementById(id);
-  const logEl = $("sw-log");
-  let running = false;
-
-  const log = (msg) => {
-    if (!logEl) return;
-    logEl.textContent += `${new Date().toLocaleTimeString()}  ${msg}\n`;
-    logEl.scrollTop = logEl.scrollHeight;
-    logEl.closest("details")?.setAttribute("open", "");
-  };
-  const status = (text, color) => { const s = $("sw-auto-status"); s.textContent = text || ""; s.style.color = color || "var(--text-secondary)"; };
-
-  function setRunning(on) {
-    running = on;
-    for (const id of ["sw-auto-preview", "sw-auto-run", "sw-auto-cols-btn"]) $(id).disabled = on;
-    $("sw-auto-stop").style.display = on ? "" : "none";
-  }
-
-  // GPM host lấy theo cấu hình có sẵn của Theo dõi Sheet; không có ô riêng cho khung này.
-  const gpmHost = () => (document.getElementById("sw-gpm-host")?.value || "").trim() || "127.0.0.1:19995";
-
-  // ----- Hiện cột Sheet cần dùng -----
-  async function refreshColumns() {
-    const box = $("sw-auto-cols");
-    box.textContent = "";
-    const r = await api.columns({ gpmHost: gpmHost() }).catch((e) => ({ success: false, error: e.message }));
-    if (!r.success) { box.innerHTML = `<span style="color:var(--text-muted)">Chưa đọc được Sheet: ${escapeHtml(r.error || "")}</span>`; return null; }
-    const d = r.tasks.automation;
-    const chip = (c) => {
-      const color = c.present ? "var(--accent-success)" : c.required ? "var(--accent-danger)" : "var(--text-muted)";
-      const mark = c.present ? "✓" : c.required ? "✗ thiếu" : "(chưa có)";
-      return `<span class="sw-auto-chip" style="color:${color};">${escapeHtml(c.label)} <small style="display:inline;margin:0;">${mark}</small></span>`;
-    };
-    const uniq = [...d.reads, ...d.writes].filter((c, i, a) => a.findIndex((x) => x.key === c.key) === i);
-    // Gom theo nhóm: mỗi nhóm một màu viền trùng màu dải nhóm sẽ tô trong Sheet.
-    const groups = (r.groups || []).map((g) => ({ ...g, cols: uniq.filter((c) => g.keys.includes(c.key)) })).filter((g) => g.cols.length);
-    const grouped = new Set(groups.flatMap((g) => g.cols.map((c) => c.key)));
-    const rest = uniq.filter((c) => !grouped.has(c.key));
-    const block = (title, color, cols) => `<div class="sw-auto-group" style="border-left-color:${color};"><div class="sw-auto-group-title" style="color:${color};">${escapeHtml(title)}</div>${cols.map(chip).join("")}</div>`;
-    box.innerHTML = groups.map((g) => block(g.label, g.band, g.cols)).join("") + (rest.length ? block("CỘT CHUNG CỦA ⚙CONFIG", "var(--text-muted)", rest) : "");
-    return r;
-  }
-  panel.addEventListener("toggle", () => { if (panel.open) refreshColumns(); });
-
-  // ----- Tạo cột còn thiếu (dùng chung cho nút trên toolbar và trong khung) -----
-  async function createMissingColumns() {
-    if (running) return;
-    const r = await refreshColumns();
-    if (!r) { appToast("Chưa đọc được Sheet — kiểm tra cấu hình Spreadsheet ID và credentials.", "error"); return; }
-    const need = r.tasks.automation.creatable;
-    if (!need.length) { appToast("Sheet đã đủ cột tự động hoá ✓", "success"); status("✅ Sheet đã đủ cột", "var(--accent-success)"); return; }
-    if (!(await appConfirm(`Thêm ${need.length} cột vào CUỐI dòng tiêu đề của tab ⚙config:\n• ${need.join("\n• ")}\n\nKhông xoá hay sửa cột nào đang có. Tiếp tục?`, { title: "Tạo cột còn thiếu", okText: "Thêm cột" }))) return;
-    const c = await api.createColumns({ gpmHost: gpmHost() });
-    if (!c.success) { appToast(`Không tạo được cột: ${c.error}`, "error"); return; }
-    appToast(`Đã thêm ${c.created.length} cột: ${c.created.join(", ")}`, "success");
-    status(`✅ đã thêm ${c.created.length} cột`, "var(--accent-success)");
-    if (c.formatError) log(`⚠️ Đã tạo cột nhưng chưa tô màu được: ${c.formatError}`);
-    refreshColumns();
-  }
-
-  // ----- Xem trước -----
-  $("sw-auto-preview").addEventListener("click", async () => {
-    if (running) return;
-    setRunning(true); status("⏳ đang đọc Sheet…");
-    try {
-      const r = await api.preview({ gpmHost: gpmHost() });
-      if (!r.success) { status(""); log(`❌ ${r.error}`); return; }
-      const label = { create: "TẠO MỚI", reuse: "DÙNG LẠI", "channel-only": "CHANNEL", error: "LỖI" };
-      log("👁 XEM TRƯỚC (chưa làm gì)");
-      for (const p of r.plan) log(`[${label[p.action] || p.action}] ${p.sheetName} (dòng ${p.rowIndex}) — ${p.note}${p.proxyMasked ? " · proxy " + p.proxyMasked : ""}`);
-      const n = (a) => r.plan.filter((p) => p.action === a).length;
-      status(`${r.plan.length} kênh: tạo mới ${n("create")}, dùng lại ${n("reuse")}, chỉ channel ${n("channel-only")}, lỗi ${n("error")}`);
-    } catch (e) { log(`❌ ${e.message}`); status(""); } finally { setRunning(false); }
-  });
-
-  // ----- Chạy -----
-  $("sw-auto-run").addEventListener("click", async () => {
-    if (running) return;
-    if (!(await appConfirm("Sẽ chạy các kênh được bật ở cột \"Tạo profile\" / \"Tạo channel\" trong Sheet: tạo profile GPM, đăng nhập tài khoản Google và chỉnh sửa channel thật trên YouTube.\nBạn đã bấm \"Xem trước\" chưa? Tiếp tục chạy?", { title: "Chạy tự động hóa", okText: "Chạy" }))) return;
-    auto.removeLogListener();
-    auto.onLog((p) => log(typeof p === "string" ? p : p.msg));
-    setRunning(true); status("⏳ đang chạy…");
-    log("🚀 Tự động hóa theo Sheet");
-    try {
-      const r = await api.run({ gpmHost: gpmHost() });
-      log(r.success ? `✅ ${r.message || "Hoàn tất"}` : `❌ ${r.error || "Có lỗi xảy ra"}`);
-      status(r.success ? `✅ ${r.message || "xong"}` : `❌ ${r.error || "lỗi"}`, r.success ? "var(--accent-success)" : "var(--accent-danger)");
-    } catch (e) { log(`❌ ${e.message}`); status(`❌ ${e.message}`, "var(--accent-danger)"); }
-    finally { setRunning(false); refreshColumns(); }
-  });
-
-  // ----- Tạo cột còn thiếu -----
-  $("sw-auto-cols-btn")?.addEventListener("click", createMissingColumns);
-
-  $("sw-auto-sample").addEventListener("click", () => downloadExcelSample("sheet"));
-
-  // Nút "Template mẫu" ở thanh trên cùng: cho chọn một trong hai mẫu rồi mở hộp thoại lưu.
-  $("sw-template")?.addEventListener("click", async () => {
-    const kind = await appChoose("Chọn file mẫu cần tải. Người dùng mới nên bắt đầu từ Template đầy đủ.", [
-      { value: "fullsheet", label: "Template đầy đủ", hint: "Sheet ⚙config đủ các cột render, tải xuống, lên lịch (59 cột, có màu theo từng chế độ) kèm tab Hướng dẫn. Mở bằng Google Sheets (File > Nhập)." },
-      { value: "sheet", label: "Template tự động hoá", hint: "Các cột tạo profile, gán proxy, đăng nhập, tạo channel, Kênh BKT, kèm tab Hướng dẫn từng bước. Dán vào Sheet của bạn hoặc dùng làm mẫu." },
-    ], { title: "Tải template mẫu" });
-    if (kind) downloadExcelSample(kind);
-  });
-
-  // Nút "Tạo cột" ở thanh trên cùng: cùng logic với nút trong khung Tự động hóa
-  $("sw-create-cols")?.addEventListener("click", createMissingColumns);
-
-  $("sw-full-sample")?.addEventListener("click", () => downloadExcelSample("fullsheet"));
-
-  $("sw-auto-stop").addEventListener("click", async () => { await auto.stop(); log("⏹ Đã yêu cầu dừng — kênh đang chạy sẽ dừng ở bước kế tiếp."); });
-})();
+// (Khối "Tự động hóa theo Sheet" đã bỏ: tạo profile/đăng nhập/tạo channel làm ở tab Tự động hóa bằng file Excel, mật khẩu không lên web.)
 
 
 // ----- Tải file Excel mẫu (dùng chung cho Auto Login, Tạo channel và khung Sheet) -----

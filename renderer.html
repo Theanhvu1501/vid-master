@@ -1504,6 +1504,15 @@ small {
 .sw-cfg-group { display: flex; align-items: center; gap: 8px; border-left: 4px solid var(--grp, var(--border-default)); padding-left: 10px; border-bottom-color: var(--border-default); }
 .sw-cfg-group::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--grp, var(--text-muted)); flex-shrink: 0; }
 .sw-cfg-group[data-g="sheet"] { --grp: #8FA3B8; }
+.sw-proxy-list { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 8px; max-height: 260px; overflow: auto; }
+.sw-proxy-row { display: grid; grid-template-columns: minmax(110px, 1.2fr) minmax(120px, 1.2fr) auto auto; gap: 8px; align-items: center; padding: 8px 10px; border: 1px solid var(--border-default, #2d3748); border-radius: 8px; background: var(--bg-tertiary, #1c2430); font-size: 12px; }
+.sw-proxy-row .nm { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sw-proxy-row .hp { font-family: Consolas, monospace; color: var(--text-secondary, #94a3b8); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sw-proxy-row .ok { color: var(--accent-success, #51cf66); }
+.sw-proxy-row .no { color: var(--accent-warning, #fcc419); }
+.sw-proxy-edit { display: grid; grid-template-columns: 1fr 1fr auto auto; gap: 8px; padding: 8px 10px; border: 1px dashed var(--border-default, #2d3748); border-radius: 8px; }
+.sw-proxy-edit input { min-width: 0; }
+@media (max-width: 700px) { .sw-proxy-row, .sw-proxy-edit { grid-template-columns: 1fr 1fr; } }
 .sw-cfg-group[data-g="download"] { --grp: #D98F8F; }
 .sw-cfg-group[data-g="render"] { --grp: #F0B860; }
 .sw-cfg-group[data-g="gpm"] { --grp: #9E9E9E; }
@@ -4306,8 +4315,6 @@ label.with-icon::before {
               <span class="sw-toolbar-sep"></span>
               <button class="btn btn-secondary" id="sw-gpm-connect-all" style="display:none;">🔌 Connect tất cả</button>
               <button class="btn btn-secondary" id="sw-stats-refresh">🔄 Số liệu</button>
-              <button class="btn btn-secondary" id="sw-template" title="Tải Google Sheet / Excel mẫu để biết cần điền những cột nào">⬇ Template mẫu</button>
-              <button class="btn btn-secondary" id="sw-create-cols" title="Thêm các cột tự động hoá (Tạo profile, Kênh BKT...) vào Sheet của bạn và tô màu">➕ Tạo cột</button>
               <!-- KHÔNG dùng class .btn/.btn-secondary: .btn-secondary đặt
                    min-width:145px !important, ép nút icon phình thành viên thuốc. -->
               <button class="sw-icon-btn sw-cog" id="sw-open-config" title="Cấu hình">⚙️</button>
@@ -4318,27 +4325,6 @@ label.with-icon::before {
           <details style="margin-top:16px;">
             <summary style="cursor:pointer;font-size:13px;color:#4a5568;">📜 Log chi tiết</summary>
             <pre id="sw-log" style="height:200px;overflow:auto;background:#1a1a2e;color:#0f0;padding:12px;margin-top:8px;border-radius:8px;font-size:12px;line-height:1.5;"></pre>
-          </details>
-          <!-- Tự động hóa theo Google Sheet: cột "Tạo profile" / "Tạo channel" của từng kênh quyết định việc cần làm -->
-          <details id="sw-auto-panel" class="sw-auto" style="margin-top:16px;">
-            <summary class="sw-auto-summary">🤖 Tự động hóa — tạo profile và channel từ Sheet</summary>
-            <div class="sw-auto-body">
-              <p class="sw-cfg-hint">
-                Không cần cấu hình trong app. Ở tab ⚙config, điền <b>có</b> vào cột <b>Tạo profile</b> và/hoặc <b>Tạo channel</b> của kênh muốn chạy rồi bấm Chạy.
-                <b>Tạo profile</b>: tạo profile GPM (Chrome 129), gán proxy từ cột Proxy tải, ghi GPM Profile ID, rồi đăng nhập bằng cột <b>tk</b>.
-                <b>Tạo channel</b>: tạo channel từ các cột Tên hiển thị, Mô tả kênh, Mô tả video, Tag, Handle kênh.
-                Ô trống nghĩa là không làm gì; làm xong app đổi ô thành <b>xong</b>, lỗi thì giữ nguyên để thử lại.
-              </p>
-              <div id="sw-auto-cols" class="sw-auto-cols"></div>
-              <div class="sw-auto-actions">
-                <button class="btn btn-secondary" id="sw-auto-preview">👁 Xem trước</button>
-                <button class="btn btn-success" id="sw-auto-run">▶ Chạy</button>
-                <button class="btn btn-secondary" id="sw-auto-sample" title="Tải file Excel mẫu các cột tự động hoá để dán vào Sheet">⬇ Tải file mẫu</button>
-                <button class="btn btn-secondary" id="sw-auto-cols-btn" title="Thêm các cột còn thiếu vào cuối dòng tiêu đề ⚙config">➕ Tạo cột còn thiếu</button>
-                <button class="btn btn-danger" id="sw-auto-stop" style="display:none;">■ Dừng</button>
-                <span id="sw-auto-status" class="sw-auto-status"></span>
-              </div>
-            </div>
           </details>
         </div>
         <div id="composer" class="tab-content"></div>
@@ -4570,20 +4556,8 @@ label.with-icon::before {
         <div class="modal-body">
           <p class="sw-cfg-hint">Thay đổi được lưu tự động. Đổi cấu hình khi đang chạy thì phải Stop rồi Start lại.</p>
 
-          <h4 class="sw-cfg-group" data-g="sheet">Google Sheet</h4>
-          <div class="form-group">
-            <label>Spreadsheet ID</label>
-            <input id="sw-spreadsheet-id" type="text" style="width:100%">
-          </div>
-          <div class="form-group">
-            <label>Service account JSON</label>
-            <div class="folder-select">
-              <div class="folder-input-wrap">
-                <input id="sw-cred-path" type="text" readonly style="width:100%">
-              </div>
-              <button class="btn btn-secondary" id="sw-pick-cred">Chọn file…</button>
-            </div>
-          </div>
+          <h4 class="sw-cfg-group" data-g="sheet">Dữ liệu kênh</h4>
+          <p class="sw-cfg-hint">Cấu hình kênh và danh sách video nằm trên web (tài khoản bạn đang đăng nhập). Chỉnh ở trang web, app tự lấy về mỗi lượt chạy.</p>
           <div class="form-group">
             <label>Channels root folder</label>
             <div class="folder-select">
@@ -4594,10 +4568,18 @@ label.with-icon::before {
             </div>
           </div>
           <div class="form-group" style="display:flex;align-items:center;gap:10px;">
-            <button class="btn btn-secondary" id="sw-test" title="Kiểm tra kết nối tới Sheet">🔌 Kiểm tra kết nối</button>
+            <button class="btn btn-secondary" id="sw-test" title="Kiểm tra kết nối tới web và lấy danh sách kênh của máy này">🔌 Kiểm tra kết nối</button>
             <span id="sw-test-status" style="font-size:13px;"></span>
-            <button class="btn btn-secondary" id="sw-full-sample" title="Tải Sheet mẫu đầy đủ: 59 cột có màu theo từng chế độ + tab hướng dẫn">⬇ Tải Sheet mẫu đầy đủ</button>
           </div>
+
+          <h4 class="sw-cfg-group" data-g="sheet">Mật khẩu proxy</h4>
+          <p class="sw-cfg-hint">Web chỉ lưu địa chỉ proxy (host:port). User và mật khẩu proxy chỉ lưu <b>trên máy này</b>, được mã hóa, không bao giờ gửi lên web.</p>
+          <div class="form-group" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <button class="btn btn-secondary" id="sw-proxy-import" title="Đọc user/mật khẩu proxy từ file Excel cấu hình cũ (chỉ đọc trên máy này)">📥 Nhập từ file Excel cũ</button>
+            <button class="btn btn-secondary" id="sw-proxy-refresh">🔄 Làm mới</button>
+            <span id="sw-proxy-status" style="font-size:13px;"></span>
+          </div>
+          <div id="sw-proxy-list" class="sw-proxy-list"></div>
 
           <h4 class="sw-cfg-group" data-g="download">Tải video</h4>
           <div class="form-group">

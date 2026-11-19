@@ -56,9 +56,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
   sheet: {
     testConnection: (s) => ipcRenderer.invoke("sheet:test-connection", s),
+    proxyAuthStatus: () => ipcRenderer.invoke("proxy-auth:status"),
+    proxyAuthSet: (name, user, pass) => ipcRenderer.invoke("proxy-auth:set", { name, user, pass }),
+    proxyAuthImport: () => ipcRenderer.invoke("proxy-auth:import"),
     loadSettings: () => ipcRenderer.invoke("sheet:load-settings"),
     saveSettings: (s) => ipcRenderer.invoke("sheet:save-settings", s),
-    selectCredentials: () => ipcRenderer.invoke("sheet:select-credentials"),
     selectRoot: () => ipcRenderer.invoke("sheet:select-root"),
     start: () => ipcRenderer.invoke("sheet:start"),
     stop: () => ipcRenderer.invoke("sheet:stop"),
@@ -118,12 +120,5 @@ contextBridge.exposeInMainWorld("electronAPI", {
     saveSample: (kind) => ipcRenderer.invoke("excel-sample:save", { kind }),
     onLog: (cb) => ipcRenderer.on("automation:log", (event, msg) => cb(msg)),
     removeLogListener: () => ipcRenderer.removeAllListeners("automation:log"),
-  },
-  // Luồng Google Sheet của Theo dõi Sheet: mọi lựa chọn nằm ở Sheet, không cấu hình trong app.
-  sheetAuto: {
-    run: (opts) => ipcRenderer.invoke("sheet-auto:run", opts),
-    preview: (opts) => ipcRenderer.invoke("sheet-auto:preview", opts),
-    columns: (opts) => ipcRenderer.invoke("sheet-auto:columns", opts),
-    createColumns: (opts) => ipcRenderer.invoke("sheet-auto:create-columns", opts),
   },
 });

@@ -1,6 +1,7 @@
 import { spawn } from "child_process";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, shell } from "electron";
 import fs from "fs";
+import XLSX from "xlsx";
 import https from "https";
 import { createRequire } from "module";
 import os from "os";
@@ -11,20 +12,19 @@ import { createSessionManager } from "./app-session.js";
 import pLimit from "p-limit";
 import sharp from "sharp";
 import { createSheetRunner } from "./sheet/sheet-runner.js";
-import { createSheetsClient, readConfigSheet, readConfigValues, writeConfigCell, ensureGridColumns, formatHeaderGroups, parseConfigRows, findStatsColumns, STATS_KEYS, writeChannelStats, appendUrls, readChannelUrls, setUrlStatus, setUploadStatus, readUploadStatuses, testSheetConnection } from "./sheet/sheets-service.js";
+import { createWebStore, createDiskStore } from "./sheet/web-store.js";
+import { extractProxyAuth, cleanAuthInput, mergeAuth, lookupAuth } from "./sheet/proxy-auth.js";
 import { createYoutubeClient, fetchChannelStats, fetchSourceVideos, pickNewUrls, DEFAULT_YT_API_KEY } from "./sheet/youtube-api.js";
 import { parseScheduledISO, formatStamp } from "./sheet/schedule-slots.js";
 import { testGpmConnection, connectAndOpenStudio, connectProfile, getGpmApiVersion, listGpmGroups, listGpmProfilesFull, createGpmProfile, updateGpmProfileProxy } from "./sheet/gpm-client.js";
 import { runLogin, runChangeThumb, runSchedule, stopAutomation, resetCancel, forEachProfile, loginOne, checkCancelled, isCancelled } from "./sheet/youtube-automation.js";
 import { runDistribute, buildPlan, listVideos } from "./sheet/distribute.js";
-import { runSheetAutomation, previewSheetAutomation } from "./sheet/sheet-automation.js";
 import { runProxyCheck, maskProxy, checkProxy } from "./sheet/proxy-tools.js";
 import { createMonitorAgent, createProxyHealth, buildSnapshot, proxyIdentity, toHttpBase, DEFAULT_SERVER_URL } from "./sheet/monitor-agent.js";
 import { createTaskTracker, channelResultEvent, isTrackedTask, lastMeaningfulLine } from "./sheet/task-monitor.js";
 import { readLoginAccounts, readChannelPlans, attachProfileData, countNames } from "./sheet/excel-import.js";
 import { resolveThumbRun, resolveScheduleRun } from "./sheet/run-options.js";
 import { runCreateChannel, createChannelOne } from "./sheet/create-channel.js";
-import { describeTask, createMissingColumns, TASKS, COLUMN_GROUPS, readChannelRows } from "./sheet/channel-sheet.js";
 import { writeSample, SAMPLE_FILES } from "./sheet/excel-samples.js";
 import { createUploadQueue } from "./sheet/upload-queue.js";
 import { sendTelegram, sendTelegramPhoto, buildDigest, buildChannelReport, parseTopicId } from "./sheet/telegram-notify.js";
@@ -563,7 +563,7 @@ function createWindow() {
   // Delay 4 s để renderer kịp gắn listener 'sheet:event' trước khi runner bắt đầu emit
   try {
     const sw = loadSheetSettings();
-    if (sw.autoRunOnOpen && sw.spreadsheetId && sw.credentialsPath && sw.channelsRoot) {
+    if (sw.autoRunOnOpen && webConfigured() && sw.channelsRoot) {
       setTimeout(() => {
         try {
           sheetRunner = buildSheetRunner(mainWindow);
@@ -1418,7 +1418,7 @@ function sheetSettingsPath() {
 }
 function loadSheetSettings() {
   try { return JSON.parse(fs.readFileSync(sheetSettingsPath(), "utf-8")); }
-  catch { return { spreadsheetId: "", credentialsPath: "", channelsRoot: "", pollSec: 300, autoRunOnOpen: false, useGPU: false, videoSpeed: 0.95, gpuVideoCodec: "h264_nvenc", ytApiKey: "", gpmIdleCloseMin: 10, cleanupEnabled: false, cleanupKeepDays: 1 }; }
+  catch { return { channelsRoot: "", pollSec: 300, autoRunOnOpen: false, useGPU: false, videoSpeed: 0.95, gpuVideoCodec: "h264_nvenc", ytApiKey: "", gpmIdleCloseMin: 10, cleanupEnabled: false, cleanupKeepDays: 1 }; }
 }
 function saveSheetSettings(s) { fs.writeFileSync(sheetSettingsPath(), JSON.stringify(s, null, 2), "utf-8"); }
 
@@ -1442,29 +1442,66 @@ const monitorServerUrl = () => process.env.VIDMASTER_SERVER_URL || DEFAULT_SERVE
 const monitorSettingsKey = (s) => JSON.stringify([!!s?.monitorEnabled]);
 const proxyHealth = createProxyHealth({ checkFn: (raw) => checkProxy(raw) });
 
+// ===== Dữ liệu kênh và video lấy từ WEB (thay cho Google Sheet) =====
+// Cấu hình kênh + danh sách video + trạng thái nằm trên web; máy giữ bản sao để chạy khi mất mạng. User/mật khẩu proxy chỉ nằm
+// ở máy này (mã hóa bằng kho của hệ điều hành), không bao giờ lên web.
+const proxyAuthPath = () => path.join(getConfigDir(), ".proxy-auth.bin");
+function loadProxyAuth() {
+  try {
+    if (!safeStorage.isEncryptionAvailable()) return {};
+    return JSON.parse(safeStorage.decryptString(fs.readFileSync(proxyAuthPath())));
+  } catch { return {}; }
+}
+function saveProxyAuth(obj) {
+  if (!safeStorage.isEncryptionAvailable()) throw new Error("Máy này không có kho mã hóa của hệ điều hành nên không lưu được mật khẩu proxy an toàn.");
+  fs.writeFileSync(proxyAuthPath(), safeStorage.encryptString(JSON.stringify(obj)), { mode: 0o600 });
+}
+let proxyAuthCache = null;
+const getProxyAuthFor = (name, hostPort) => lookupAuth((proxyAuthCache ||= loadProxyAuth()), name, hostPort);
+
+// Mỗi tài khoản + máy có bộ nhớ đệm riêng: đổi tài khoản trên cùng máy không đọc nhầm dữ liệu của người khác.
+function webStoreDir() {
+  const u = sessionMgr.getUser();
+  return path.join(getConfigDir(), ".web-cache", String(u?.id ?? "anon"));
+}
+let webStoreInst = null, webStoreFor = "";
+function webStore() {
+  const key = String(sessionMgr.getUser()?.id ?? "anon");
+  if (webStoreInst && webStoreFor === key) return webStoreInst;
+  webStoreFor = key;
+  webStoreInst = createWebStore({
+    getBase: appServerBase, getToken: () => sessionMgr.getToken(),
+    disk: createDiskStore({ dir: webStoreDir(), fs, path }),
+    getProxyAuth: getProxyAuthFor,
+    // Server báo phiên không còn hợp lệ (gỡ máy, khóa tài khoản, đổi mật khẩu): không dùng tiếp dữ liệu trên web
+    onAuthLost: (err) => { if (err?.reason && err.reason !== "token") console.log("[web] phiên không còn hợp lệ:", err.reason); },
+    log: (m) => console.log(`[web] ${m}`),
+  });
+  return webStoreInst;
+}
+const webConfigured = () => !!sessionMgr.getToken();
+const webChannels = () => webStore().readConfigSheet();
+const webUrls = (name) => webStore().readChannelUrls(name);
+
 // Dựng ảnh chụp trạng thái từ Sheet + file trạng thái trên máy. Trả null khi chưa cấu hình Sheet
 // (khác với "Sheet rỗng": gửi snapshot rỗng sẽ xoá hết kênh đang hiện trên web).
 async function collectMonitorSnapshot() {
   const s = loadSheetSettings();
-  if (requireSheetSettings(s) || !s.channelsRoot) return null;
-  const sheets = createSheetsClient(s.credentialsPath);
-  const channels = await readConfigSheet(sheets, s.spreadsheetId);
+  if (!webConfigured() || !s.channelsRoot) return null;
+  const channels = await webChannels();
 
-  // Đọc tab từng kênh, 3 kênh một lượt để không dội quota Sheets (60 lượt đọc/phút).
+  // Đọc danh sách video từng kênh (đã có cache trên máy, chỉ tải lại khi web báo thay đổi)
   const urlsByChannel = new Map();
   for (let i = 0; i < channels.length; i += 3) {
     await Promise.all(channels.slice(i, i + 3).map(async (c) => {
-      try { urlsByChannel.set(c.sheetName, await readChannelUrls(sheets, s.spreadsheetId, c.sheetName)); }
-      catch { /* tab lỗi/thiếu: để null -> web hiện "—", không báo hết video nhầm */ }
+      try { urlsByChannel.set(c.sheetName, await webUrls(c.sheetName)); }
+      catch { /* lỗi: để null -> web hiện "—", không báo hết video nhầm */ }
     }));
   }
 
-  // Số liệu YouTube đã nằm sẵn trong ⚙config (đọc lại, không tốn quota YouTube).
+  // Số liệu YouTube đọc từ cache cục bộ (do lần làm mới trước ghi lại)
   const statsByChannel = new Map();
-  try {
-    const st = await listStatsChannels();
-    if (st.ok) for (const r of st.rows) statsByChannel.set(r.sheetName, r);
-  } catch { /* thiếu số liệu không phải lỗi */ }
+  try { for (const r of loadStatsCache()) statsByChannel.set(r.sheetName, r); } catch { /* thiếu số liệu không phải lỗi */ }
 
   // Kiểm tra proxy chạy nền; xong thì gửi snapshot bù để web thấy kết quả sớm.
   const idents = channels.filter((c) => c.enabled && c.videoSource !== "local").map((c) => proxyIdentity(c.proxy)).filter(Boolean);
@@ -1566,7 +1603,7 @@ function getCookiePool({ folder, file }) {
 
 function buildSheetRunner(win) {
   const s = loadSheetSettings();
-  const sheets = createSheetsClient(s.credentialsPath);
+  const store = webStore();
   const statePath = path.join(s.channelsRoot, "runner-state.json");
   const resumePath = path.join(s.channelsRoot, "resume-state.json");
   const emitEvent = (evt) => {
@@ -1581,7 +1618,7 @@ function buildSheetRunner(win) {
   const uploadQueue = createUploadQueue({
     // Nguồn sự thật = Sheet cột C: đọc trạng thái upload của kênh → slot đã dùng + url đã lên lịch.
     readChannelUploads: async (sheetName) => {
-      const rows = await readUploadStatuses(sheets, s.spreadsheetId, sheetName);
+      const rows = await store.readChannelUrls(sheetName);
       const scheduledUrls = new Set();
       const usedSlots = [];
       for (const { url, uploadStatus } of rows) {
@@ -1601,8 +1638,7 @@ function buildSheetRunner(win) {
     idleCloseMs: Math.max(0, Number(s.gpmIdleCloseMin ?? 10) || 0) * 60_000,
 
     // Ghi ngược trạng thái từng bước vào cột C của tab kênh.
-    setUploadStatus: (sheetName, rowIndex, status) =>
-      setUploadStatus(sheets, s.spreadsheetId, sheetName, rowIndex, status),
+    setUploadStatus: (sheetName, rowIndex, status) => store.setUploadStatus(sheetName, rowIndex, status),
     // Gửi 1 digest Telegram khi hàng đợi upload rảnh.
     notifyDigest: async (results) => {
       if (!s.gpmTelegramEnabled) return; // người dùng tắt thông báo
@@ -1634,7 +1670,7 @@ function buildSheetRunner(win) {
       if (!r.ok) throw new Error(r.error);
     },
     config: {
-      spreadsheetId: s.spreadsheetId, channelsRoot: s.channelsRoot, statePath, renderConcurrency: 2,
+      channelsRoot: s.channelsRoot, statePath, renderConcurrency: 2,
       presetsDir: getPresetsDir(app), // thiếu dòng này thì mọi kênh renderMode:"composer" bị sheet-runner.js bỏ qua preset (config.presetsDir undefined)
       useGPU: !!s.useGPU,
       gpuVideoCodec: s.gpuVideoCodec || "h264_nvenc",
@@ -1648,11 +1684,11 @@ function buildSheetRunner(win) {
       cleanupKeepDays: s.cleanupKeepDays,
     },
     sheetsApi: {
-      readConfigSheet: () => readConfigSheet(sheets, s.spreadsheetId),
-      readChannelUrls: (name) => readChannelUrls(sheets, s.spreadsheetId, name),
-      setUrlStatus: (name, row, status) => setUrlStatus(sheets, s.spreadsheetId, name, row, status),
-      setUploadStatus: (name, row, status) => setUploadStatus(sheets, s.spreadsheetId, name, row, status),
-      appendUrls: (name, urls) => appendUrls(sheets, s.spreadsheetId, name, urls),
+      readConfigSheet: () => store.readConfigSheet(),
+      readChannelUrls: (name) => store.readChannelUrls(name),
+      setUrlStatus: (name, row, status) => store.setUrlStatus(name, row, status),
+      setUploadStatus: (name, row, status) => store.setUploadStatus(name, row, status),
+      appendUrls: (name, urls) => store.appendUrls(name, urls),
     },
     // Preflight đầu lượt: GPM có đang chạy không. Ném lỗi = chưa mở GPM.
     checkGpm: async () => { await testGpmConnection(s.gpmHost || "127.0.0.1:19995"); return true; },
@@ -1796,111 +1832,75 @@ function ytClientFrom(st) {
   return createYoutubeClient((st.ytApiKey || "").trim() || DEFAULT_YT_API_KEY);
 }
 
-function requireSheetSettings(st) {
-  if (!st.spreadsheetId) return "Chưa nhập Spreadsheet ID.";
-  if (!st.credentialsPath) return "Chưa chọn file service account JSON.";
-  return null;
+// Không còn Sheet: điều kiện duy nhất là đã đăng nhập tài khoản.
+function requireSheetSettings() {
+  return webConfigured() ? null : "Chưa đăng nhập.";
 }
 
-// Đọc ⚙config một lần, gọi API, ghi ngược từng dòng, trả bảng cho UI.
-// Một kênh hỏng chỉ làm hỏng dòng của nó.
+// Số liệu YouTube (sub/view/số video) lưu cục bộ trên máy: cấu hình kênh nằm trên web nên không còn ô nào để ghi ngược vào.
+const statsCachePath = () => path.join(getConfigDir(), ".channel-stats.json");
+function loadStatsCache() {
+  try { const o = JSON.parse(fs.readFileSync(statsCachePath(), "utf-8")); return Array.isArray(o.rows) ? o.rows : []; } catch { return []; }
+}
+function saveStatsCache(rows) {
+  try { fs.writeFileSync(statsCachePath(), JSON.stringify({ at: Date.now(), rows }), "utf-8"); } catch { /* không quan trọng */ }
+}
+
+// Lấy số liệu từ YouTube cho mọi kênh có Link kênh, rồi lưu cục bộ. Một kênh hỏng chỉ làm hỏng dòng của nó.
 async function refreshChannelStats() {
   const st = loadSheetSettings();
   const bad = requireSheetSettings(st);
   if (bad) return { ok: false, error: bad };
-
-  const sheets = createSheetsClient(st.credentialsPath);
-  const values = await readConfigValues(sheets, st.spreadsheetId);
-  const channels = parseConfigRows(values);
-  const { cols } = findStatsColumns(values);
-  const missing = STATS_KEYS.filter((k) => cols[k] === undefined);
-
+  const channels = await webChannels();
   const targets = channels.filter((c) => c.channelUrl);
-  const stats = targets.length
-    ? await fetchChannelStats(ytClientFrom(st), targets.map((c) => c.channelUrl))
-    : [];
+  const stats = targets.length ? await fetchChannelStats(ytClientFrom(st), targets.map((c) => c.channelUrl)) : [];
   const statByName = new Map(targets.map((c, i) => [c.sheetName, stats[i]]));
   const updatedAt = formatStamp(new Date());
-
   const rows = [];
   for (const ch of channels) {
     const base = { sheetName: ch.sheetName, sourceHandle: ch.sourceHandle || "", channelUrl: ch.channelUrl || "" };
     const s = statByName.get(ch.sheetName);
     if (!s) { rows.push({ ...base }); continue; } // kênh không khai Link kênh
     if (s.error) { rows.push({ ...base, error: s.error }); continue; }
-    try {
-      await writeChannelStats(sheets, st.spreadsheetId, "⚙config", ch.rowIndex, cols, { ...s, updatedAt });
-    } catch (err) {
-      rows.push({ ...base, error: String(err?.message || err) });
-      continue;
-    }
     rows.push({ ...base, subscribers: s.subscribers, views: s.views, videoCount: s.videoCount, hidden: s.hidden, updatedAt });
   }
-  return { ok: true, rows, missing };
+  saveStatsCache(rows.filter((r) => !r.error));
+  return { ok: true, rows, missing: [] };
 }
 
-// Danh sách kênh cho bảng số liệu, chỉ đọc Sheet — KHÔNG gọi YouTube API.
-// Nhờ vậy nút "Lấy URL nguồn" có ngay mà không tốn quota và không cần API key.
+// Danh sách kênh cho bảng số liệu, KHÔNG gọi YouTube API: số liệu đọc từ lần làm mới trước.
 async function listStatsChannels() {
   const st = loadSheetSettings();
   const bad = requireSheetSettings(st);
   if (bad) return { ok: false, error: bad };
-
-  const sheets = createSheetsClient(st.credentialsPath);
-  const values = await readConfigValues(sheets, st.spreadsheetId);
-  const channels = parseConfigRows(values);
-  const { cols } = findStatsColumns(values);
-  const missing = STATS_KEYS.filter((k) => cols[k] === undefined);
-
-  // Số liệu đã được writeChannelStats ghi vào ⚙config từ lần làm mới trước. Đọc lại
-  // chúng thay vì gọi YouTube API: card hiện số ngay khi mở app, không tốn quota.
-  const cell = (row, key) => (cols[key] === undefined ? undefined : row?.[cols[key]]);
-  // Sheets trả FORMATTED_VALUE nên số có thể kèm dấu phân cách ("1,200" / "1.200")
-  // tuỳ locale của bảng tính. Bỏ mọi ký tự không phải chữ số rồi mới parse.
-  const toNum = (v) => {
-    const s = String(v ?? "").trim();
-    if (!s || s === "—") return undefined; // ô trống, hoặc kênh ẩn số sub
-    const digits = s.replace(/\D/g, "");
-    return digits ? Number(digits) : undefined;
-  };
-
+  const channels = await webChannels();
+  const cache = new Map(loadStatsCache().map((r) => [r.sheetName, r]));
   return {
     ok: true,
-    missing,
+    missing: [],
     rows: channels.map((c) => {
-      const row = values[c.rowIndex - 1]; // rowIndex là số dòng A1 (1-based)
-      const subs = cell(row, "subscribers");
+      const r = cache.get(c.sheetName) || {};
       return {
-        sheetName: c.sheetName,
-        sourceHandle: c.sourceHandle || "",
-        channelUrl: c.channelUrl || "",
-        subscribers: toNum(subs),
-        hidden: String(subs ?? "").trim() === "—",
-        views: toNum(cell(row, "totalViews")),
-        videoCount: toNum(cell(row, "videoCount")),
-        updatedAt: String(cell(row, "statsUpdatedAt") ?? "").trim() || undefined,
+        sheetName: c.sheetName, sourceHandle: c.sourceHandle || "", channelUrl: c.channelUrl || "",
+        subscribers: r.subscribers, hidden: !!r.hidden, views: r.views, videoCount: r.videoCount, updatedAt: r.updatedAt,
       };
     }),
   };
 }
 
-// sortBy: "views" (view cao nhất) | "newest" (mới nhất). Người dùng chọn ngay
-// cạnh nút "Lấy URL nguồn" trên card kênh, không lưu vào Sheet.
+// sortBy: "views" (view cao nhất) | "newest" (mới nhất). Thêm video nguồn mới vào danh sách của kênh trên web.
 async function fetchSourceUrlsFor(sheetName, sortBy = "views") {
   const st = loadSheetSettings();
   const bad = requireSheetSettings(st);
   if (bad) return { ok: false, error: bad };
-
-  const sheets = createSheetsClient(st.credentialsPath);
-  const channels = await readConfigSheet(sheets, st.spreadsheetId);
+  const channels = await webChannels();
   const ch = channels.find((c) => c.sheetName === sheetName);
-  if (!ch) return { ok: false, error: `Không thấy kênh "${sheetName}" trong ⚙config.` };
-  if (!ch.sourceHandle) return { ok: false, error: "Kênh chưa điền cột @handle nguồn." };
-
+  if (!ch) return { ok: false, error: `Không thấy kênh "${sheetName}" trên web (hoặc kênh chưa được gán cho máy này).` };
+  if (!ch.sourceHandle) return { ok: false, error: "Kênh chưa điền @handle nguồn." };
   const videos = await fetchSourceVideos(ytClientFrom(st), ch.sourceHandle, { sortBy });
-  const existing = (await readChannelUrls(sheets, st.spreadsheetId, sheetName)).map((r) => r.url);
+  const existing = (await webUrls(sheetName)).map((r) => r.url);
   const fresh = pickNewUrls(existing, videos.map((v) => v.url));
-  await appendUrls(sheets, st.spreadsheetId, sheetName, fresh);
+  await webStore().appendUrls(sheetName, fresh);
   return { ok: true, added: fresh.length, skipped: videos.length - fresh.length };
 }
 
@@ -1908,7 +1908,7 @@ async function fetchSourceUrlsFor(sheetName, sortBy = "views") {
 // nào trong đây thì runner đang giữ đã lạc hậu và phải dựng lại.
 function sheetSettingsKey(s) {
   return JSON.stringify([
-    s?.spreadsheetId ?? "", s?.credentialsPath ?? "", s?.channelsRoot ?? "",
+    String(sessionMgr.getUser()?.id ?? ""), s?.channelsRoot ?? "",
     !!s?.gpmEnabled, s?.gpmHost ?? "", s?.gpmIdleCloseMin ?? 10, s?.gpmLocale ?? "vi",
     !!s?.gpmTelegramEnabled, s?.gpmTelegramToken ?? "", s?.gpmTelegramChatId ?? "",
     s?.gpmTelegramTopicId ?? "", !!s?.gpmTelegramPhoto,
@@ -1934,14 +1934,76 @@ function getSheetRunner(win) {
   return sheetRunner;
 }
 
-ipcMain.handle("sheet:test-connection", async (e, s) => {
+// ===== User/mật khẩu proxy của từng kênh: chỉ lưu trên máy này (mã hóa), không bao giờ lên web =====
+// "socks5://user:pass@1.2.3.4:80" -> "1.2.3.4:80"
+function hostPortOf(raw) {
+  const t = String(raw ?? "").trim();
+  const i = t.indexOf("://");
+  const rest = i >= 0 ? t.slice(i + 3) : t;
+  return rest.slice(rest.lastIndexOf("@") + 1);
+}
+// Trạng thái từng kênh: có proxy trên web không, đã có user/mật khẩu trên máy chưa (KHÔNG trả mật khẩu về giao diện).
+ipcMain.handle("proxy-auth:status", async () => {
   try {
-    const st = s || loadSheetSettings();
-    if (!st.spreadsheetId) return { success: false, error: "Chưa nhập Spreadsheet ID." };
-    if (!st.credentialsPath) return { success: false, error: "Chưa chọn file service account JSON." };
-    const sheets = createSheetsClient(st.credentialsPath);
-    const info = await testSheetConnection(sheets, st.spreadsheetId);
-    return { success: true, ...info };
+    const channels = await webChannels();
+    const store = (proxyAuthCache ||= loadProxyAuth());
+    return {
+      ok: true,
+      rows: channels.filter((c) => String(c.proxy || "").trim()).map((c) => {
+        const hp = hostPortOf(c.proxy);
+        const a = lookupAuth(store, c.sheetName);
+        return { name: c.sheetName, hostPort: hp, hasAuth: !!lookupAuth(store, c.sheetName, hp), changed: !!(a && a.hostPort && a.hostPort !== hp), user: a?.user ? a.user.slice(0, 2) + "***" : "" };
+      }),
+    };
+  } catch (err) { return { ok: false, error: String(err?.message || err) }; }
+});
+ipcMain.handle("proxy-auth:set", async (e, { name, user, pass } = {}) => {
+  try {
+    const c = cleanAuthInput(user, pass);
+    if (c.error) return { ok: false, error: c.error };
+    const channels = await webChannels();
+    const ch = channels.find((x) => x.sheetName === String(name || ""));
+    if (!ch || !String(ch.proxy || "").trim()) return { ok: false, error: "Kênh này chưa có proxy trên web." };
+    const hp = hostPortOf(ch.proxy);
+    const next = mergeAuth(proxyAuthCache ||= loadProxyAuth(), [{ name: ch.sheetName, user: c.user, pass: c.pass, hostPort: hp }]);
+    saveProxyAuth(next); proxyAuthCache = next;
+    return { ok: true };
+  } catch (err) { return { ok: false, error: String(err?.message || err) }; }
+});
+// Nhập hàng loạt từ file Excel cũ (cột Tên kênh + Proxy tải có user/mật khẩu). Đọc trên máy này, không gửi đi đâu.
+ipcMain.handle("proxy-auth:import", async (e) => {
+  try {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    const r = await dialog.showOpenDialog(win, { title: "Chọn file Excel cấu hình cũ", properties: ["openFile"], filters: [{ name: "Excel", extensions: ["xlsx", "xls", "csv"] }] });
+    if (r.canceled || !r.filePaths[0]) return { ok: true, canceled: true };
+    const wb = XLSX.readFile(r.filePaths[0]);
+    const tab = wb.SheetNames.find((n) => /config/i.test(n)) || wb.SheetNames[0];
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[tab], { header: 1, defval: "", raw: false });
+    const x = extractProxyAuth(rows);
+    if (x.error) return { ok: false, error: x.error };
+    // Chỉ nhận kênh đang có proxy trên web và khớp host:port (tránh gán nhầm mật khẩu cho proxy khác)
+    const channels = await webChannels();
+    const byName = new Map(channels.map((c) => [c.sheetName.toLowerCase(), c]));
+    const accepted = [], skipped = [...x.skipped];
+    for (const en of x.entries) {
+      const ch = byName.get(en.name.toLowerCase());
+      if (!ch) { skipped.push({ name: en.name, why: "kênh không có trên web (hoặc không gán cho máy này)" }); continue; }
+      const hp = hostPortOf(ch.proxy || "");
+      if (!hp) { skipped.push({ name: en.name, why: "kênh chưa có proxy trên web" }); continue; }
+      if (hp !== en.hostPort) { skipped.push({ name: en.name, why: `proxy trên web (${hp}) khác trong file (${en.hostPort})` }); continue; }
+      accepted.push({ ...en, name: ch.sheetName });
+    }
+    if (accepted.length) { const next = mergeAuth(proxyAuthCache ||= loadProxyAuth(), accepted); saveProxyAuth(next); proxyAuthCache = next; }
+    return { ok: true, imported: accepted.length, skipped, tab };
+  } catch (err) { return { ok: false, error: String(err?.message || err) }; }
+});
+
+// Kiểm tra kết nối tới web: lấy cấu hình kênh của máy này.
+ipcMain.handle("sheet:test-connection", async () => {
+  try {
+    if (!webConfigured()) return { success: false, error: "Chưa đăng nhập." };
+    const channels = await webChannels();
+    return { success: true, channelCount: channels.length, enabledCount: channels.filter((c) => c.enabled).length, tabs: channels.map((c) => c.sheetName), hasConfigTab: true };
   } catch (err) {
     return { success: false, error: String(err?.message || err) };
   }
@@ -1969,10 +2031,6 @@ ipcMain.handle("account:logout", async () => {
   return { ok: true };
 });
 ipcMain.handle("monitor:get-status", async () => ({ ...(monitorAgent?.getStatus() || { state: "off", message: "Chưa bật" }), machineId: getMachineId() }));
-ipcMain.handle("sheet:select-credentials", async () => {
-  const r = await dialog.showOpenDialog({ properties: ["openFile"], filters: [{ name: "JSON", extensions: ["json"] }] });
-  return r.canceled ? null : r.filePaths[0];
-});
 ipcMain.handle("sheet:select-root", async () => {
   const r = await dialog.showOpenDialog({ properties: ["openDirectory"] });
   return r.canceled ? null : r.filePaths[0];
@@ -2010,11 +2068,10 @@ ipcMain.handle("sheet:run-now", async (e, sheetName) => {
 ipcMain.handle("sheet:pending-uploads", async (e, sheetName) => {
   try {
     const s = loadSheetSettings();
-    if (!s.spreadsheetId || !s.credentialsPath || !s.channelsRoot || !s.gpmEnabled) {
-      return { ok: true, channels: [] }; // chưa cấu hình / GPM tắt -> không có gì để đăng
+    if (!webConfigured() || !s.channelsRoot || !s.gpmEnabled) {
+      return { ok: true, channels: [] }; // chưa đăng nhập / GPM tắt -> không có gì để đăng
     }
-    const sheets = createSheetsClient(s.credentialsPath);
-    let channels = await readConfigSheet(sheets, s.spreadsheetId);
+    let channels = await webChannels();
     // KHÔNG lọc theo `enabled`: kênh đang tạm dừng vẫn có video đã render xong chờ đăng.
     // Ẩn chúng đi đúng là lỗi đang sửa (việc còn nợ mà không thấy ở đâu). Upload lại không
     // cần tải/render nên tạm dừng kênh không phải lý do để giấu.
@@ -2025,7 +2082,7 @@ ipcMain.handle("sheet:pending-uploads", async (e, sheetName) => {
     for (const ch of channels) {
       let rows = [];
       try {
-        rows = await readChannelUrls(sheets, s.spreadsheetId, ch.sheetName);
+        rows = await webUrls(ch.sheetName);
       } catch {
         continue; // tab hỏng không được làm mất danh sách các kênh còn lại
       }
@@ -2083,10 +2140,8 @@ ipcMain.handle("gpm:test", async (e, { gpmHost } = {}) => {
 ipcMain.handle("gpm:list-channels", async () => {
   try {
     const st = loadSheetSettings();
-    if (!st.spreadsheetId) return { ok: false, error: "Chưa nhập Spreadsheet ID." };
-    if (!st.credentialsPath) return { ok: false, error: "Chưa chọn file service account JSON." };
-    const sheets = createSheetsClient(st.credentialsPath);
-    const channels = await readConfigSheet(sheets, st.spreadsheetId);
+    if (!webConfigured()) return { ok: false, error: "Chưa đăng nhập." };
+    const channels = await webChannels();
     // Quota hôm nay: đọc runner-state.json để card hiện "3/8". computeRemaining tự
     // coi quota là 0 khi lastRunDate khác hôm nay, nên không cần reset thủ công.
     const state = st.channelsRoot ? loadState(path.join(st.channelsRoot, "runner-state.json")) : {};
@@ -2161,27 +2216,7 @@ ipcMain.handle("gpm:list-profiles-full", async (e, { gpmHost } = {}) => {
 // Log đẩy về renderer qua "automation:log". Luồng Google Sheet (tạo profile, gán proxy, tạo channel)
 // nằm ở tab Theo dõi Sheet, dùng chung cấu hình Sheet ở đó.
 // ============================================================================
-const SHEET_TAB = "⚙config";
 const gpmHostOf = (h) => (h || "").trim() || "127.0.0.1:19995";
-
-function sheetDeps(gpmHost) {
-  const host = gpmHostOf(gpmHost);
-  const st = loadSheetSettings();
-  if (!st.spreadsheetId) throw new Error("Chưa nhập Spreadsheet ID (Theo dõi Sheet → ⚙).");
-  if (!st.credentialsPath) throw new Error("Chưa chọn file service account JSON (Theo dõi Sheet → ⚙).");
-  const sheets = createSheetsClient(st.credentialsPath);
-  return {
-    host, channelsRoot: st.channelsRoot || "",
-    readValues: () => readConfigValues(sheets, st.spreadsheetId, SHEET_TAB),
-    listProfiles: () => listGpmProfilesFull(host),
-    createProfile: (a) => createGpmProfile(host, a),
-    updateProxy: (id, raw) => updateGpmProfileProxy(host, id, raw),
-    writeCell: (row, col, v) => writeConfigCell(sheets, st.spreadsheetId, SHEET_TAB, row, col, v),
-    ensureColumns: (n) => ensureGridColumns(sheets, st.spreadsheetId, SHEET_TAB, n),
-    formatGroups: (spec) => formatHeaderGroups(sheets, st.spreadsheetId, SHEET_TAB, spec),
-    forEach: forEachProfile, login: loginOne, checkCancelled,
-  };
-}
 
 // Chặn chạy chồng: hai tác vụ cùng mở/đóng profile GPM sẽ đá nhau; và Theo dõi Sheet đang chạy
 // thì đóng profile của nó giữa chừng upload.
@@ -2236,14 +2271,12 @@ const needProfiles = (o) => {
 // Không đọc được Sheet (chưa cấu hình, mất mạng...) thì coi mọi kênh là kênh thường và báo ra log, không chặn việc chạy.
 async function monetizedFlags(o, host) {
   try {
-    const d = sheetDeps(host);
-    const { rows, cols } = readChannelRows(await d.readValues());
+    const channels = await webChannels();
     const map = new Map();
-    for (const r of rows) if (r.gpmProfileId) map.set(r.gpmProfileId, !!r.monetized);
-    const hasCol = cols.monetized !== undefined;
-    return { map, note: hasCol ? "" : 'Sheet chưa có cột "Kênh BKT" — mọi kênh được coi là kênh thường' };
+    for (const c of channels) if (c.gpmProfileId) map.set(c.gpmProfileId, !!c.monetized);
+    return { map, note: "" };
   } catch (e) {
-    return { map: new Map(), note: `không đọc được cờ "Kênh BKT" từ Sheet (${String(e?.message || e).split("\n")[0]}) — mọi kênh được coi là kênh thường` };
+    return { map: new Map(), note: `không đọc được cờ "Kênh BKT" từ web (${String(e?.message || e).split("\n")[0]}) — mọi kênh được coi là kênh thường` };
   }
 }
 
@@ -2384,33 +2417,7 @@ ipcMain.handle("automation:preview-run", async (e, o = {}) => {
   } catch (err) { return { success: false, error: String(err?.message || err) }; }
 });
 
-// --- Luồng Google Sheet (nằm ở Theo dõi Sheet) ---
-// Không có cấu hình trong app: kênh nào làm gì do cột "Tạo profile" / "Tạo channel" của Sheet quyết định.
-guardedHandler("sheet-auto:run", (o) => {
-  const d = sheetDeps(o.gpmHost);
-  return runSheetAutomation({ ...o, gpmHost: d.host }, { ...d, createChannel: createChannelOne });
-});
-
-ipcMain.handle("sheet-auto:preview", async (e, o = {}) => {
-  try { return { success: true, plan: await previewSheetAutomation(o, sheetDeps(o.gpmHost)) }; }
-  catch (err) { return { success: false, error: String(err?.message || err) }; }
-});
-
-// Cột Sheet mà luồng tự động hóa cần: có/thiếu, và tạo cột thiếu (chỉ khi người dùng bấm).
-ipcMain.handle("sheet-auto:columns", async (e, o = {}) => {
-  try {
-    const values = await sheetDeps(o.gpmHost).readValues();
-    return { success: true, groups: COLUMN_GROUPS.map(({ id, label, keys, band }) => ({ id, label, keys, band })), tasks: Object.fromEntries(Object.keys(TASKS).map((t) => [t, describeTask(values, t)])) };
-  } catch (err) { return { success: false, error: String(err?.message || err) }; }
-});
-ipcMain.handle("sheet-auto:create-columns", async (e, o = {}) => {
-  try {
-    let formatError = "";
-    const deps = { ...sheetDeps(o.gpmHost), onFormatError: (err) => { formatError = String(err?.message || err); } };
-    const created = await createMissingColumns(deps, Object.keys(TASKS));
-    return { success: true, created, formatError };
-  } catch (err) { return { success: false, error: String(err?.message || err) }; }
-});
+// Tạo profile và đăng nhập kênh làm TRỰC TIẾP trong app (tab Tự động hóa, bằng file Excel): tài khoản và mật khẩu không bao giờ lên web.
 
 // Lưu file Excel mẫu: hộp thoại "Lưu thành", rồi ghi file. Windows tự hỏi nếu ghi đè file có sẵn.
 ipcMain.handle("excel-sample:save", async (e, { kind } = {}) => {
