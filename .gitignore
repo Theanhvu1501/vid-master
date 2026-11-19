@@ -15,3 +15,5 @@ bin
 # Cấu hình/token riêng của từng máy (token giám sát do server cấp, không được đưa lên git)
 .monitor-token.json
 sheet-settings.json
+.app-session.bin
+.app-login-hint.json

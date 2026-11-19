@@ -22,17 +22,17 @@ function mk(over = {}) {
     save: (v) => { if (over.saveThrows) throw new Error("no safeStorage"); disk.value = JSON.parse(JSON.stringify(v)); disk.saves++; },
     clear: () => { disk.value = null; disk.clears++; },
   };
-  const mgr = createSessionManager({ fetchImpl, getBase: () => "http://srv", getMachineId: () => over.machineId ?? "MACHINE-1234", store, now: () => t });
+  const mgr = createSessionManager({ fetchImpl, getBase: () => "http://srv", getMachineId: () => over.machineId ?? "MACHINE-1234", getHostname: () => over.hostname ?? "PC-VĂN-PHÒNG", store, now: () => t });
   return { mgr, calls, disk, advance: (ms) => { t += ms; }, now: () => t };
 }
 const OK_LOGIN = { status: 200, body: { token: mkJwt(Math.floor(Date.now() / 1000) + 30 * 86400), user: { id: 1, username: "bob", role: "user" } } };
 
 // ---------------- đăng nhập ----------------
-test("login: đúng -> gửi tài khoản + mật khẩu + MÃ MÁY; lưu phiên; trả user", async () => {
+test("login: đúng -> gửi tài khoản + mật khẩu + MÃ MÁY + TÊN MÁY (tự động, người dùng không nhập); lưu phiên; trả user", async () => {
   const { mgr, calls, disk } = mk({ respond: () => OK_LOGIN });
   const r = await mgr.login("  bob ", "pw123");
   assert.equal(r.ok, true);
-  assert.deepEqual(calls[0].body, { username: "bob", password: "pw123", machineId: "MACHINE-1234" });
+  assert.deepEqual(calls[0].body, { username: "bob", password: "pw123", machineId: "MACHINE-1234", hostname: "PC-VĂN-PHÒNG" });
   assert.equal(calls[0].url, "http://srv/api/app/login");
   assert.equal(mgr.isLoggedIn(), true);
   assert.equal(mgr.getToken(), OK_LOGIN.body.token);
@@ -193,4 +193,35 @@ test("jwtExpiryMs: đọc hạn từ JWT; chuỗi rác -> null", () => {
 test("reasonText: lý do lạ vẫn có câu tiếng Việt, không để trống", () => {
   assert.ok(reasonText("khong-biet").length > 10);
   assert.ok(reasonText(undefined).length > 10);
+});
+
+// ---------------- Mô hình "số máy được phép" ----------------
+test("login: hết chỗ (403 machine-limit) -> kind limit, giữ nguyên lời server, KHÔNG có phiên, KHÔNG lưu", async () => {
+  const msg = "Tài khoản đã dùng hết số máy được phép (1/1). Liên hệ quản trị viên để gỡ máy cũ.";
+  const { mgr, disk } = mk({ respond: () => ({ status: 403, body: { message: msg, code: "machine-limit", used: 1, max: 1 } }) });
+  const r = await mgr.login("bob", "x");
+  assert.deepEqual([r.ok, r.kind, r.message], [false, "limit", msg]);
+  assert.equal(mgr.isLoggedIn(), false);
+  assert.equal(disk.saves, 0);
+});
+
+test("login: 403 khác (khóa / thu hồi / máy của tài khoản khác) vẫn là denied, không lẫn với hết chỗ", async () => {
+  const { mgr } = mk({ respond: () => ({ status: 403, body: { message: "Máy này đang được đăng ký cho tài khoản khác." } }) });
+  assert.equal((await mgr.login("bob", "x")).kind, "denied");
+});
+
+test("login: tên máy dài/rỗng được xử lý: cắt 80 ký tự, thiếu thì gửi chuỗi rỗng, không làm hỏng đăng nhập", async () => {
+  const long = mk({ hostname: "x".repeat(500), respond: () => OK_LOGIN });
+  await long.mgr.login("bob", "x");
+  assert.equal(long.calls[0].body.hostname.length, 80);
+  const none = mk({ hostname: "", respond: () => OK_LOGIN });
+  assert.equal((await none.mgr.login("bob", "x")).ok, true);
+  assert.equal(none.calls[0].body.hostname, "");
+});
+
+test("login: sai thông tin vẫn là thông báo chung (không nhắc tới mã máy nữa)", async () => {
+  const { mgr } = mk({ respond: () => ({ status: 401, body: {} }) });
+  const r = await mgr.login("bob", "x");
+  assert.equal(r.kind, "invalid");
+  assert.doesNotMatch(r.message, /mã máy/i);
 });

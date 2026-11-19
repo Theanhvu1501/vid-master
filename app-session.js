@@ -45,10 +45,11 @@ async function postJson(fetchImpl, url, body, token) {
  * @param {typeof fetch} o.fetchImpl
  * @param {() => string} o.getBase       địa chỉ http(s) của server, không có dấu / ở cuối
  * @param {() => string} o.getMachineId
+ * @param {() => string} [o.getHostname]  tên máy (hostname) để admin nhận ra máy nào là máy cũ
  * @param {{load():object|null, save(o:object):boolean|void, clear():void}} o.store
  * @param {() => number} [o.now]
  */
-export function createSessionManager({ fetchImpl = fetch, getBase, getMachineId, store, now = () => Date.now() }) {
+export function createSessionManager({ fetchImpl = fetch, getBase, getMachineId, getHostname = () => "", store, now = () => Date.now() }) {
   let current = null; // { token, user, machineId, verifiedAt }
 
   const persist = () => { try { store.save(current); } catch { /* không lưu được: lần sau đăng nhập lại */ } };
@@ -65,7 +66,7 @@ export function createSessionManager({ fetchImpl = fetch, getBase, getMachineId,
       if (!machineId || machineId === "ERROR") return { ok: false, kind: "machine", message: "Không lấy được mã máy của thiết bị này." };
       if (!String(username || "").trim() || !password) return { ok: false, kind: "input", message: "Nhập tài khoản và mật khẩu." };
       let r;
-      try { r = await postJson(fetchImpl, `${getBase()}/api/app/login`, { username: String(username).trim(), password, machineId }); }
+      try { r = await postJson(fetchImpl, `${getBase()}/api/app/login`, { username: String(username).trim(), password, machineId, hostname: String(getHostname() || "").slice(0, 80) }); }
       catch { return { ok: false, kind: "network", message: "Không kết nối được server. Kiểm tra mạng rồi thử lại." }; }
 
       if (r.status === 200 && typeof r.data.token === "string") {
@@ -74,8 +75,9 @@ export function createSessionManager({ fetchImpl = fetch, getBase, getMachineId,
         return { ok: true, user: current.user };
       }
       if (r.status === 429) return { ok: false, kind: "rate", retryAfter: r.retryAfter, message: r.data.message || "Đăng nhập sai quá nhiều lần. Thử lại sau ít phút." };
+      if (r.status === 403 && r.data.code === "machine-limit") return { ok: false, kind: "limit", message: r.data.message || "Tài khoản đã dùng hết số máy được phép. Liên hệ quản trị viên." };
       if (r.status === 403) return { ok: false, kind: "denied", message: r.data.message || "Tài khoản hoặc máy bị từ chối." };
-      if (r.status === 400 || r.status === 401) return { ok: false, kind: "invalid", message: r.data.message || "Tài khoản, mật khẩu hoặc mã máy không đúng" };
+      if (r.status === 400 || r.status === 401) return { ok: false, kind: "invalid", message: r.data.message || "Tài khoản hoặc mật khẩu không đúng" };
       return { ok: false, kind: "server", message: "Server đang gặp sự cố. Thử lại sau." };
     },
 

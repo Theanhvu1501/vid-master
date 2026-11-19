@@ -3,6 +3,7 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, safeStorage, shell } fr
 import fs from "fs";
 import https from "https";
 import { createRequire } from "module";
+import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import { getMachineId } from "./license-check.js";
@@ -481,7 +482,7 @@ const appSessionStore = {
   clear() { try { fs.unlinkSync(appSessionPath()); } catch { /* chưa có */ } },
 };
 const appServerBase = () => toHttpBase(monitorServerUrl());
-const sessionMgr = createSessionManager({ getBase: appServerBase, getMachineId, store: appSessionStore });
+const sessionMgr = createSessionManager({ getBase: appServerBase, getMachineId, getHostname: () => { try { return os.hostname(); } catch { return ""; } }, store: appSessionStore });
 
 const readLoginHint = () => { try { return String(JSON.parse(fs.readFileSync(loginHintPath(), "utf-8")).user || ""); } catch { return ""; } };
 const writeLoginHint = (user) => { try { fs.writeFileSync(loginHintPath(), JSON.stringify({ user }), "utf-8"); } catch { /* không quan trọng */ } };
@@ -489,10 +490,8 @@ const writeLoginHint = (user) => { try { fs.writeFileSync(loginHintPath(), JSON.
 let loginWin = null, loginNotice = "";
 ipcMain.handle("app-login:info", (e) => {
   if (!loginWin || e.sender !== loginWin.webContents) return {};
-  let host = ""; try { host = new URL(appServerBase()).host; } catch { /* ignore */ }
-  return { machineId: getMachineId(), serverHost: host, lastUser: readLoginHint(), notice: loginNotice };
+  return { lastUser: readLoginHint(), notice: loginNotice };
 });
-ipcMain.handle("app-login:copy", (e, text) => { if (loginWin && e.sender === loginWin.webContents) clipboard.writeText(String(text).slice(0, 300)); });
 ipcMain.handle("app-login:quit", (e) => { if (loginWin && e.sender === loginWin.webContents) loginWin.close(); });
 
 // Hiện cửa sổ đăng nhập; trả true khi đăng nhập xong, false khi người dùng đóng cửa sổ.
@@ -503,7 +502,7 @@ function showLoginDialog(notice = "") {
     const finish = (ok) => { if (done) return; done = true; resolve(ok); };
     loginWin = new BrowserWindow({
       width: 460, height: 640, resizable: false, minimizable: false, maximizable: false, autoHideMenuBar: true,
-      title: "Đăng nhập - VidMaster", icon: path.join(__dirname, "assets/icon.ico"), backgroundColor: "#0b0b0d", show: false,
+      title: "Đăng nhập - VidMaster", icon: path.join(__dirname, "assets/icon.ico"), backgroundColor: "#0f1419", show: false,
       webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, preload: path.join(__dirname, "login-preload.cjs") },
     });
     loginWin.setMenuBarVisibility(false);
