@@ -3,6 +3,13 @@ import fs from "fs";
 
 const SCOPES = ["https://www.googleapis.com/auth/spreadsheets"];
 
+// Cờ bật/tắt mà TRỐNG = TẮT (khác truthy ở trên, nơi trống = bật). Dùng cho các cột chỉ bật khi người dùng
+// chủ động ghi: "có", "yes", "true", "1", "x", "bật", "✓"...
+function isOn(v) {
+  const s = String(v ?? "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/g, "d");
+  return ["co", "c", "yes", "y", "true", "1", "x", "on", "bat", "✓", "✔", "☑"].includes(s);
+}
+
 function truthy(v) {
   const s = String(v ?? "").trim().toLowerCase();
   if (s === "") return true; // trống = bật
@@ -88,9 +95,15 @@ const HEADER_ALIASES = {
   gpmProfileId: ["gpm profile id", "gpm", "profile gpm"],
   account: ["tk", "tài khoản"],
   profileProxy: ["proxy profile", "proxy gpm", "proxy trình duyệt"],
-  loginStatus: ["trạng thái login", "trạng thái đăng nhập"],
-  thumbStatus: ["trạng thái thumb", "trạng thái thumbnail"],
-  scheduleStatus: ["trạng thái lịch", "trạng thái lên lịch"],
+  monetized: ["kênh bkt", "bkt", "bật kiếm tiền", "đã bật kiếm tiền", "kiếm tiền", "monetized"],
+  autoProfile: ["tạo profile", "tự tạo profile", "auto profile"],
+  autoChannel: ["tạo channel", "tự tạo channel", "tạo kênh", "auto channel"],
+  autoStatus: ["trạng thái tự động hóa", "trạng thái tự động hoá", "trạng thái auto"],
+  channelTitle: ["tên hiển thị", "tên kênh hiển thị", "channel title"],
+  channelDesc: ["mô tả kênh", "channel description"],
+  videoDesc: ["mô tả video", "mô tả video mặc định"],
+  videoTags: ["tag", "tags", "thẻ tag"],
+  channelHandle: ["handle kênh", "handle", "link channel"],
   chromeVersion: ["phiên bản chrome", "chrome version", "version chrome", "bản chrome"],
   postTimes: ["giờ đăng", "lịch đăng", "post times", "giờ post"],
   channelUrl: ["link kênh", "url kênh"],
@@ -275,6 +288,8 @@ export function parseConfigRows(values) {
       proxy: col(row, "proxy"),
       gpmProfileId: col(row, "gpmProfileId"),
       postTimes: col(row, "postTimes"),
+      // Kênh đã bật kiếm tiền (BKT): hộp thoại có thêm bước nên phải đi qua bằng cách khác. TRỐNG = kênh thường.
+      monetized: isOn(col(row, "monetized")),
       rowIndex: r + 1, // 1-based, dùng thẳng trong A1 notation
       channelUrl: col(row, "channelUrl"),
       sourceHandle: col(row, "sourceHandle"),
@@ -429,6 +444,40 @@ export async function ensureGridColumns(sheets, spreadsheetId, tabTitle, needed)
     requestBody: { requests: [{ appendDimension: { sheetId: sh.sheetId, dimension: "COLUMNS", length: needed - have } }] },
   });
   return needed - have;
+}
+
+// Gộp ô + tô màu dải nhóm (dòng trên tiêu đề) và dòng tên cột cho các cột MỚI. spec lấy từ
+// planColumnFormat(). Chỉ động vào đúng vùng cột mới; dải nhóm có sẵn nội dung thì bỏ qua dải đó.
+export async function formatHeaderGroups(sheets, spreadsheetId, tabTitle, spec) {
+  const meta = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets.properties(sheetId,title)" });
+  const sh = (meta.data.sheets || []).map((x) => x.properties).find((p) => p.title === tabTitle);
+  if (!sh) throw new Error(`Không thấy tab ${tabTitle}`);
+
+  const rgb = (hex) => ({ red: parseInt(hex.slice(1, 3), 16) / 255, green: parseInt(hex.slice(3, 5), 16) / 255, blue: parseInt(hex.slice(5, 7), 16) / 255 });
+  const DARK = { red: 0.13, green: 0.13, blue: 0.13 };
+  const range = (row, g) => ({ sheetId: sh.sheetId, startRowIndex: row, endRowIndex: row + 1, startColumnIndex: g.startCol, endColumnIndex: g.endCol });
+  const paint = (row, g, color) => ({
+    repeatCell: {
+      range: range(row, g),
+      cell: { userEnteredFormat: { backgroundColor: rgb(color), horizontalAlignment: "CENTER", textFormat: { bold: true, foregroundColor: DARK } } },
+      fields: "userEnteredFormat(backgroundColor,horizontalAlignment,textFormat)",
+    },
+  });
+
+  const labels = [], requests = [];
+  for (const g of spec.groups) {
+    if (g.bandFree && spec.bandRow >= 0) {
+      labels.push({ range: `${tabTitle}!${colLetter(g.startCol)}${spec.bandRow + 1}`, values: [[g.label]] });
+      if (g.endCol - g.startCol > 1) requests.push({ mergeCells: { range: range(spec.bandRow, g), mergeType: "MERGE_ALL" } });
+      requests.push(paint(spec.bandRow, g, g.band));
+    }
+    requests.push(paint(spec.headerRow, g, g.tint));
+  }
+  if (labels.length) {
+    await sheets.spreadsheets.values.batchUpdate({ spreadsheetId, requestBody: { valueInputOption: "RAW", data: labels } });
+  }
+  if (requests.length) await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests } });
+  return requests.length;
 }
 
 // Ghi MỘT ô của tab ⚙config (rowIndex 1-based, colIndex 0-based).

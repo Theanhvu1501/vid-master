@@ -1480,6 +1480,42 @@ small {
   color: var(--text-primary);
 }
 
+/* Khung tự động hoá trong Theo dõi Sheet */
+.sw-auto { background: var(--bg-secondary); border: 1px solid var(--border-default); border-left: 3px solid var(--accent-primary); border-radius: var(--radius-lg); }
+.sw-auto-summary { cursor: pointer; padding: var(--space-md) var(--space-lg); font-size: 14px; font-weight: 600; color: var(--text-primary); }
+.sw-auto-body { padding: 0 var(--space-lg) var(--space-lg); }
+.sw-auto-cols { font-size: 12px; line-height: 1.9; margin-bottom: var(--space-md); }
+.sw-auto-row { display: flex; gap: var(--space-md); align-items: flex-end; flex-wrap: wrap; margin-bottom: var(--space-md); }
+.sw-auto-field { flex: 1; min-width: 220px; margin: 0; font-size: 12px; }
+.sw-auto-field input { margin-top: 4px; }
+.sw-auto-narrow { flex: 0 0 150px; min-width: 120px; }
+.sw-auto-actions { display: flex; gap: var(--space-sm); align-items: center; flex-wrap: wrap; }
+.sw-auto-status { font-size: 13px; }
+/* Nút tải file Excel mẫu: dạng liên kết nhỏ cạnh nhãn */
+.sample-link { margin-left: 8px; padding: 1px 8px; font-size: 11px; font-weight: 500; color: var(--accent-primary); background: transparent; border: 1px solid var(--border-default); border-radius: var(--radius-sm); cursor: pointer; vertical-align: middle; }
+.sample-link:hover { background: var(--bg-hover); border-color: var(--accent-primary); }
+
+/* Khung cột Sheet chia nhóm theo màu */
+.sw-auto-group { margin-bottom: 8px; padding: 6px 10px; border-left: 4px solid var(--border-default); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; background: var(--bg-tertiary); }
+.sw-auto-group-title { font-size: 11px; font-weight: 700; letter-spacing: 0.03em; margin-bottom: 2px; }
+.sw-auto-chip { display: inline-block; margin: 0 10px 0 0; white-space: nowrap; font-size: 12px; }
+
+/* Modal cấu hình Theo dõi Sheet: mỗi mục một màu, cùng bảng màu với dải nhóm trong Sheet mẫu */
+.sw-cfg-group { display: flex; align-items: center; gap: 8px; border-left: 4px solid var(--grp, var(--border-default)); padding-left: 10px; border-bottom-color: var(--border-default); }
+.sw-cfg-group::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--grp, var(--text-muted)); flex-shrink: 0; }
+.sw-cfg-group[data-g="sheet"] { --grp: #8FA3B8; }
+.sw-cfg-group[data-g="download"] { --grp: #D98F8F; }
+.sw-cfg-group[data-g="render"] { --grp: #F0B860; }
+.sw-cfg-group[data-g="gpm"] { --grp: #9E9E9E; }
+
+/* Thư mục thumbnail riêng theo từng profile */
+.thumb-own-hint { font-size: 12px; color: var(--text-secondary); margin-bottom: 10px; line-height: 1.6; }
+.thumb-own-row { display: grid; grid-template-columns: minmax(130px, 220px) 1fr auto; gap: 8px; align-items: center; margin-bottom: 8px; }
+.thumb-own-name { font-size: 13px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thumb-own-name small { display: block; margin: 0; font-size: 10px; color: var(--text-muted); }
+.thumb-own-row input { padding: 7px 10px; font-size: 12px; }
+.thumb-own-empty { padding: 12px; color: var(--text-muted); font-size: 12px; border: 1px dashed var(--border-default); border-radius: var(--radius-md); }
+
 .sw-cfg-hint {
   font-size: 11px;
   color: var(--text-muted);
@@ -2238,8 +2274,7 @@ label.with-icon::before {
           <button class="tab-button" data-tab="automation" data-sub="schedule"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 7.5V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h3.5" /> <path d="M16 2v4" /> <path d="M8 2v4" /> <path d="M3 10h5" /> <path d="M17.5 17.5 16 16.3V14" /> <circle cx="16" cy="16" r="6" /></svg><span class="tab-label">Auto Lên lịch</span></button>
           <button class="tab-button" data-tab="automation" data-sub="distribute"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z" /> <path d="m21.854 2.147-10.94 10.939" /></svg><span class="tab-label">Rải video cho kênh</span></button>
           <button class="tab-button" data-tab="automation" data-sub="proxycheck"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" /> <path d="m9 12 2 2 4-4" /></svg><span class="tab-label">Kiểm tra proxy</span></button>
-          <button class="tab-button" data-tab="automation" data-sub="proxysync"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10" /> <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" /> <path d="M2 12h20" /></svg><span class="tab-label">Đồng bộ proxy</span></button>
-          <button class="tab-button" data-tab="automation" data-sub="addchannel"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /> <circle cx="9" cy="7" r="4" /> <line x1="19" x2="19" y1="8" y2="14" /> <line x1="22" x2="16" y1="11" y2="11" /></svg><span class="tab-label">Thêm kênh mới</span></button>
+          <button class="tab-button" data-tab="automation" data-sub="createchannel"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="20" height="15" x="2" y="7" rx="2" ry="2"/><polyline points="17 2 12 7 7 2"/></svg><span class="tab-label">Tạo channel</span></button>
         </div>
       </div>
 
@@ -2391,7 +2426,7 @@ label.with-icon::before {
                 </div>
                 <div id="chromakey-file-input" style="display: none">
                   <div class="form-group">
-                    <label>File chromaKey.txt</label>
+                    <label>File chromaKey.txt <button type="button" class="sample-link" onclick="downloadExcelSample('chromakey')" title="Tải file mẫu đúng định dạng">⬇ Tải file mẫu</button></label>
                     <div class="folder-select">
                       <div class="folder-input-wrap">
                         <input type="text" id="render-chromakey-file" placeholder="./chromaKey.txt" readonly />
@@ -2777,7 +2812,7 @@ label.with-icon::before {
             <div class="card-section-title">Nguồn và thư mục đầu ra</div>
             <div class="form-grid">
               <div class="form-group">
-            <label>File URLs (urls.txt):</label>
+            <label>File URLs (urls.txt): <button type="button" class="sample-link" onclick="downloadExcelSample('urls')" title="Tải file mẫu đúng định dạng">⬇ Tải file mẫu</button></label>
             <div class="folder-select">
               <div class="folder-input-wrap">
                 <input
@@ -4258,6 +4293,8 @@ label.with-icon::before {
               <span class="sw-toolbar-sep"></span>
               <button class="btn btn-secondary" id="sw-gpm-connect-all" style="display:none;">🔌 Connect tất cả</button>
               <button class="btn btn-secondary" id="sw-stats-refresh">🔄 Số liệu</button>
+              <button class="btn btn-secondary" id="sw-template" title="Tải Google Sheet / Excel mẫu để biết cần điền những cột nào">⬇ Template mẫu</button>
+              <button class="btn btn-secondary" id="sw-create-cols" title="Thêm các cột tự động hoá (Tạo profile, Kênh BKT...) vào Sheet của bạn và tô màu">➕ Tạo cột</button>
               <!-- KHÔNG dùng class .btn/.btn-secondary: .btn-secondary đặt
                    min-width:145px !important, ép nút icon phình thành viên thuốc. -->
               <button class="sw-icon-btn sw-cog" id="sw-open-config" title="Cấu hình">⚙️</button>
@@ -4269,26 +4306,47 @@ label.with-icon::before {
             <summary style="cursor:pointer;font-size:13px;color:#4a5568;">📜 Log chi tiết</summary>
             <pre id="sw-log" style="height:200px;overflow:auto;background:#1a1a2e;color:#0f0;padding:12px;margin-top:8px;border-radius:8px;font-size:12px;line-height:1.5;"></pre>
           </details>
+          <!-- Tự động hóa theo Google Sheet: cột "Tạo profile" / "Tạo channel" của từng kênh quyết định việc cần làm -->
+          <details id="sw-auto-panel" class="sw-auto" style="margin-top:16px;">
+            <summary class="sw-auto-summary">🤖 Tự động hóa — tạo profile và channel từ Sheet</summary>
+            <div class="sw-auto-body">
+              <p class="sw-cfg-hint">
+                Không cần cấu hình trong app. Ở tab ⚙config, điền <b>có</b> vào cột <b>Tạo profile</b> và/hoặc <b>Tạo channel</b> của kênh muốn chạy rồi bấm Chạy.
+                <b>Tạo profile</b>: tạo profile GPM (Chrome 129), gán proxy từ cột Proxy tải, ghi GPM Profile ID, rồi đăng nhập bằng cột <b>tk</b>.
+                <b>Tạo channel</b>: tạo channel từ các cột Tên hiển thị, Mô tả kênh, Mô tả video, Tag, Handle kênh.
+                Ô trống nghĩa là không làm gì; làm xong app đổi ô thành <b>xong</b>, lỗi thì giữ nguyên để thử lại.
+              </p>
+              <div id="sw-auto-cols" class="sw-auto-cols"></div>
+              <div class="sw-auto-actions">
+                <button class="btn btn-secondary" id="sw-auto-preview">👁 Xem trước</button>
+                <button class="btn btn-success" id="sw-auto-run">▶ Chạy</button>
+                <button class="btn btn-secondary" id="sw-auto-sample" title="Tải file Excel mẫu các cột tự động hoá để dán vào Sheet">⬇ Tải file mẫu</button>
+                <button class="btn btn-secondary" id="sw-auto-cols-btn" title="Thêm các cột còn thiếu vào cuối dòng tiêu đề ⚙config">➕ Tạo cột còn thiếu</button>
+                <button class="btn btn-danger" id="sw-auto-stop" style="display:none;">■ Dừng</button>
+                <span id="sw-auto-status" class="sw-auto-status"></span>
+              </div>
+            </div>
+          </details>
         </div>
         <div id="composer" class="tab-content"></div>
 
-        <!-- Tab Tự động hóa: mọi chức năng lấy kênh từ Google Sheet (tab ⚙config) và ghi trạng thái về đó -->
+        <!-- Tab Tự động hóa: chạy trên profile GPM đã chọn (danh sách lấy từ GPM local) -->
         <div id="automation" class="tab-content">
           <div class="tab-header">
             <h2 id="automation-title">Auto Login</h2>
           </div>
 
           <div style="display:flex;gap:16px;align-items:flex-start;">
-          <!-- Danh sách kênh (từ Sheet) -->
+          <!-- Danh sách profile (từ GPM local) -->
           <aside class="auto-sidebar">
             <div class="auto-sidebar-head">
-              <strong>Kênh trong Sheet</strong>
-              <button class="btn btn-secondary" style="min-width:0;padding:4px 10px;" onclick="loadAutomationChannels()" title="Tải lại từ Sheet">🔄</button>
+              <strong>Profile GPM</strong>
+              <button class="btn btn-secondary" style="min-width:0;padding:4px 10px;" onclick="loadAutomationProfiles()" title="Tải lại danh sách từ GPM">🔄</button>
             </div>
-            <select id="automation-group-filter" onchange="renderAutomationChannels()">
-              <option value="">Tất cả group GPM</option>
+            <select id="automation-group-filter" onchange="renderAutomationProfiles()">
+              <option value="">Tất cả group</option>
             </select>
-            <input type="text" id="automation-profile-search" placeholder="Tìm theo tên kênh..." oninput="renderAutomationChannels()" />
+            <input type="text" id="automation-profile-search" placeholder="Tìm theo tên profile..." oninput="renderAutomationProfiles()" />
             <div class="auto-sidebar-tools">
               <label class="checkbox-label" style="margin:0;">
                 <input type="checkbox" id="automation-select-all" onchange="toggleAutomationSelectAll(this.checked)" />
@@ -4302,36 +4360,48 @@ label.with-icon::before {
           </aside>
 
           <div style="flex:1;min-width:0;">
-            <!-- Khung chung: chức năng này đọc/ghi cột nào của Sheet -->
-            <div class="card-section" id="automation-columns-box" style="padding:var(--space-md) var(--space-lg);">
-              <div class="card-section-title" style="margin-bottom:var(--space-sm);">📊 Dữ liệu từ Google Sheet (tab ⚙config)</div>
-              <div id="automation-columns" style="font-size:12px;line-height:1.9;"></div>
-              <div id="automation-columns-actions" style="margin-top:8px;"></div>
-            </div>
-
             <div class="info-box"><p id="automation-desc"></p></div>
 
-            <!-- Tuỳ chọn riêng của từng chức năng (chỉ hiện đúng khối đang chọn) -->
-            <div id="automation-sub-login" class="automation-sub"></div>
-
-            <div id="automation-sub-thumb" class="automation-sub" style="display:none;">
+            <!-- Auto Login: nhập tài khoản từ Excel -->
+            <div id="automation-sub-login" class="automation-sub">
               <div class="card-section">
-                <div class="card-section-title">🖼️ Tuỳ chọn</div>
+                <div class="card-section-title">📋 Tài khoản (Excel)</div>
+                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;">
+                  Cột A: <b>Profile ID</b> (khuyên dùng) hoặc tên profile · B: Gmail · C: Mật khẩu · D: Mail khôi phục · E: Mã 2FA (secret).
+                  Ghi tên thì tên đó phải là duy nhất trong GPM (tên trùng bị bỏ qua để khỏi nhầm). Profile không có dòng nào trong Excel sẽ bị bỏ qua.
+                </p>
                 <div class="form-group">
-                  <label>Thư mục thumbnail chung (tuỳ chọn)</label>
+                  <label>File Excel tài khoản <button type="button" class="sample-link" onclick="downloadExcelSample('login')" title="Tải file Excel mẫu đúng cột">⬇ Tải file mẫu</button></label>
                   <div class="folder-select">
                     <div class="folder-input-wrap">
-                      <input type="text" id="automation-thumb-folder" placeholder="Trống = mỗi kênh dùng thư mục overlays riêng của nó" readonly />
-                      <button class="folder-clear" type="button" onclick="clearAutomationField('automation-thumb-folder')">×</button>
+                      <input type="text" id="automation-login-file" placeholder="Chọn file gmail.xlsx" readonly />
+                      <button class="folder-clear" type="button" onclick="clearAutomationField('automation-login-file')">×</button>
                     </div>
-                    <button class="btn btn-secondary" onclick="pickAutomationFolder('automation-thumb-folder')">Chọn Folder</button>
+                    <button class="btn btn-secondary" onclick="pickAutomationFile('automation-login-file')">Chọn File</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Auto đổi Thumbnail -->
+            <div id="automation-sub-thumb" class="automation-sub" style="display:none;">
+              <div class="card-section">
+                <div class="card-section-title">🖼️ Thumbnail</div>
+                <div class="form-group">
+                  <label>Thư mục thumbnail chung</label>
+                  <div class="folder-select">
+                    <div class="folder-input-wrap">
+                      <input type="text" id="automation-thumb-folder" placeholder="Dùng cho mọi profile không có thư mục riêng" readonly />
+                      <button class="folder-clear" type="button" onclick="clearAutomationField('automation-thumb-folder'); renderThumbOverrides()">×</button>
+                    </div>
+                    <button class="btn btn-secondary" onclick="pickAutomationFolder('automation-thumb-folder').then(renderThumbOverrides)">Chọn Folder</button>
                   </div>
                   <small>Ảnh phải trùng tên video (.jpg/.jpeg/.png).</small>
                 </div>
-                <div class="form-row">
+                <div class="form-grid">
                   <div class="form-group">
                     <label>Số video mỗi kênh</label>
-                    <input type="number" id="automation-thumb-num" value="8" min="1" max="100" />
+                    <input type="number" id="automation-thumb-num" value="8" min="1" max="200" />
                   </div>
                   <div class="form-group">
                     <label>File Excel ghi link video (tuỳ chọn)</label>
@@ -4345,49 +4415,62 @@ label.with-icon::before {
                   </div>
                 </div>
               </div>
+              <div class="card-section">
+                <div class="card-section-title">📁 Thư mục riêng cho từng profile (tuỳ chọn)</div>
+                <p class="thumb-own-hint">Mỗi dòng là một profile đã tick ở thanh bên trái. Để trống = dùng thư mục chung. Thư mục riêng gắn với <b>Profile ID</b>, không gắn với tên, nên hai profile trùng tên vẫn không bị nhầm.</p>
+                <div id="automation-thumb-own"></div>
+              </div>
             </div>
 
+            <!-- Auto Lên lịch -->
             <div id="automation-sub-schedule" class="automation-sub" style="display:none;">
               <div class="card-section">
-                <div class="card-section-title">📅 Tuỳ chọn</div>
-                <div class="form-row">
+                <div class="card-section-title">📅 Lịch đăng</div>
+                <div class="form-grid cols-5">
                   <div class="form-group">
                     <label>Số ngày cần lên lịch</label>
                     <input type="number" id="automation-sch-days" value="3" min="1" max="60" />
                   </div>
                   <div class="form-group">
                     <label>Ngày bắt đầu (tuỳ chọn)</label>
-                    <input type="text" id="automation-sch-start" placeholder="2026_04_04 (trống = hôm nay)" />
+                    <input type="date" id="automation-sch-start" title="Để trống = hôm nay. Video đầu tiên được đặt vào ngày kế tiếp." />
                   </div>
                 </div>
-                <small>Giờ đăng của mỗi kênh lấy từ cột <strong>Giờ đăng</strong> trong Sheet. Số video cần có = số ngày × số giờ.</small>
+                <div class="form-group">
+                  <label>Giờ đăng mỗi ngày</label>
+                  <input type="text" id="automation-sch-times" value="8:00, 12:00, 18:00" />
+                  <small>Nhận 24h (8:00, 18:30) hoặc AM/PM (8:00 AM; 6:30 PM). Áp dụng cho mọi profile đã tick. Số video nháp cần có mỗi kênh = số ngày × số giờ.</small>
+                </div>
               </div>
             </div>
 
+            <!-- Rải video cho kênh -->
             <div id="automation-sub-distribute" class="automation-sub" style="display:none;">
               <div class="card-section">
                 <div class="card-section-title">📤 Tuỳ chọn</div>
-                <div class="form-group">
-                  <label>Thư mục video</label>
-                  <div class="folder-select">
-                    <div class="folder-input-wrap">
-                      <input type="text" id="automation-dist-videos" placeholder="Chọn thư mục chứa video cần đăng" readonly />
-                      <button class="folder-clear" type="button" onclick="clearAutomationField('automation-dist-videos')">×</button>
+                <div class="form-grid">
+                  <div class="form-group">
+                    <label>Thư mục video</label>
+                    <div class="folder-select">
+                      <div class="folder-input-wrap">
+                        <input type="text" id="automation-dist-videos" placeholder="Chọn thư mục chứa video cần đăng" readonly />
+                        <button class="folder-clear" type="button" onclick="clearAutomationField('automation-dist-videos')">×</button>
+                      </div>
+                      <button class="btn btn-secondary" onclick="pickAutomationFolder('automation-dist-videos')">Chọn Folder</button>
                     </div>
-                    <button class="btn btn-secondary" onclick="pickAutomationFolder('automation-dist-videos')">Chọn Folder</button>
+                  </div>
+                  <div class="form-group">
+                    <label>Thư mục thumbnail (tuỳ chọn)</label>
+                    <div class="folder-select">
+                      <div class="folder-input-wrap">
+                        <input type="text" id="automation-dist-thumbs" placeholder="Ảnh trùng tên video làm thumbnail" readonly />
+                        <button class="folder-clear" type="button" onclick="clearAutomationField('automation-dist-thumbs')">×</button>
+                      </div>
+                      <button class="btn btn-secondary" onclick="pickAutomationFolder('automation-dist-thumbs')">Chọn Folder</button>
+                    </div>
                   </div>
                 </div>
-                <div class="form-group">
-                  <label>Thư mục thumbnail (tuỳ chọn)</label>
-                  <div class="folder-select">
-                    <div class="folder-input-wrap">
-                      <input type="text" id="automation-dist-thumbs" placeholder="Ảnh trùng tên video sẽ được dùng làm thumbnail" readonly />
-                      <button class="folder-clear" type="button" onclick="clearAutomationField('automation-dist-thumbs')">×</button>
-                    </div>
-                    <button class="btn btn-secondary" onclick="pickAutomationFolder('automation-dist-thumbs')">Chọn Folder</button>
-                  </div>
-                </div>
-                <div class="form-row">
+                <div class="form-grid">
                   <div class="form-group">
                     <label>Kiểu rải</label>
                     <select id="automation-dist-mode" onchange="document.getElementById('automation-dist-per-wrap').style.display = this.value === 'sequential' ? '' : 'none'">
@@ -4401,27 +4484,43 @@ label.with-icon::before {
                     <input type="number" id="automation-dist-per" value="3" min="1" max="200" />
                   </div>
                 </div>
-                <small>Giờ đăng mỗi ngày của từng kênh lấy từ cột <strong>Giờ đăng</strong> trong Sheet.</small>
+                <div class="form-group">
+                  <label>Giờ đăng mỗi ngày</label>
+                  <input type="text" id="automation-dist-times" value="8:00, 12:00, 18:00" />
+                  <small>Video thứ k của mỗi kênh được đặt vào ngày kế tiếp, lần lượt qua các giờ rồi sang ngày sau.</small>
+                </div>
               </div>
             </div>
 
+            <!-- Kiểm tra proxy -->
             <div id="automation-sub-proxycheck" class="automation-sub" style="display:none;"></div>
-            <div id="automation-sub-proxysync" class="automation-sub" style="display:none;"></div>
 
-            <div id="automation-sub-addchannel" class="automation-sub" style="display:none;">
+            <!-- Tạo channel: nhập từ Excel -->
+            <div id="automation-sub-createchannel" class="automation-sub" style="display:none;">
               <div class="card-section">
-                <div class="card-section-title">➕ Tuỳ chọn</div>
-                <div class="form-row">
-                  <div class="form-group">
-                    <label>Phiên bản Chrome mặc định</label>
-                    <input type="text" id="automation-ac-version" value="129" />
-                    <small>Dùng khi dòng không có cột Phiên bản Chrome. GPM bản cũ luôn dùng bản Chrome đã cài sẵn và chỉ kiểm tra bản chính.</small>
+                <div class="card-section-title">📋 Thông tin channel (Excel)</div>
+                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;">
+                  Cột A: <b>Profile ID</b> (khuyên dùng) hoặc tên profile · B: Tên kênh · C: Mô tả kênh · D: Mô tả video mặc định · E: Tag · F: Handle kênh.
+                  Cùng thứ tự cột với script GPM <code>02.auto_create_channel</code>.
+                </p>
+                <div class="form-group">
+                  <label>File Excel tạo channel <button type="button" class="sample-link" onclick="downloadExcelSample('channel')" title="Tải file Excel mẫu đúng cột">⬇ Tải file mẫu</button></label>
+                  <div class="folder-select">
+                    <div class="folder-input-wrap">
+                      <input type="text" id="automation-cc-file" placeholder="Chọn file input.xlsx" readonly />
+                      <button class="folder-clear" type="button" onclick="clearAutomationField('automation-cc-file')">×</button>
+                    </div>
+                    <button class="btn btn-secondary" onclick="pickAutomationFile('automation-cc-file')">Chọn File</button>
                   </div>
-                  <div class="form-group">
-                    <label class="checkbox-label" style="margin-top:28px;">
-                      <input type="checkbox" id="automation-ac-login" checked />
-                      <span>Đăng nhập sau khi tạo profile</span>
-                    </label>
+                </div>
+                <div class="form-group">
+                  <label>File Excel tài khoản (tuỳ chọn) <button type="button" class="sample-link" onclick="downloadExcelSample('login')" title="Tải file mẫu đúng định dạng">⬇ Tải file mẫu</button></label>
+                  <div class="folder-select">
+                    <div class="folder-input-wrap">
+                      <input type="text" id="automation-cc-accounts" placeholder="Có file này thì đăng nhập trước nếu profile chưa đăng nhập" readonly />
+                      <button class="folder-clear" type="button" onclick="clearAutomationField('automation-cc-accounts')">×</button>
+                    </div>
+                    <button class="btn btn-secondary" onclick="pickAutomationFile('automation-cc-accounts')">Chọn File</button>
                   </div>
                 </div>
               </div>
@@ -4429,13 +4528,13 @@ label.with-icon::before {
 
             <div class="form-row" style="margin-top:var(--space-md);align-items:end;">
               <div class="form-group" id="automation-concurrency-wrap" style="max-width:240px;margin-bottom:0;">
-                <label>Số kênh chạy cùng lúc</label>
+                <label>Số profile chạy cùng lúc</label>
                 <input type="number" id="automation-concurrency" value="1" min="1" max="10" />
               </div>
             </div>
 
             <div class="action-buttons">
-              <button class="btn btn-secondary" data-auto-run onclick="previewAutomation()">👁 Xem trước</button>
+              <button class="btn btn-secondary" data-auto-run onclick="previewAutomation()" id="automation-preview-btn">👁 Xem trước</button>
               <button class="btn btn-success" data-auto-run onclick="runAutomation()" id="automation-run-btn">▶ Chạy</button>
               <button class="btn btn-danger" data-auto-stop onclick="stopAutomationRun()" style="display:none;">■ Dừng</button>
             </div>
@@ -4458,7 +4557,7 @@ label.with-icon::before {
         <div class="modal-body">
           <p class="sw-cfg-hint">Thay đổi được lưu tự động. Đổi cấu hình khi đang chạy thì phải Stop rồi Start lại.</p>
 
-          <h4 class="sw-cfg-group">Google Sheet</h4>
+          <h4 class="sw-cfg-group" data-g="sheet">Google Sheet</h4>
           <div class="form-group">
             <label>Spreadsheet ID</label>
             <input id="sw-spreadsheet-id" type="text" style="width:100%">
@@ -4484,9 +4583,10 @@ label.with-icon::before {
           <div class="form-group" style="display:flex;align-items:center;gap:10px;">
             <button class="btn btn-secondary" id="sw-test" title="Kiểm tra kết nối tới Sheet">🔌 Kiểm tra kết nối</button>
             <span id="sw-test-status" style="font-size:13px;"></span>
+            <button class="btn btn-secondary" id="sw-full-sample" title="Tải Sheet mẫu đầy đủ: 59 cột có màu theo từng chế độ + tab hướng dẫn">⬇ Tải Sheet mẫu đầy đủ</button>
           </div>
 
-          <h4 class="sw-cfg-group">Tải video</h4>
+          <h4 class="sw-cfg-group" data-g="download">Tải video</h4>
           <div class="form-group">
             <label>Thư mục nhiều cookie (chống bot-check)</label>
             <div class="folder-select">
@@ -4503,7 +4603,7 @@ label.with-icon::before {
             Để trống thì dùng cookie đã cấu hình ở tab "Tải video".
           </p>
 
-          <h4 class="sw-cfg-group">Render</h4>
+          <h4 class="sw-cfg-group" data-g="render">Render</h4>
           <div class="form-group" style="display:flex;gap:24px;flex-wrap:wrap;align-items:flex-end;">
             <div>
               <label>Poll (giây)</label>
@@ -4541,7 +4641,7 @@ label.with-icon::before {
             <input id="sw-yt-api-key" type="text" placeholder="AIza…" style="width:100%">
           </div>
 
-          <h4 class="sw-cfg-group">GPM &amp; thông báo</h4>
+          <h4 class="sw-cfg-group" data-g="gpm">GPM &amp; thông báo</h4>
           <div class="form-group">
             <label style="display:flex;align-items:center;gap:8px;font-weight:600;">
               <input id="sw-gpm-enabled" type="checkbox"> Bật tự động GPM (đăng bằng trình duyệt GPM)
@@ -4742,6 +4842,7 @@ label.with-icon::before {
       </div>
     </div>
 
+    <script src="app-dialog.cjs"></script>
     <script src="renderer.js"></script>
     <!-- Giai đoạn 2B: hàm thuần tính anchor cho canvas kéo thả (sheet/composer-geometry.cjs) —
          PHẢI nạp trước composer-ui.js vì nó gắn vào window.ComposerGeometry, composer-ui.js đọc

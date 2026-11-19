@@ -8,6 +8,7 @@
 
 import fs from "fs";
 import path from "path";
+import { clickNextUntil, maxNextClicks, pageIo, walkError } from "./studio-wizard.js";
 
 // ─────────────────────────────────────────────────────────────
 // SELECTOR — sửa ở đây khi UI YouTube đổi
@@ -275,6 +276,7 @@ export async function uploadAndSchedule({
   thumbnailPath,
   scheduleISO,
   locale = "vi",
+  monetized = false, // kênh đã bật kiếm tiền (BKT): hộp thoại có thêm bước
   log = () => {},
   onUploaded = () => {}, // gọi khi video đã bắt đầu upload (để queue biết KHÔNG retry — tránh trùng)
   onStep = () => {},     // gọi ở mỗi mốc (để ghi ngược trạng thái vào Sheet)
@@ -375,9 +377,20 @@ export async function uploadAndSchedule({
   // ══════════════════════════════════════════════════════════
   log(`b4: lên lịch ${scheduleISO}…`);
   await humanPause();
-  // Nhảy tới bước "Hiển thị" (Visibility) — nơi có tuỳ chọn lên lịch.
-  if (!(await existClick(page, SEL.stepReview, { maxTries: 60, label: "bước Hiển thị", log })))
-    throw new Error("Không tới được bước Hiển thị — kiểm tra SEL.stepReview.");
+  // Tới bước "Hiển thị" (Visibility) — nơi có tuỳ chọn lên lịch.
+  // Kênh thường: nhảy thẳng bằng thanh bước. Kênh BKT: có thêm bước Kiếm tiền nên nhảy thẳng thường không
+  // được, hoặc bị chặn nếu chưa qua bước đó → đi từng bước bằng Next cho tới khi thấy ô "Lên lịch".
+  const io = pageIo(page);
+  const atVisibility = async () => !!(await page.$(SEL.scheduleRadio)) && (await io.visible(SEL.scheduleRadio));
+  if (!monetized) {
+    const jumped = await existClick(page, SEL.stepReview, { maxTries: 60, label: "bước Hiển thị", log });
+    if (!jumped && !(await atVisibility())) throw new Error("Không tới được bước Hiển thị — kiểm tra SEL.stepReview.");
+  } else {
+    log("b4: kênh BKT — đi qua từng bước bằng Next…");
+    const w = await clickNextUntil(io, { isTarget: atVisibility, maxSteps: maxNextClicks({ monetized }), label: "bước Hiển thị", log });
+    log(`b4: ${w.clicks} lần Next, các bước: ${w.steps.join(" → ") || "(không rõ)"}`);
+    if (!w.reached) throw new Error(walkError(w, "bước Hiển thị", { monetized }));
+  }
   await humanPause(1000, 1800);
   // Chỉ lấy GIỜ (bỏ nhập ngày theo yêu cầu — ngày để mặc định của YouTube).
   const { timeStr } = formatScheduleForPicker(scheduleISO, locale);

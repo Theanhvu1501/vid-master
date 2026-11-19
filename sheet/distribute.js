@@ -97,7 +97,7 @@ export async function runDistribute(o) {
   const log = o.onLog || console.log;
   const plan = buildPlan({ ...o, startDate: new Date() });
   const byId = new Map(plan.channels.map((c) => [c.profileId, c]));
-  const profiles = plan.channels.filter((c) => c.items.length).map((c) => ({ id: c.profileId, name: c.name, rowIndex: (o.profiles || []).find((p) => p.id === c.profileId)?.rowIndex }));
+  const profiles = plan.channels.filter((c) => c.items.length).map((c) => { const src = (o.profiles || []).find((p) => p.id === c.profileId); return { id: c.profileId, name: c.name, rowIndex: src?.rowIndex, monetized: !!src?.monetized }; });
   if (!profiles.length) throw new Error("Không có video nào được chia cho kênh nào");
   if (plan.leftover.length) log(`⚠️ ${plan.leftover.length} video dư, không đăng lượt này`);
 
@@ -111,7 +111,7 @@ export async function runDistribute(o) {
         const it = items[i];
         plog(`video ${i + 1}/${items.length}: ${it.title} → ${it.scheduleISO}`);
         try {
-          await uploadAndSchedule({ page, ...it, log: plog });
+          await uploadAndSchedule({ page, ...it, monetized: !!p.monetized, log: plog });
           ok++;
         } catch (e) {
           // Đã nạp file lên YouTube rồi thì thử lại sẽ tạo bản nháp trùng — chỉ ghi lỗi, đi tiếp video sau.

@@ -1149,7 +1149,7 @@
       // Preset mới chưa từng lưu — không có file để xoá, chỉ cần bỏ khỏi bộ nhớ.
       preset = null; dirty = false; validation = null; renderEditor(); return;
     }
-    if (!confirm(`Xoá preset "${currentName}"? Không thể hoàn tác.`)) return;
+    if (!(await window.appConfirm(`Xoá preset "${currentName}"? Không thể hoàn tác.`, { title: "Xoá preset", okText: "Xoá", danger: true }))) return;
     const res = await api().delete(currentName);
     if (!res.ok) { alert(`Không xoá được: ${res.error}`); return; }
     currentName = null; preset = null; dirty = false; validation = null;

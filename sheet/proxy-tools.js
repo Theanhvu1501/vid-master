@@ -80,10 +80,10 @@ export function checkProxy(raw, { timeoutSec = 15, url = "https://api.ipify.org"
 
 // ----- Chạy cho các profile đã chọn (chạy ở main process, log đẩy về UI) -----
 
-export async function runProxyCheck({ gpmHost, profiles, concurrency = 5, onLog, checkFn = checkProxy }) {
+export async function runProxyCheck({ gpmHost, profiles, concurrency = 5, onLog, checkFn = checkProxy, listFn = listGpmProfilesFull }) {
   const log = onLog || console.log;
   if (!profiles?.length) throw new Error("Chưa chọn profile nào");
-  const all = await listGpmProfilesFull(gpmHost);
+  const all = await listFn(gpmHost);
   const byId = new Map(all.map((p) => [p.id, p]));
   const limit = pLimit(Math.max(1, parseInt(concurrency, 10) || 5));
   const n = { ok: 0, dead: 0, none: 0 };
@@ -100,40 +100,4 @@ export async function runProxyCheck({ gpmHost, profiles, concurrency = 5, onLog,
   const message = `${n.ok} sống, ${n.dead} chết, ${n.none} chưa có proxy`;
   log(`\n🏁 ${message}`);
   return { success: true, ...n, message };
-}
-
-// Đồng bộ proxy từ cột Sheet sang profile GPM. Mỗi kênh một proxy riêng: nếu hai kênh được chọn
-// có cùng proxy thì kênh sau bị từ chối (dùng chung một IP cho nhiều kênh là điều cần tránh).
-// Ô proxy trống thì GIỮ NGUYÊN proxy hiện có của profile (không xoá).
-export async function runProxySync({ gpmHost, profiles, onLog, updateFn = updateGpmProfileProxy, listFn = listGpmProfilesFull }) {
-  const log = onLog || console.log;
-  if (!profiles?.length) throw new Error("Chưa chọn kênh nào");
-  const current = new Map((await listFn(gpmHost)).map((p) => [p.id, p]));
-  const res = { total: profiles.length, ok: 0, same: 0, fail: 0, skipped: 0 };
-  const owner = new Map(); // proxy chuẩn hoá -> tên kênh đã dùng
-
-  for (const p of profiles) {
-    checkCancelled();
-    const tag = `[${p.name}]`;
-    if (!String(p.proxy ?? "").trim()) { res.skipped++; log(`${tag} ⏭ ô proxy trong Sheet trống — giữ nguyên proxy của profile`); continue; }
-    let want;
-    try { want = toGpmProxy(p.proxy); } catch (e) { res.fail++; log(`${tag} ❌ ${e.message}`); continue; }
-    if (owner.has(want)) { res.fail++; log(`${tag} ❌ trùng proxy với kênh "${owner.get(want)}" — mỗi kênh cần một proxy riêng`); continue; }
-    owner.set(want, p.name);
-
-    let have = "";
-    try { have = toGpmProxy(current.get(p.id)?.rawProxy); } catch { have = String(current.get(p.id)?.rawProxy ?? ""); }
-    if (have === want) { res.same++; log(`${tag} ✅ đã đúng (${maskProxy(want)})`); continue; }
-    try {
-      await updateFn(gpmHost, p.id, want);
-      res.ok++;
-      log(`${tag} ✅ đã gán ${maskProxy(want)}`);
-    } catch (e) {
-      res.fail++;
-      log(`${tag} ❌ ${e.message}`);
-    }
-  }
-  const message = `gán mới ${res.ok}, đã đúng ${res.same}, bỏ qua ${res.skipped}, lỗi ${res.fail}`;
-  log(`\n🏁 ${message}`);
-  return { success: true, ...res, message };
 }

@@ -18,6 +18,7 @@ test("parseConfigRows maps columns and defaults enabled=true when blank", () => 
     // uploadEnabled: cột "upload" không có trong header -> truthy("") = true (mặc định bật).
     uploadEnabled: true,
     cfg: { opacity: 0.7 }, proxy: "", gpmProfileId: "", postTimes: "",
+    monetized: false, // cột "Kênh BKT" không có trong header -> kênh thường
     rowIndex: 2, channelUrl: "", sourceHandle: "", videoSource: "download",
     // Task 10: 2 khoá mới luôn có mặt (giống rowIndex/channelUrl/sourceHandle trước đây),
     // rỗng khi Sheet không có cột preset/asset nào.

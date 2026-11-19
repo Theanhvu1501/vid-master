@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { parseProxy, maskProxy, toGpmProxy, checkProxy, runProxySync, runProxyCheck } from "../sheet/proxy-tools.js";
+import { parseProxy, maskProxy, toGpmProxy, checkProxy, runProxyCheck } from "../sheet/proxy-tools.js";
 
 const GPM_STYLE = "socks5://1.2.3.4:19424:user1:p@ss";
 
@@ -77,58 +77,25 @@ test("toGpmProxy: chuẩn hoá về scheme://host:port:user:pass", () => {
   assert.throws(() => toGpmProxy("rác"), /không hợp lệ/);
 });
 
-const prof = (id, name, proxy) => ({ id, name, proxy });
-const cur = (list) => async () => list; // listFn giả
-
-test("runProxySync: gán proxy từ Sheet, bỏ qua ô trống, log không lộ mật khẩu", async () => {
-  const sent = [], logs = [];
-  const r = await runProxySync({
-    gpmHost: "h",
-    profiles: [prof("a", "A", "1.1.1.1:80:u:SECRET1"), prof("b", "B", ""), prof("c", "C", "3.3.3.3:80:u:SECRET3")],
-    listFn: cur([{ id: "a", rawProxy: "" }, { id: "b", rawProxy: "socks5://9.9.9.9:1:x:y" }, { id: "c", rawProxy: "" }]),
-    updateFn: async (h, id, raw) => sent.push([id, raw]),
-    onLog: (m) => logs.push(m),
+// ---- runProxyCheck: chỉ đọc proxy từ GPM, không ghi gì ----
+test("runProxyCheck: kiểm tra từng profile, đếm sống/chết/chưa có, log không lộ mật khẩu", async () => {
+  const logs = [];
+  const profiles = [{ id: "a", name: "A" }, { id: "b", name: "B" }, { id: "c", name: "C" }];
+  const r = await runProxyCheck({
+    gpmHost: "h", profiles, onLog: (m) => logs.push(m),
+    listFn: async () => [
+      { id: "a", rawProxy: "socks5://1.1.1.1:80:u:SECRETA" },
+      { id: "b", rawProxy: "socks5://2.2.2.2:80:u:SECRETB" },
+      { id: "c", rawProxy: "" },
+    ],
+    checkFn: async (raw) => (raw.includes("1.1.1.1") ? { ok: true, ip: "9.9.9.9", ms: 120 } : { ok: false, error: "quá thời gian chờ" }),
   });
-  assert.deepEqual(sent.map((s) => s[0]), ["a", "c"]);
-  assert.equal(r.ok, 2);
-  assert.equal(r.skipped, 1, "ô trống giữ nguyên proxy cũ");
+  assert.equal(r.ok, 1);
+  assert.equal(r.dead, 1);
+  assert.equal(r.none, 1);
   assert.ok(!logs.join("\n").includes("SECRET"));
 });
 
-test("runProxySync: proxy đã đúng thì không gọi GPM nữa", async () => {
-  const sent = [];
-  const r = await runProxySync({
-    gpmHost: "h", profiles: [prof("a", "A", "1.1.1.1:80:u:p")],
-    listFn: cur([{ id: "a", rawProxy: "http://1.1.1.1:80:u:p" }]),
-    updateFn: async (...x) => sent.push(x), onLog: () => {},
-  });
-  assert.equal(sent.length, 0);
-  assert.equal(r.same, 1);
-});
-
-test("runProxySync: hai kênh cùng proxy -> kênh sau bị từ chối, kênh đầu vẫn được gán", async () => {
-  const sent = [];
-  const r = await runProxySync({
-    gpmHost: "h", profiles: [prof("a", "A", "1.1.1.1:80:u:p"), prof("b", "B", "1.1.1.1:80:u:p")],
-    listFn: cur([{ id: "a", rawProxy: "" }, { id: "b", rawProxy: "" }]),
-    updateFn: async (h, id) => sent.push(id), onLog: () => {},
-  });
-  assert.deepEqual(sent, ["a"]);
-  assert.equal(r.fail, 1);
-});
-
-test("runProxySync: proxy sai hoặc GPM từ chối chỉ lỗi đúng kênh đó", async () => {
-  const sent = [];
-  const r = await runProxySync({
-    gpmHost: "h", profiles: [prof("a", "A", "rác"), prof("b", "B", "2.2.2.2:80:u:p"), prof("c", "C", "3.3.3.3:80:u:p")],
-    listFn: cur([{ id: "a" }, { id: "b" }, { id: "c" }]),
-    updateFn: async (h, id) => { if (id === "b") throw new Error("GPM từ chối"); sent.push(id); }, onLog: () => {},
-  });
-  assert.deepEqual(sent, ["c"]);
-  assert.equal(r.fail, 2);
-  assert.equal(r.ok, 1);
-});
-
-test("runProxySync: không chọn kênh nào thì báo lỗi", async () => {
-  await assert.rejects(runProxySync({ gpmHost: "h", profiles: [], listFn: cur([]), updateFn: async () => {}, onLog: () => {} }), /Chưa chọn/);
+test("runProxyCheck: không chọn profile nào thì báo lỗi", async () => {
+  await assert.rejects(runProxyCheck({ gpmHost: "h", profiles: [], listFn: async () => [], checkFn: async () => ({}), onLog: () => {} }), /Chưa chọn/);
 });

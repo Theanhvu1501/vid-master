@@ -1,52 +1,115 @@
-// Tab ⚙config của Google Sheet là NGUỒN DUY NHẤT về kênh: mỗi hàng là một kênh, mọi chức năng
-// automation đọc dữ liệu từ đó và ghi kết quả về đó. File này gom phần dùng chung:
-//   - danh sách cột mỗi chức năng ĐỌC và GHI (để giao diện hiện cho người dùng thấy rõ),
-//   - đọc các hàng kênh, chọn kênh chạy được cho từng chức năng (kèm lý do loại),
-//   - ghi trạng thái từng kênh về Sheet, tạo cột còn thiếu khi người dùng bấm nút.
+// Luồng tự động hoá trong Theo dõi Sheet đọc kênh từ tab ⚙config và ghi kết quả về đó. Mọi lựa chọn
+// (kênh nào tạo profile, kênh nào tạo channel, bản Chrome...) nằm ở Sheet, không cấu hình trong app.
+// File này gom phần dùng chung: danh sách cột, đọc các hàng kênh, đọc cờ bật/tắt, kiểm tra/tạo cột
+// còn thiếu, ghi trạng thái từng kênh về Sheet.
 
-import fs from "fs";
-import path from "path";
 import { locateConfigColumns } from "./sheets-service.js";
-import { splitPostTimes, formatStamp } from "./schedule-slots.js";
-import { maskProxy } from "./proxy-tools.js";
+import { formatStamp } from "./schedule-slots.js";
 
 // Tên hiển thị của từng cột (đúng chữ sẽ được ghi vào dòng tiêu đề khi tạo cột).
 export const COLUMN_LABELS = {
   sheetName: "Tên kênh",
   gpmProfileId: "GPM Profile ID",
+  monetized: "Kênh BKT",
+  autoProfile: "Tạo profile",
+  autoChannel: "Tạo channel",
   account: "tk",
   chromeVersion: "Phiên bản Chrome",
-  postTimes: "Giờ đăng",
   proxy: "Proxy tải",
   profileProxy: "Proxy profile",
-  loginStatus: "Trạng thái login",
-  thumbStatus: "Trạng thái thumb",
-  scheduleStatus: "Trạng thái lịch",
+  channelTitle: "Tên hiển thị",
+  channelDesc: "Mô tả kênh",
+  videoDesc: "Mô tả video",
+  videoTags: "Tag",
+  channelHandle: "Handle kênh",
+  autoStatus: "Trạng thái tự động hóa",
 };
 const KEYS = Object.keys(COLUMN_LABELS);
 
+// Nhóm cột của phần tự động hoá: mỗi nhóm một màu để nhìn Sheet biết ngay cột nào thuộc việc gì.
+// band = màu dải nhóm (dòng trên tiêu đề, gộp ô); tint = màu nhạt cho dòng tên cột.
+// Chọn khác các nhóm sẵn có của ⚙config (render, tải xuống, lên lịch...) để không lẫn.
+export const COLUMN_GROUPS = [
+  { id: "profile", label: "TỰ ĐỘNG HOÁ — TẠO PROFILE", keys: ["autoProfile", "gpmProfileId", "account", "chromeVersion", "profileProxy", "monetized"], band: "#F2A65A", tint: "#FCE8D2" },
+  { id: "channel", label: "TỰ ĐỘNG HOÁ — TẠO CHANNEL", keys: ["autoChannel", "channelTitle", "channelDesc", "videoDesc", "videoTags", "channelHandle"], band: "#B39DDB", tint: "#E8E1F5" },
+  { id: "status", label: "TỰ ĐỘNG HOÁ — KẾT QUẢ", keys: ["autoStatus"], band: "#B0BEC5", tint: "#ECEFF1" },
+];
+const groupIndexOf = (key) => COLUMN_GROUPS.findIndex((g) => g.keys.includes(key));
+
+// Sắp các cột sắp tạo theo nhóm (cột cùng nhóm nằm liền nhau để gộp ô dải nhóm được).
+export function orderCreatable(keys) {
+  const rank = (k) => { const i = groupIndexOf(k); return i < 0 ? COLUMN_GROUPS.length : i; };
+  return [...new Set(keys)].map((k, i) => ({ k, i })).sort((x, y) => rank(x.k) - rank(y.k) || x.i - y.i).map((x) => x.k);
+}
+
+/**
+ * Kế hoạch định dạng cho các cột mới (hàm thuần): mỗi nhóm liền nhau là một dải cần gộp ô + tô màu.
+ * bandRow < 0 nghĩa là Sheet không có dòng nhóm phía trên tiêu đề -> chỉ tô màu dòng tên cột.
+ * bandFree = các ô dải nhóm của nhóm đó còn TRỐNG (không ghi đè nội dung có sẵn của người dùng).
+ */
+export function planColumnFormat({ values, headerRowIndex, startCol, keys }) {
+  const ordered = orderCreatable(keys);
+  const bandRow = headerRowIndex > 0 ? headerRowIndex - 1 : -1;
+  const runs = [];
+  ordered.forEach((key, i) => {
+    const gi = groupIndexOf(key);
+    if (gi < 0) return;
+    const col = startCol + i;
+    const last = runs[runs.length - 1];
+    if (last && last.gi === gi && last.endCol === col) last.endCol = col + 1;
+    else runs.push({ gi, startCol: col, endCol: col + 1 });
+  });
+  const cellEmpty = (r, c) => String(values?.[r]?.[c] ?? "").trim() === "";
+  return {
+    bandRow,
+    headerRow: headerRowIndex,
+    groups: runs.map((r) => {
+      const g = COLUMN_GROUPS[r.gi];
+      let free = bandRow >= 0;
+      for (let c = r.startCol; free && c < r.endCol; c++) free = cellEmpty(bandRow, c);
+      return { id: g.id, label: g.label, band: g.band, tint: g.tint, startCol: r.startCol, endCol: r.endCol, bandFree: free };
+    }),
+  };
+}
+
 const req = (key) => ({ key, required: true });
 const opt = (key) => ({ key, required: false });
+const mk = (key) => ({ key, required: false, make: true }); // tuỳ chọn nhưng tạo cùng khi bấm "Tạo cột còn thiếu"
 
-// reads  = cột chức năng lấy dữ liệu từ đó; writes = cột chức năng ghi kết quả vào.
+// reads = cột chức năng lấy dữ liệu từ đó; writes = cột chức năng ghi kết quả vào.
 export const TASKS = {
-  addchannel: {
-    label: "Thêm kênh mới",
-    reads: [req("sheetName"), req("account"), opt("proxy"), opt("profileProxy"), opt("chromeVersion")],
-    writes: [req("gpmProfileId"), opt("loginStatus")],
+  automation: {
+    label: "Tự động hóa",
+    reads: [
+      req("sheetName"), mk("autoProfile"), mk("autoChannel"), mk("monetized"), opt("account"), opt("proxy"), opt("profileProxy"), opt("chromeVersion"),
+      mk("channelTitle"), mk("channelDesc"), mk("videoDesc"), mk("videoTags"), mk("channelHandle"),
+    ],
+    writes: [req("gpmProfileId"), mk("autoStatus")],
   },
-  login: { label: "Auto Login", reads: [req("sheetName"), req("gpmProfileId"), req("account")], writes: [opt("loginStatus")] },
-  thumb: { label: "Auto đổi Thumbnail", reads: [req("sheetName"), req("gpmProfileId")], writes: [opt("thumbStatus")] },
-  schedule: { label: "Auto Lên lịch", reads: [req("sheetName"), req("gpmProfileId"), req("postTimes")], writes: [opt("scheduleStatus")] },
-  distribute: { label: "Rải video cho kênh", reads: [req("sheetName"), req("gpmProfileId"), req("postTimes")], writes: [opt("scheduleStatus")] },
-  proxycheck: { label: "Kiểm tra proxy", reads: [req("sheetName"), req("gpmProfileId")], writes: [] },
-  proxysync: { label: "Đồng bộ proxy", reads: [req("sheetName"), req("gpmProfileId"), req("proxy"), opt("profileProxy")], writes: [] },
 };
 
-// Chức năng nào ghi trạng thái vào cột nào.
-export const STATUS_KEY = { login: "loginStatus", thumb: "thumbStatus", schedule: "scheduleStatus", distribute: "scheduleStatus", addchannel: "loginStatus" };
+// ---------------------------------------------------------------------------------------------
+// Cờ bật/tắt của ô "Tạo profile" / "Tạo channel"
+// ---------------------------------------------------------------------------------------------
 
-const lower = (s) => String(s ?? "").trim().toLowerCase();
+const fold = (s) => String(s ?? "").trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/đ/g, "d");
+const ON = new Set(["co", "c", "yes", "y", "true", "1", "x", "on", "bat", "✓", "✔", "☑"]);
+const DONE = new Set(["xong", "done", "da xong"]);
+
+/**
+ * "on"  : người dùng muốn chạy (có / yes / 1 / x ...)
+ * "done": đã chạy xong (app ghi "xong" vào ô sau khi thành công) — không chạy lại
+ * "off" : trống hoặc giá trị khác — KHÔNG chạy. Khác các cột bật/tắt cũ (trống = bật), vì đây là
+ *         thao tác tạo thật nên phải do người dùng chủ động bật.
+ */
+export function flagState(v) {
+  const s = fold(v);
+  if (!s) return "off";
+  if (ON.has(s)) return "on";
+  if (DONE.has(s) || s.startsWith("✅")) return "done";
+  return "off";
+}
+export const FLAG_DONE_TEXT = "xong";
 
 // "gmail|mật khẩu|mail khôi phục|mã 2FA" -> object. Ném lỗi nếu thiếu gmail/mật khẩu.
 export function parseAccount(text) {
@@ -55,10 +118,6 @@ export function parseAccount(text) {
   if (!password) throw new Error("cột tk thiếu mật khẩu");
   return { email, password, recoveryEmail, twoFactorSecret };
 }
-
-// ---------------------------------------------------------------------------------------------
-// Đọc Sheet
-// ---------------------------------------------------------------------------------------------
 
 export function readChannelRows(values) {
   const { headerRowIndex, cols } = locateConfigColumns(values, KEYS);
@@ -74,30 +133,37 @@ export function readChannelRows(values) {
       sheetName,
       rowIndex: r + 1, // 1-based, dùng thẳng trong A1 notation
       gpmProfileId: cell(r, "gpmProfileId"),
+      monetized: flagState(cell(r, "monetized")) === "on",
+      autoProfile: flagState(cell(r, "autoProfile")),
+      autoChannel: flagState(cell(r, "autoChannel")),
       account: cell(r, "account"),
       chromeVersion: cell(r, "chromeVersion"),
-      postTimes: cell(r, "postTimes"),
       // Proxy của profile: cột "Proxy profile" nếu có, không thì dùng cột "Proxy tải" sẵn có.
       proxy: cell(r, "profileProxy") || cell(r, "proxy"),
-      loginStatus: cell(r, "loginStatus"),
-      thumbStatus: cell(r, "thumbStatus"),
-      scheduleStatus: cell(r, "scheduleStatus"),
+      channelTitle: cell(r, "channelTitle"),
+      channelDesc: cell(r, "channelDesc"),
+      videoDesc: cell(r, "videoDesc"),
+      videoTags: cell(r, "videoTags"),
+      channelHandle: cell(r, "channelHandle"),
     });
   }
   return { rows, cols, headerRowIndex };
 }
 
-// Mô tả cột của một chức năng: có hay chưa, bắt buộc hay không. Dùng cho khung "Đọc/Ghi" trên giao diện.
+// Mô tả cột của một chức năng: có hay chưa, bắt buộc hay không. Dùng cho khung cột trên giao diện.
 export function describeTask(values, taskId) {
   const t = TASKS[taskId];
   if (!t) throw new Error(`Chức năng không tồn tại: ${taskId}`);
-  const { cols } = locateConfigColumns(values, KEYS);
-  const map = (list) => list.map((c) => ({ key: c.key, label: COLUMN_LABELS[c.key], required: c.required, present: cols[c.key] !== undefined }));
+  const { headerRowIndex, cols } = locateConfigColumns(values, KEYS);
+  if (headerRowIndex < 0) throw new Error('Không thấy dòng tiêu đề có cột "Tên kênh" trong tab ⚙config');
+  const map = (list) => list.map((c) => ({ key: c.key, label: COLUMN_LABELS[c.key], required: c.required, make: !!c.make, present: cols[c.key] !== undefined, band: COLUMN_GROUPS[groupIndexOf(c.key)]?.band || "" }));
   const reads = map(t.reads), writes = map(t.writes);
   const missingRequired = [...reads, ...writes].filter((c) => c.required && !c.present).map((c) => c.label);
-  // Cột có thể tạo giúp: cột đọc bắt buộc + cột ghi. Không tạo cột đọc tuỳ chọn (proxy, phiên bản...).
-  const creatable = [...reads.filter((c) => c.required), ...writes].filter((c) => !c.present && c.key !== "sheetName").map((c) => c.label);
-  return { task: taskId, label: t.label, reads, writes, missingRequired, creatable, ready: missingRequired.length === 0 };
+  // Cột có thể tạo giúp: bắt buộc + tuỳ chọn đánh dấu make. Không tạo cột "Tên kênh".
+  const creatableKeys = orderCreatable([...reads, ...writes].filter((c) => !c.present && c.key !== "sheetName" && (c.required || c.make)).map((c) => c.key));
+  const creatable = creatableKeys.map((k) => COLUMN_LABELS[k]);
+  const hasFlag = cols.autoProfile !== undefined || cols.autoChannel !== undefined;
+  return { task: taskId, label: t.label, reads, writes, missingRequired, creatable, creatableKeys, hasFlag, ready: missingRequired.length === 0 };
 }
 
 export function assertTaskColumns(values, taskId) {
@@ -108,82 +174,27 @@ export function assertTaskColumns(values, taskId) {
   return d;
 }
 
-// Thêm các cột còn thiếu vào CUỐI dòng tiêu đề. Chỉ gọi khi người dùng bấm nút.
-export async function createMissingColumns(deps, taskId) {
+// Thêm các cột còn thiếu vào CUỐI dòng tiêu đề, theo thứ tự nhóm, rồi tô màu dải nhóm + tên cột mới.
+// Chỉ gọi khi người dùng bấm nút. Không sửa hay tô lại cột đang có. Tô màu hỏng (thiếu quyền, API lỗi)
+// thì cột vẫn đã được tạo: lỗi được báo qua deps.onFormatError thay vì ném ra.
+export async function createMissingColumns(deps, taskIds) {
   const values = await deps.readValues();
   const { headerRowIndex } = locateConfigColumns(values, KEYS);
   if (headerRowIndex < 0) throw new Error('Không thấy dòng tiêu đề có cột "Tên kênh"');
-  const d = describeTask(values, taskId);
-  if (!d.creatable.length) return [];
+  const keys = [];
+  for (const id of [].concat(taskIds)) for (const k of describeTask(values, id).creatableKeys) if (!keys.includes(k)) keys.push(k);
+  if (!keys.length) return [];
+  const ordered = orderCreatable(keys);
+  const labels = ordered.map((k) => COLUMN_LABELS[k]);
   const width = Math.max(0, ...values.map((r) => (Array.isArray(r) ? r.length : 0)));
-  await deps.ensureColumns?.(width + d.creatable.length);
-  for (let i = 0; i < d.creatable.length; i++) await deps.writeCell(headerRowIndex + 1, width + i, d.creatable[i]);
-  return d.creatable;
-}
+  await deps.ensureColumns?.(width + labels.length);
+  for (let i = 0; i < labels.length; i++) await deps.writeCell(headerRowIndex + 1, width + i, labels[i]);
 
-// ---------------------------------------------------------------------------------------------
-// Danh sách kênh cho giao diện (KHÔNG chứa mật khẩu hay proxy gốc)
-// ---------------------------------------------------------------------------------------------
-
-export function listChannelsForUi({ rows, profiles, groups }) {
-  const byId = new Map(profiles.map((p) => [p.id, p]));
-  const groupName = new Map((groups || []).map((g) => [String(g.id), g.name]));
-  return rows.map((r) => {
-    const prof = r.gpmProfileId ? byId.get(r.gpmProfileId) : null;
-    return {
-      sheetName: r.sheetName, rowIndex: r.rowIndex,
-      profileId: r.gpmProfileId, profileFound: !!prof,
-      groupName: prof ? groupName.get(String(prof.groupId)) || "" : "",
-      hasAccount: !!r.account,
-      hasProxy: !!r.proxy, proxyMasked: maskProxy(r.proxy),
-      hasPostTimes: !!r.postTimes,
-      loginStatus: r.loginStatus, thumbStatus: r.thumbStatus, scheduleStatus: r.scheduleStatus,
-    };
-  });
-}
-
-// ---------------------------------------------------------------------------------------------
-// Chọn kênh chạy được cho từng chức năng
-// ---------------------------------------------------------------------------------------------
-
-/**
- * @returns {{ profiles: object[], skipped: {name,rowIndex,reason}[] }}
- *   profiles: các kênh sẵn sàng chạy, kèm đúng dữ liệu chức năng đó cần (id, name, rowIndex, + riêng từng việc)
- *   skipped : kênh được chọn nhưng bị loại, kèm lý do để hiện cho người dùng
- */
-export function selectForTask({ task, rows, names, gpmProfiles, channelsRoot = "", thumbFolder = "", exists = fs.existsSync }) {
-  if (!Array.isArray(names) || !names.length) throw new Error("Chưa chọn kênh nào");
-  const want = new Set(names.map(lower));
-  const byId = new Map(gpmProfiles.map((p) => [p.id, p]));
-  const profiles = [], skipped = [];
-
-  for (const r of rows.filter((x) => want.has(lower(x.sheetName)))) {
-    const skip = (reason) => skipped.push({ name: r.sheetName, rowIndex: r.rowIndex, reason });
-    if (!r.gpmProfileId) { skip("chưa có GPM Profile ID"); continue; }
-    if (!byId.has(r.gpmProfileId)) { skip(`Profile ID ${r.gpmProfileId} không có trong GPM`); continue; }
-    const item = { id: r.gpmProfileId, name: r.sheetName, rowIndex: r.rowIndex };
-
-    if (task === "login") {
-      try { item.account = parseAccount(r.account); } catch (e) { skip(e.message); continue; }
-    } else if (task === "thumb") {
-      const folder = thumbFolder || (channelsRoot ? path.join(channelsRoot, r.sheetName, "overlays") : "");
-      if (!folder) { skip('chưa có "Channels root" để suy ra thư mục thumbnail'); continue; }
-      if (!exists(folder)) { skip(`không thấy thư mục thumbnail ${folder}`); continue; }
-      item.thumbFolder = folder;
-    } else if (task === "schedule" || task === "distribute") {
-      const { times, invalid } = splitPostTimes(r.postTimes);
-      if (invalid.length) { skip(`ô Giờ đăng có giờ không đọc được: ${invalid.map((x) => `"${x}"`).join(", ")}`); continue; }
-      if (!times.length) { skip("ô Giờ đăng trống"); continue; }
-      item.postTimes = r.postTimes;
-    } else if (task === "proxysync" || task === "proxycheck") {
-      item.proxy = r.proxy;
-    }
-    profiles.push(item);
+  if (deps.formatGroups) {
+    try { await deps.formatGroups(planColumnFormat({ values, headerRowIndex, startCol: width, keys: ordered })); }
+    catch (e) { deps.onFormatError?.(e); }
   }
-
-  const found = new Set(rows.map((r) => lower(r.sheetName)));
-  for (const n of names) if (!found.has(lower(n))) skipped.push({ name: n, rowIndex: 0, reason: "không thấy trong Sheet (có thể đã đổi tên hoặc xoá)" });
-  return { profiles, skipped };
+  return labels;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -211,36 +222,4 @@ export function makeStatusWriter({ writeCell, cols, key, now = () => new Date() 
     chain = run.catch(() => {});
     return run;
   };
-}
-
-/** Đọc Sheet + GPM rồi chọn kênh chạy được cho `task`. Dùng cho cả Xem trước lẫn Chạy. */
-export async function loadTask({ task, o, deps, exists = fs.existsSync }) {
-  const values = await deps.readValues();
-  assertTaskColumns(values, task);
-  const { rows, cols } = readChannelRows(values);
-  const gpmProfiles = await deps.listProfiles();
-  const sel = selectForTask({
-    task, rows, names: o.names, gpmProfiles, channelsRoot: deps.channelsRoot || "", thumbFolder: o.thumbFolder || "", exists,
-  });
-  return { ...sel, rows, cols };
-}
-
-/**
- * Chạy một chức năng cho các kênh đã chọn: đọc Sheet -> kiểm tra cột -> chọn kênh -> chạy -> ghi trạng thái.
- * deps: { readValues, listProfiles, writeCell, channelsRoot, now? }
- */
-export async function runSheetTask({ task, o, deps, runFn, onLog = console.log, exists = fs.existsSync }) {
-  const { profiles, skipped, cols } = await loadTask({ task, o, deps, exists });
-  const writer = STATUS_KEY[task] ? makeStatusWriter({ writeCell: deps.writeCell, cols, key: STATUS_KEY[task], now: deps.now }) : null;
-
-  for (const s of skipped) {
-    onLog(`[${s.name}] ⏭ bỏ qua: ${s.reason}`);
-    if (writer && s.rowIndex) await writer({ rowIndex: s.rowIndex }, { status: "skip", message: s.reason }).catch(() => {});
-  }
-  if (!profiles.length) throw new Error("Không có kênh nào chạy được — xem các dòng bỏ qua ở trên");
-
-  const res = await runFn({ ...o, profiles, onLog, onResult: writer });
-  return skipped.length
-    ? { ...res, preSkipped: skipped.length, message: `${res.message}; ${skipped.length} kênh bị loại trước khi chạy` }
-    : res;
 }

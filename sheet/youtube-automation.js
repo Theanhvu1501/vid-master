@@ -12,13 +12,17 @@ import pLimit from "p-limit";
 import XLSX from "xlsx";
 import { connectProfile, closeProfile } from "./gpm-client.js";
 import { splitPostTimes, toStudioTime } from "./schedule-slots.js";
+import { clickNextUntil, maxNextClicks, pageIo, walkError } from "./studio-wizard.js";
 
 // ============================================================================
 // Helpers
 // ============================================================================
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const randomDelay = (min, max) => sleep(Math.floor(Math.random() * (max - min + 1)) + min);
+// Hộp thoại đang mở trong Studio (selector CHƯA kiểm chứng trên kênh BKT thật).
+const DIALOG_OPEN = "ytcp-dialog[opened], tp-yt-paper-dialog[opened]";
+
+export const randomDelay = (min, max) => sleep(Math.floor(Math.random() * (max - min + 1)) + min);
 
 // Playwright chỉ tự nhận XPath khi chuỗi bắt đầu bằng "//" — dạng "(//a)[2]" phải có tiền tố.
 const xp = (s) => `xpath=${s.trim()}`;
@@ -245,7 +249,8 @@ async function changeThumbsOne(page, o, p, log) {
   await openFilteredContent(page, filterId);
 
   let done = 0, skipped = 0, failed = 0;
-  for (let i = 0; i < o.numVideos; i++) {
+  const numVideos = p.numVideos || o.numVideos;
+  for (let i = 0; i < numVideos; i++) {
     checkCancelled();
     const row = page.locator(xp(`(//a[@id='video-title'])[${i + 1}]`));
     if (!(await row.count())) { log(`hết video ở vị trí ${i + 1}, dừng`); break; }
@@ -260,7 +265,7 @@ async function changeThumbsOne(page, o, p, log) {
     }
 
     try {
-      log(`video ${i + 1}/${o.numVideos}: ${title.slice(0, 50)}`);
+      log(`video ${i + 1}/${numVideos}: ${title.slice(0, 50)}`);
       await row.click();
       await randomDelay(1000, 2000);
 
@@ -268,8 +273,12 @@ async function changeThumbsOne(page, o, p, log) {
 
       await page.locator(xp("//input[@type='file']")).first().setInputFiles(thumb);
       await randomDelay(3000, 4000);
-      await page.click("#next-button");
-      await randomDelay(1000, 2000);
+      const io = pageIo(page);
+      const monetized = !!(p.monetized ?? o.monetized);
+      const max = maxNextClicks({ monetized });
+      // Tới bước "Yếu tố video" (nơi có nút Nhập từ video) rồi gắn end screen.
+      const toElements = await clickNextUntil(io, { isTarget: async () => await io.visible("#import-from-video-button"), maxSteps: max, label: "bước Yếu tố video", log });
+      if (!toElements.reached) throw new Error(walkError(toElements, "bước Yếu tố video", { monetized }));
       await page.click("#import-from-video-button");
       await randomDelay(1000, 2000);
       const card = Math.floor(Math.random() * 6) + 1; // chọn ngẫu nhiên 1 trong 6 card
@@ -277,10 +286,10 @@ async function changeThumbsOne(page, o, p, log) {
       await randomDelay(1000, 2000);
       await page.click("#save-button");
       await randomDelay(1000, 2000);
-      await page.click("#next-button");
-      await randomDelay(1000, 2000);
-      await page.click("#next-button");
-      await randomDelay(1000, 2000);
+      // Tới nút Xong: bấm Next cho tới khi nút Xong hiện và dùng được (kênh BKT có thêm bước, nên số lần Next khác nhau).
+      const toDone = await clickNextUntil(io, { isTarget: async () => (await io.visible("#done-button")) && (await io.enabled("#done-button")), maxSteps: max, label: "nút Xong", log });
+      log(`   ${toElements.clicks + toDone.clicks} lần Next · ${[...toElements.steps, ...toDone.steps].join(" → ") || "(không rõ bước)"}`);
+      if (!toDone.reached) throw new Error(walkError(toDone, "nút Xong", { monetized }));
       await page.click("#done-button");
       await randomDelay(1000, 2000);
       const closeBtn = page.locator('#close-button[slot="secondary-footer"]');
@@ -327,15 +336,16 @@ export async function runChangeThumb(o) {
 // ============================================================================
 
 async function scheduleOne(page, o, p, log) {
-  const days = buildScheduleDays(o.numDays, o.startDate);
+  const numDays = p.numDays || o.numDays;
+  const days = buildScheduleDays(numDays, p.startDate || o.startDate);
   const timeSlots = p.timeSlots || o.timeSlots || [];
   if (!timeSlots.length) throw new Error("kênh chưa có giờ đăng (cột Giờ đăng)");
   const perDay = timeSlots.length;
-  const wanted = o.numDays * perDay;
+  const wanted = numDays * perDay;
 
   await openFilteredContent(page, "checkbox-label-2");
   const total = await page.locator(xp('//*[@id="row-container"]/div[3]/div/div')).count();
-  log(`có ${total} video nháp, cần lên lịch ${wanted} (${o.numDays} ngày × ${perDay} khung giờ)`);
+  log(`có ${total} video nháp, cần lên lịch ${wanted} (${numDays} ngày × ${perDay} khung giờ)`);
   if (total === 0) throw new Error("không có video nháp (Draft) nào để lên lịch");
   const count = Math.min(total, wanted);
   if (total < wanted) log(`⚠️ chỉ đủ video cho ${count}/${wanted} lượt`);
@@ -365,20 +375,35 @@ async function scheduleOne(page, o, p, log) {
     await randomDelay(1000, 2000);
     await page.click(xp(`(//button[@aria-label="Schedule"])[${nth}]`));
     await randomDelay(1000, 2000);
+    // Kênh BKT: sau khi bấm Schedule có thể hiện hộp thoại chặn (chưa rõ là hộp thoại nào). Không đoán nút để bấm:
+    // đọc nguyên văn hộp thoại rồi dừng với thông báo rõ ràng, để lần sau biết chính xác bước nào chặn.
+    if (p.monetized ?? o.monetized) {
+      const dlg = await page.$(DIALOG_OPEN);
+      if (dlg && (await dlg.isVisible().catch(() => false))) {
+        const text = ((await dlg.innerText().catch(() => "")) || "").replace(/\s+/g, " ").trim().slice(0, 200);
+        throw new Error(`kênh BKT: có hộp thoại chặn sau khi bấm Schedule — "${text || "(không đọc được nội dung)"}". Hãy xử lý tay một lần rồi chạy lại.`);
+      }
+    }
   }
   log(`đã lên lịch ${count} video`);
   return `lên lịch ${count} video`;
 }
 
 /**
- * Giờ đăng lấy theo từng kênh (cột Giờ đăng, đổi sang dạng "8:00 AM" của Studio); số ngày và ngày bắt đầu dùng chung.
- * @param {{gpmHost:string, profiles:{id:string,name:string,postTimes:string}[], numDays?:number, startDate?:string, concurrency?:number, onLog?:Function, onResult?:Function}} o
+ * Giờ đăng: mỗi kênh có thể có `postTimes` riêng; không có thì dùng `o.postTimes` chung.
+ * Nhận 24h ("8:00, 18:30") hoặc AM/PM ("8:00 AM; 6:30 PM"), tự đổi sang dạng ô giờ của Studio.
+ * @param {{gpmHost:string, profiles:{id:string,name:string,postTimes?:string}[], postTimes?:string, numDays?:number, startDate?:string, concurrency?:number, onLog?:Function, onResult?:Function}} o
  */
 export async function runSchedule(o) {
   const log = o.onLog || console.log;
   if (!o.profiles?.length) throw new Error("Chưa chọn kênh nào");
   const opts = { ...o, numDays: Math.max(1, parseInt(o.numDays, 10) || 1) };
-  const profiles = o.profiles.map((p) => ({ ...p, timeSlots: p.timeSlots || splitPostTimes(p.postTimes).times.map(toStudioTime) }));
+  const profiles = o.profiles.map((p) => {
+    const own = typeof p.postTimes === "string" && p.postTimes.trim() ? p.postTimes : o.postTimes;
+    const { times, invalid } = splitPostTimes(own);
+    if (invalid.length) throw new Error(`giờ đăng không đọc được: ${invalid.map((x) => `"${x}"`).join(", ")}`);
+    return { ...p, timeSlots: times.map(toStudioTime) };
+  });
 
   return forEachProfile({
     gpmHost: o.gpmHost, profiles, concurrency: o.concurrency, log, onResult: o.onResult,

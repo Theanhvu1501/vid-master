@@ -204,7 +204,7 @@ export function createUploadQueue({
   }
 
   async function runJob(job) {
-    const { sheetName, gpmHost, profileId, videoPath, overlaysDir, title, postTimes, locale, rowIndex, sourceUrl } = job;
+    const { sheetName, gpmHost, profileId, videoPath, overlaysDir, title, postTimes, locale, rowIndex, sourceUrl, monetized = false } = job;
     lastProfile.set(sheetName, { gpmHost, profileId });
 
     // ── Giai đoạn CHUẨN BỊ ────────────────────────────────────────────────────
@@ -251,7 +251,7 @@ export function createUploadQueue({
     for (let attempt = 1; attempt <= retries; attempt++) {
       try {
         await runUpload({
-          page, videoPath, title, thumbnailPath, scheduleISO, locale, log,
+          page, videoPath, title, thumbnailPath, scheduleISO, locale, monetized, log,
           onUploaded: () => { uploaded = true; },
           onStep,
         });

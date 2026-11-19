@@ -9,15 +9,19 @@ import { checkLicense } from "./license-check.js";
 import pLimit from "p-limit";
 import sharp from "sharp";
 import { createSheetRunner } from "./sheet/sheet-runner.js";
-import { createSheetsClient, readConfigSheet, readConfigValues, writeConfigCell, ensureGridColumns, parseConfigRows, findStatsColumns, STATS_KEYS, writeChannelStats, appendUrls, readChannelUrls, setUrlStatus, setUploadStatus, readUploadStatuses, testSheetConnection } from "./sheet/sheets-service.js";
+import { createSheetsClient, readConfigSheet, readConfigValues, writeConfigCell, ensureGridColumns, formatHeaderGroups, parseConfigRows, findStatsColumns, STATS_KEYS, writeChannelStats, appendUrls, readChannelUrls, setUrlStatus, setUploadStatus, readUploadStatuses, testSheetConnection } from "./sheet/sheets-service.js";
 import { createYoutubeClient, fetchChannelStats, fetchSourceVideos, pickNewUrls, DEFAULT_YT_API_KEY } from "./sheet/youtube-api.js";
 import { parseScheduledISO, formatStamp } from "./sheet/schedule-slots.js";
 import { testGpmConnection, connectAndOpenStudio, connectProfile, getGpmApiVersion, listGpmGroups, listGpmProfilesFull, createGpmProfile, updateGpmProfileProxy } from "./sheet/gpm-client.js";
 import { runLogin, runChangeThumb, runSchedule, stopAutomation, resetCancel, forEachProfile, loginOne, checkCancelled } from "./sheet/youtube-automation.js";
 import { runDistribute, buildPlan, listVideos } from "./sheet/distribute.js";
-import { runAddChannels, previewAddChannels } from "./sheet/add-channel.js";
-import { runProxyCheck, runProxySync } from "./sheet/proxy-tools.js";
-import { runSheetTask, loadTask, readChannelRows, describeTask, createMissingColumns, listChannelsForUi, TASKS } from "./sheet/channel-sheet.js";
+import { runSheetAutomation, previewSheetAutomation } from "./sheet/sheet-automation.js";
+import { runProxyCheck, maskProxy } from "./sheet/proxy-tools.js";
+import { readLoginAccounts, readChannelPlans, attachProfileData, countNames } from "./sheet/excel-import.js";
+import { resolveThumbRun, resolveScheduleRun } from "./sheet/run-options.js";
+import { runCreateChannel, createChannelOne } from "./sheet/create-channel.js";
+import { describeTask, createMissingColumns, TASKS, COLUMN_GROUPS, readChannelRows } from "./sheet/channel-sheet.js";
+import { writeSample, SAMPLE_FILES } from "./sheet/excel-samples.js";
 import { createUploadQueue } from "./sheet/upload-queue.js";
 import { sendTelegram, sendTelegramPhoto, buildDigest, buildChannelReport, parseTopicId } from "./sheet/telegram-notify.js";
 import { renderOne, resolveFfmpegPaths } from "./sheet/render-core.js";
@@ -2023,16 +2027,18 @@ ipcMain.handle("gpm:list-profiles-full", async (e, { gpmHost } = {}) => {
 // ============================================================================
 
 // ============================================================================
-// Mọi chức năng automation đọc kênh từ tab ⚙config của Google Sheet (nguồn duy nhất) và ghi
-// trạng thái về đó. Log đẩy về renderer qua "automation:log".
+// TỰ ĐỘNG HOÁ: chạy trên các profile GPM do người dùng chọn (danh sách lấy từ GPM local).
+// Log đẩy về renderer qua "automation:log". Luồng Google Sheet (tạo profile, gán proxy, tạo channel)
+// nằm ở tab Theo dõi Sheet, dùng chung cấu hình Sheet ở đó.
 // ============================================================================
 const SHEET_TAB = "⚙config";
+const gpmHostOf = (h) => (h || "").trim() || "127.0.0.1:19995";
 
 function sheetDeps(gpmHost) {
-  const host = (gpmHost || "").trim() || "127.0.0.1:19995";
+  const host = gpmHostOf(gpmHost);
   const st = loadSheetSettings();
-  if (!st.spreadsheetId) throw new Error("Chưa nhập Spreadsheet ID (tab Theo dõi Sheet → ⚙).");
-  if (!st.credentialsPath) throw new Error("Chưa chọn file service account JSON (tab Theo dõi Sheet → ⚙).");
+  if (!st.spreadsheetId) throw new Error("Chưa nhập Spreadsheet ID (Theo dõi Sheet → ⚙).");
+  if (!st.credentialsPath) throw new Error("Chưa chọn file service account JSON (Theo dõi Sheet → ⚙).");
   const sheets = createSheetsClient(st.credentialsPath);
   return {
     host, channelsRoot: st.channelsRoot || "",
@@ -2042,6 +2048,7 @@ function sheetDeps(gpmHost) {
     updateProxy: (id, raw) => updateGpmProfileProxy(host, id, raw),
     writeCell: (row, col, v) => writeConfigCell(sheets, st.spreadsheetId, SHEET_TAB, row, col, v),
     ensureColumns: (n) => ensureGridColumns(sheets, st.spreadsheetId, SHEET_TAB, n),
+    formatGroups: (spec) => formatHeaderGroups(sheets, st.spreadsheetId, SHEET_TAB, spec),
     forEach: forEachProfile, login: loginOne, checkCancelled,
   };
 }
@@ -2067,56 +2074,211 @@ function guardedHandler(channel, run) {
   });
 }
 
-// Chức năng chạy trên các kênh đã chọn: runFn nhận { profiles, onLog, onResult, ...tuỳ chọn }.
-function registerSheetTask(channel, task, runFn) {
-  guardedHandler(channel, (o) => {
-    const d = sheetDeps(o.gpmHost);
-    return runSheetTask({ task, o: { ...o, gpmHost: d.host }, deps: d, runFn, onLog: o.onLog });
-  });
+const needProfiles = (o) => {
+  if (!Array.isArray(o.profiles) || !o.profiles.length) throw new Error("Chưa chọn profile nào");
+  // label = tên + đuôi ID khi tên trùng (do giao diện tính) — chỉ để hiển thị trong log, KHÔNG dùng để ghép.
+  return o.profiles.map((p) => ({ id: String(p.id), name: String(p.name ?? ""), label: String(p.label || p.name || "") }));
+};
+
+// Cờ "Kênh BKT" của từng profile, tra theo PROFILE ID trong cột "GPM Profile ID" của Sheet (không theo tên).
+// Không đọc được Sheet (chưa cấu hình, mất mạng...) thì coi mọi kênh là kênh thường và báo ra log, không chặn việc chạy.
+async function monetizedFlags(o, host) {
+  try {
+    const d = sheetDeps(host);
+    const { rows, cols } = readChannelRows(await d.readValues());
+    const map = new Map();
+    for (const r of rows) if (r.gpmProfileId) map.set(r.gpmProfileId, !!r.monetized);
+    const hasCol = cols.monetized !== undefined;
+    return { map, note: hasCol ? "" : 'Sheet chưa có cột "Kênh BKT" — mọi kênh được coi là kênh thường' };
+  } catch (e) {
+    return { map: new Map(), note: `không đọc được cờ "Kênh BKT" từ Sheet (${String(e?.message || e).split("\n")[0]}) — mọi kênh được coi là kênh thường` };
+  }
 }
-registerSheetTask("automation:login", "login", runLogin);
-registerSheetTask("automation:change-thumb", "thumb", runChangeThumb);
-registerSheetTask("automation:schedule", "schedule", runSchedule);
-registerSheetTask("automation:distribute", "distribute", runDistribute);
-registerSheetTask("automation:proxy-check", "proxycheck", runProxyCheck);
-registerSheetTask("automation:proxy-sync", "proxysync", runProxySync);
-guardedHandler("automation:add-channel", (o) => runAddChannels(o, sheetDeps(o.gpmHost)));
 
-// Danh sách kênh + khung "Đọc/Ghi cột" cho giao diện (không chứa mật khẩu hay proxy gốc).
-ipcMain.handle("automation:sheet-info", async (e, o = {}) => {
-  try {
-    const d = sheetDeps(o.gpmHost);
-    const values = await d.readValues();
-    const { rows } = readChannelRows(values);
-    const [profiles, groups] = await Promise.all([d.listProfiles(), listGpmGroups(d.host)]);
-    const tasks = Object.fromEntries(Object.keys(TASKS).map((t) => [t, describeTask(values, t)]));
-    return { success: true, channels: listChannelsForUi({ rows, profiles, groups }), groups: groups.map((g) => g.name).filter(Boolean), tasks, channelsRoot: d.channelsRoot };
-  } catch (err) { return { success: false, error: String(err?.message || err) }; }
+// Gắn cờ BKT vào các profile sắp chạy và ghi rõ kênh nào được chạy theo quy trình BKT.
+async function withMonetized(o, host, list) {
+  const { map, note } = await monetizedFlags(o, host);
+  if (note) o.onLog(`⚠️ ${note}`);
+  const out = list.map((p) => ({ ...p, monetized: map.get(p.id) === true }));
+  const bkt = out.filter((p) => p.monetized).map((p) => p.label || p.name);
+  if (bkt.length) o.onLog(`💰 Chạy theo quy trình kênh BKT: ${bkt.join(", ")}`);
+  return out;
+}
+
+// Số profile GPM theo từng tên. Tên trùng thì ghép theo tên sẽ nhầm profile nên phải biết để chặn.
+async function gpmNameCounts(host) {
+  return countNames(await listGpmProfilesFull(host));
+}
+
+function logAttachSkips(o, r) {
+  for (const n of r.missing) o.onLog(`[${n}] ⏭ bỏ qua: không có dòng nào trong Excel khớp (cột A: Profile ID hoặc tên profile)`);
+  for (const n of r.ambiguous) o.onLog(`[${n}] ⏭ bỏ qua: Excel có nhiều dòng cùng khoá ở cột A`);
+  for (const n of r.duplicated) o.onLog(`[${n}] ⏭ bỏ qua: tên profile trùng với profile khác trong GPM — hãy ghi Profile ID vào cột A để không bị nhầm`);
+}
+
+// --- Chạy trên profile GPM đã chọn ---
+guardedHandler("automation:login", async (o) => {
+  const profiles = needProfiles(o);
+  const host = gpmHostOf(o.gpmHost);
+  if (!o.accountsFile || !fs.existsSync(o.accountsFile)) throw new Error("Chưa chọn file Excel tài khoản (hoặc file không tồn tại)");
+  const r = attachProfileData(profiles, readLoginAccounts(o.accountsFile), await gpmNameCounts(host));
+  logAttachSkips(o, r);
+  if (!r.matched.length) throw new Error("Không profile nào khớp với file Excel (cột A: Profile ID hoặc tên profile)");
+  return runLogin({ ...o, gpmHost: host, profiles: r.matched.map((p) => ({ id: p.id, name: p.name, label: p.label, account: p.data })) });
 });
 
-// Tạo các cột còn thiếu cho một chức năng (chỉ khi người dùng bấm nút).
-ipcMain.handle("automation:create-columns", async (e, { gpmHost, task } = {}) => {
-  try { return { success: true, created: await createMissingColumns(sheetDeps(gpmHost), task) }; }
-  catch (err) { return { success: false, error: String(err?.message || err) }; }
+// Đổi thumbnail: thư mục riêng của từng profile ghép theo Profile ID (o.thumbFolders = { [id]: thư mục }),
+// profile nào không có thư mục riêng thì dùng thư mục chung (o.thumbFolder).
+guardedHandler("automation:change-thumb", async (o) => {
+  const profiles = needProfiles(o);
+  const run = resolveThumbRun({ profiles, folders: o.thumbFolders, defaultFolder: o.thumbFolder, numVideos: o.numVideos });
+  if (run.error) throw new Error(run.error);
+  for (const x of run.skipped) o.onLog(`[${x.name}] ⏭ bỏ qua: ${x.reason}`);
+  if (!run.profiles.length) throw new Error("Không có profile nào chạy được — xem các dòng bỏ qua ở trên");
+  const host = gpmHostOf(o.gpmHost);
+  return runChangeThumb({ ...o, gpmHost: host, profiles: await withMonetized(o, host, run.profiles) });
 });
 
-// Xem trước (không mở trình duyệt, không ghi gì).
-ipcMain.handle("automation:preview", async (e, o = {}) => {
+// Lên lịch: không dùng Excel. Giờ đăng, số ngày, ngày bắt đầu nhập chung cho mọi profile đã chọn.
+guardedHandler("automation:schedule", async (o) => {
+  const run = resolveScheduleRun({ profiles: needProfiles(o), postTimes: o.postTimes, numDays: o.numDays, startDate: o.startDate });
+  if (run.error) throw new Error(run.error);
+  const host = gpmHostOf(o.gpmHost);
+  return runSchedule({ ...o, ...run.options, gpmHost: host, profiles: await withMonetized(o, host, run.profiles) });
+});
+
+guardedHandler("automation:distribute", async (o) => {
+  if (!o.videoFolder || !fs.existsSync(o.videoFolder)) throw new Error("Chưa chọn thư mục video (hoặc thư mục không tồn tại)");
+  if (!String(o.postTimes || "").trim()) throw new Error("Chưa nhập giờ đăng");
+  const host = gpmHostOf(o.gpmHost);
+  return runDistribute({ ...o, gpmHost: host, profiles: await withMonetized(o, host, needProfiles(o)) });
+});
+
+guardedHandler("automation:proxy-check", (o) => runProxyCheck({ ...o, gpmHost: gpmHostOf(o.gpmHost), profiles: needProfiles(o) }));
+
+guardedHandler("automation:create-channel", async (o) => {
+  const profiles = needProfiles(o);
+  const host = gpmHostOf(o.gpmHost);
+  if (!o.planFile || !fs.existsSync(o.planFile)) throw new Error("Chưa chọn file Excel tạo channel (hoặc file không tồn tại)");
+  const counts = await gpmNameCounts(host);
+  const r = attachProfileData(profiles, readChannelPlans(o.planFile), counts);
+  logAttachSkips(o, r);
+  if (!r.matched.length) throw new Error("Không profile nào khớp với file Excel (cột A: Profile ID hoặc tên profile)");
+  // File tài khoản (tuỳ chọn) cũng ghép theo Profile ID trước, tên sau, và chặn khi tên trùng.
+  let accounts = new Map();
+  if (o.accountsFile && fs.existsSync(o.accountsFile)) {
+    const a = attachProfileData(r.matched, readLoginAccounts(o.accountsFile), counts);
+    accounts = new Map(a.matched.map((p) => [p.id, p.data]));
+  }
+  return runCreateChannel({
+    ...o, gpmHost: host,
+    profiles: r.matched.map((p) => ({
+      id: p.id, name: p.name, label: p.label, account: accounts.get(p.id) || null,
+      plan: { title: p.data.title, description: p.data.description, videoDescription: p.data.videoDescription, tags: p.data.tags, handle: p.data.handle },
+    })),
+  });
+});
+
+// Xem trước kế hoạch rải video (không mở trình duyệt, không đăng gì).
+ipcMain.handle("automation:distribute-preview", async (e, o = {}) => {
   try {
-    const d = sheetDeps(o.gpmHost);
-    if (o.task === "addchannel") return { success: true, kind: "addchannel", plan: await previewAddChannels(o, d) };
-    const { profiles, skipped } = await loadTask({ task: o.task, o, deps: d });
-    if (o.task !== "distribute") {
-      return { success: true, kind: "list", ready: profiles.map((p) => p.name), skipped };
-    }
+    const profiles = needProfiles(o);
     if (!o.videoFolder || !fs.existsSync(o.videoFolder)) throw new Error("Chưa chọn thư mục video (hoặc thư mục không tồn tại)");
+    if (!String(o.postTimes || "").trim()) throw new Error("Chưa nhập giờ đăng");
     const plan = buildPlan({ ...o, profiles, videos: listVideos(o.videoFolder), startDate: new Date() });
-    return { success: true, kind: "distribute", skipped, plan: {
+    return { success: true, plan: {
       leftover: plan.leftover.length,
       channels: plan.channels.map((c) => ({ name: c.name, items: c.items.map((i) => ({ title: i.title, hasThumb: !!i.thumbnailPath, scheduleISO: i.scheduleISO })) })),
     } };
   } catch (err) { return { success: false, error: String(err?.message || err) }; }
 });
+
+// Xem trước các chức năng chạy theo Excel (không mở trình duyệt, không ghi gì).
+ipcMain.handle("automation:preview-excel", async (e, o = {}) => {
+  try {
+    const profiles = needProfiles(o);
+    const file = o.kind === "login" ? o.accountsFile : o.planFile;
+    if (!file || !fs.existsSync(file)) throw new Error("Chưa chọn file Excel (hoặc file không tồn tại)");
+    const items = o.kind === "login" ? readLoginAccounts(file) : readChannelPlans(file);
+    const r = attachProfileData(profiles, items, await gpmNameCounts(gpmHostOf(o.gpmHost)));
+    return {
+      success: true, total: items.length,
+      ready: r.matched.map((p) => `${p.label}${p.by === "id" ? " (khớp theo Profile ID)" : ""}`),
+      missing: r.missing, ambiguous: r.ambiguous, duplicated: r.duplicated,
+    };
+  } catch (err) { return { success: false, error: String(err?.message || err) }; }
+});
+
+// Xem trước đổi thumbnail / lên lịch (không mở trình duyệt, không ghi gì).
+ipcMain.handle("automation:preview-run", async (e, o = {}) => {
+  try {
+    const profiles = needProfiles(o);
+    const { map: bktMap, note: bktNote } = await monetizedFlags(o, gpmHostOf(o.gpmHost));
+    const bktSet = new Set([...bktMap].filter(([, v]) => v).map(([k]) => k));
+    if (o.kind === "thumb") {
+      const run = resolveThumbRun({ profiles, folders: o.thumbFolders, defaultFolder: o.thumbFolder, numVideos: o.numVideos });
+      if (run.error) throw new Error(run.error);
+      return {
+        success: true, kind: "thumb", skipped: run.skipped,
+        ready: run.profiles.map((p) => ({ name: p.label, folder: p.thumbFolder, images: p.imageCount, numVideos: p.numVideos, own: p.ownFolder, bkt: bktSet.has(p.id) })),
+      };
+    }
+    if (o.kind === "schedule") {
+      const run = resolveScheduleRun({ profiles, postTimes: o.postTimes, numDays: o.numDays, startDate: o.startDate });
+      if (run.error) throw new Error(run.error);
+      return { success: true, kind: "schedule", profiles: run.profiles.map((p) => p.label), bkt: run.profiles.filter((p) => bktSet.has(p.id)).map((p) => p.label), days: run.days, times: run.studioTimes, videosPerProfile: run.videosPerProfile };
+    }
+    throw new Error("Loại xem trước không hợp lệ");
+  } catch (err) { return { success: false, error: String(err?.message || err) }; }
+});
+
+// --- Luồng Google Sheet (nằm ở Theo dõi Sheet) ---
+// Không có cấu hình trong app: kênh nào làm gì do cột "Tạo profile" / "Tạo channel" của Sheet quyết định.
+guardedHandler("sheet-auto:run", (o) => {
+  const d = sheetDeps(o.gpmHost);
+  return runSheetAutomation({ ...o, gpmHost: d.host }, { ...d, createChannel: createChannelOne });
+});
+
+ipcMain.handle("sheet-auto:preview", async (e, o = {}) => {
+  try { return { success: true, plan: await previewSheetAutomation(o, sheetDeps(o.gpmHost)) }; }
+  catch (err) { return { success: false, error: String(err?.message || err) }; }
+});
+
+// Cột Sheet mà luồng tự động hóa cần: có/thiếu, và tạo cột thiếu (chỉ khi người dùng bấm).
+ipcMain.handle("sheet-auto:columns", async (e, o = {}) => {
+  try {
+    const values = await sheetDeps(o.gpmHost).readValues();
+    return { success: true, groups: COLUMN_GROUPS.map(({ id, label, keys, band }) => ({ id, label, keys, band })), tasks: Object.fromEntries(Object.keys(TASKS).map((t) => [t, describeTask(values, t)])) };
+  } catch (err) { return { success: false, error: String(err?.message || err) }; }
+});
+ipcMain.handle("sheet-auto:create-columns", async (e, o = {}) => {
+  try {
+    let formatError = "";
+    const deps = { ...sheetDeps(o.gpmHost), onFormatError: (err) => { formatError = String(err?.message || err); } };
+    const created = await createMissingColumns(deps, Object.keys(TASKS));
+    return { success: true, created, formatError };
+  } catch (err) { return { success: false, error: String(err?.message || err) }; }
+});
+
+// Lưu file Excel mẫu: hộp thoại "Lưu thành", rồi ghi file. Windows tự hỏi nếu ghi đè file có sẵn.
+ipcMain.handle("excel-sample:save", async (e, { kind } = {}) => {
+  try {
+    if (!SAMPLE_FILES[kind]) throw new Error(`Không có file mẫu loại "${kind}"`);
+    const isTxt = /\.txt$/i.test(SAMPLE_FILES[kind]);
+    const win = BrowserWindow.fromWebContents(e.sender);
+    const r = await dialog.showSaveDialog(win, {
+      title: "Lưu file mẫu",
+      defaultPath: path.join(app.getPath("documents"), SAMPLE_FILES[kind]),
+      filters: isTxt ? [{ name: "Văn bản", extensions: ["txt"] }] : [{ name: "Excel", extensions: ["xlsx"] }],
+    });
+    if (r.canceled || !r.filePath) return { success: true, canceled: true };
+    // Mẫu đầy đủ ⚙config là file có sẵn trong docs/sheet-mau (59 cột, màu theo mode, tab hướng dẫn).
+    const fullSheetSource = path.join(getAppPath(), "docs", "sheet-mau", "Vid-Master-Template-3.xlsx");
+    const outPath = await writeSample(kind, r.filePath, { fullSheetSource });
+    return { success: true, path: outPath };
+  } catch (err) { return { success: false, error: String(err?.message || err) }; }
+});
+
 ipcMain.handle("automation:stop", () => { stopAutomation(); return { ok: true }; });
 
 // IPC Handlers

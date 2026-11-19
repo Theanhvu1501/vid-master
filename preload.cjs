@@ -97,20 +97,27 @@ contextBridge.exposeInMainWorld("electronAPI", {
     onRenderTestLog: (cb) => ipcRenderer.on("composer:renderTestLog", (event, data) => cb(data)),
     removeRenderTestLogListener: () => ipcRenderer.removeAllListeners("composer:renderTestLog"),
   },
-  // Automation: mọi chức năng đọc kênh từ Google Sheet (tab ⚙config) và ghi trạng thái về đó.
+  // Tự động hoá: chạy trên profile GPM đã chọn (danh sách lấy từ GPM local).
   automation: {
-    sheetInfo: (opts) => ipcRenderer.invoke("automation:sheet-info", opts),
-    createColumns: (opts) => ipcRenderer.invoke("automation:create-columns", opts),
-    preview: (opts) => ipcRenderer.invoke("automation:preview", opts),
     login: (opts) => ipcRenderer.invoke("automation:login", opts),
     changeThumb: (opts) => ipcRenderer.invoke("automation:change-thumb", opts),
     schedule: (opts) => ipcRenderer.invoke("automation:schedule", opts),
     distribute: (opts) => ipcRenderer.invoke("automation:distribute", opts),
     proxyCheck: (opts) => ipcRenderer.invoke("automation:proxy-check", opts),
-    proxySync: (opts) => ipcRenderer.invoke("automation:proxy-sync", opts),
-    addChannel: (opts) => ipcRenderer.invoke("automation:add-channel", opts),
+    createChannel: (opts) => ipcRenderer.invoke("automation:create-channel", opts),
+    previewExcel: (opts) => ipcRenderer.invoke("automation:preview-excel", opts),
+    previewRun: (opts) => ipcRenderer.invoke("automation:preview-run", opts),
+    distributePreview: (opts) => ipcRenderer.invoke("automation:distribute-preview", opts),
     stop: () => ipcRenderer.invoke("automation:stop"),
+    saveSample: (kind) => ipcRenderer.invoke("excel-sample:save", { kind }),
     onLog: (cb) => ipcRenderer.on("automation:log", (event, msg) => cb(msg)),
     removeLogListener: () => ipcRenderer.removeAllListeners("automation:log"),
+  },
+  // Luồng Google Sheet của Theo dõi Sheet: mọi lựa chọn nằm ở Sheet, không cấu hình trong app.
+  sheetAuto: {
+    run: (opts) => ipcRenderer.invoke("sheet-auto:run", opts),
+    preview: (opts) => ipcRenderer.invoke("sheet-auto:preview", opts),
+    columns: (opts) => ipcRenderer.invoke("sheet-auto:columns", opts),
+    createColumns: (opts) => ipcRenderer.invoke("sheet-auto:create-columns", opts),
   },
 });

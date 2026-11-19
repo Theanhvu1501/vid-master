@@ -5791,33 +5791,166 @@ async function runConcat() {
   });
 })();
 
+// ===== Theo dõi Sheet: khung "Tự động hóa" — cấu hình nằm ở Sheet, không có ô cấu hình trong app =====
+// Độc lập với initSheetWatch: chỉ dùng chung ô log #sw-log và cấu hình Sheet đã lưu.
+(function initSheetAuto() {
+  const api = window.electronAPI?.sheetAuto;
+  const auto = window.electronAPI?.automation;
+  const panel = document.getElementById("sw-auto-panel");
+  if (!api || !auto || !panel) return;
+  const $ = (id) => document.getElementById(id);
+  const logEl = $("sw-log");
+  let running = false;
+
+  const log = (msg) => {
+    if (!logEl) return;
+    logEl.textContent += `${new Date().toLocaleTimeString()}  ${msg}\n`;
+    logEl.scrollTop = logEl.scrollHeight;
+    logEl.closest("details")?.setAttribute("open", "");
+  };
+  const status = (text, color) => { const s = $("sw-auto-status"); s.textContent = text || ""; s.style.color = color || "var(--text-secondary)"; };
+
+  function setRunning(on) {
+    running = on;
+    for (const id of ["sw-auto-preview", "sw-auto-run", "sw-auto-cols-btn"]) $(id).disabled = on;
+    $("sw-auto-stop").style.display = on ? "" : "none";
+  }
+
+  // GPM host lấy theo cấu hình có sẵn của Theo dõi Sheet; không có ô riêng cho khung này.
+  const gpmHost = () => (document.getElementById("sw-gpm-host")?.value || "").trim() || "127.0.0.1:19995";
+
+  // ----- Hiện cột Sheet cần dùng -----
+  async function refreshColumns() {
+    const box = $("sw-auto-cols");
+    box.textContent = "";
+    const r = await api.columns({ gpmHost: gpmHost() }).catch((e) => ({ success: false, error: e.message }));
+    if (!r.success) { box.innerHTML = `<span style="color:var(--text-muted)">Chưa đọc được Sheet: ${escapeHtml(r.error || "")}</span>`; return null; }
+    const d = r.tasks.automation;
+    const chip = (c) => {
+      const color = c.present ? "var(--accent-success)" : c.required ? "var(--accent-danger)" : "var(--text-muted)";
+      const mark = c.present ? "✓" : c.required ? "✗ thiếu" : "(chưa có)";
+      return `<span class="sw-auto-chip" style="color:${color};">${escapeHtml(c.label)} <small style="display:inline;margin:0;">${mark}</small></span>`;
+    };
+    const uniq = [...d.reads, ...d.writes].filter((c, i, a) => a.findIndex((x) => x.key === c.key) === i);
+    // Gom theo nhóm: mỗi nhóm một màu viền trùng màu dải nhóm sẽ tô trong Sheet.
+    const groups = (r.groups || []).map((g) => ({ ...g, cols: uniq.filter((c) => g.keys.includes(c.key)) })).filter((g) => g.cols.length);
+    const grouped = new Set(groups.flatMap((g) => g.cols.map((c) => c.key)));
+    const rest = uniq.filter((c) => !grouped.has(c.key));
+    const block = (title, color, cols) => `<div class="sw-auto-group" style="border-left-color:${color};"><div class="sw-auto-group-title" style="color:${color};">${escapeHtml(title)}</div>${cols.map(chip).join("")}</div>`;
+    box.innerHTML = groups.map((g) => block(g.label, g.band, g.cols)).join("") + (rest.length ? block("CỘT CHUNG CỦA ⚙CONFIG", "var(--text-muted)", rest) : "");
+    return r;
+  }
+  panel.addEventListener("toggle", () => { if (panel.open) refreshColumns(); });
+
+  // ----- Tạo cột còn thiếu (dùng chung cho nút trên toolbar và trong khung) -----
+  async function createMissingColumns() {
+    if (running) return;
+    const r = await refreshColumns();
+    if (!r) { appToast("Chưa đọc được Sheet — kiểm tra cấu hình Spreadsheet ID và credentials.", "error"); return; }
+    const need = r.tasks.automation.creatable;
+    if (!need.length) { appToast("Sheet đã đủ cột tự động hoá ✓", "success"); status("✅ Sheet đã đủ cột", "var(--accent-success)"); return; }
+    if (!(await appConfirm(`Thêm ${need.length} cột vào CUỐI dòng tiêu đề của tab ⚙config:\n• ${need.join("\n• ")}\n\nKhông xoá hay sửa cột nào đang có. Tiếp tục?`, { title: "Tạo cột còn thiếu", okText: "Thêm cột" }))) return;
+    const c = await api.createColumns({ gpmHost: gpmHost() });
+    if (!c.success) { appToast(`Không tạo được cột: ${c.error}`, "error"); return; }
+    appToast(`Đã thêm ${c.created.length} cột: ${c.created.join(", ")}`, "success");
+    status(`✅ đã thêm ${c.created.length} cột`, "var(--accent-success)");
+    if (c.formatError) log(`⚠️ Đã tạo cột nhưng chưa tô màu được: ${c.formatError}`);
+    refreshColumns();
+  }
+
+  // ----- Xem trước -----
+  $("sw-auto-preview").addEventListener("click", async () => {
+    if (running) return;
+    setRunning(true); status("⏳ đang đọc Sheet…");
+    try {
+      const r = await api.preview({ gpmHost: gpmHost() });
+      if (!r.success) { status(""); log(`❌ ${r.error}`); return; }
+      const label = { create: "TẠO MỚI", reuse: "DÙNG LẠI", "channel-only": "CHANNEL", error: "LỖI" };
+      log("👁 XEM TRƯỚC (chưa làm gì)");
+      for (const p of r.plan) log(`[${label[p.action] || p.action}] ${p.sheetName} (dòng ${p.rowIndex}) — ${p.note}${p.proxyMasked ? " · proxy " + p.proxyMasked : ""}`);
+      const n = (a) => r.plan.filter((p) => p.action === a).length;
+      status(`${r.plan.length} kênh: tạo mới ${n("create")}, dùng lại ${n("reuse")}, chỉ channel ${n("channel-only")}, lỗi ${n("error")}`);
+    } catch (e) { log(`❌ ${e.message}`); status(""); } finally { setRunning(false); }
+  });
+
+  // ----- Chạy -----
+  $("sw-auto-run").addEventListener("click", async () => {
+    if (running) return;
+    if (!(await appConfirm("Sẽ chạy các kênh được bật ở cột \"Tạo profile\" / \"Tạo channel\" trong Sheet: tạo profile GPM, đăng nhập tài khoản Google và chỉnh sửa channel thật trên YouTube.\nBạn đã bấm \"Xem trước\" chưa? Tiếp tục chạy?", { title: "Chạy tự động hóa", okText: "Chạy" }))) return;
+    auto.removeLogListener();
+    auto.onLog((p) => log(typeof p === "string" ? p : p.msg));
+    setRunning(true); status("⏳ đang chạy…");
+    log("🚀 Tự động hóa theo Sheet");
+    try {
+      const r = await api.run({ gpmHost: gpmHost() });
+      log(r.success ? `✅ ${r.message || "Hoàn tất"}` : `❌ ${r.error || "Có lỗi xảy ra"}`);
+      status(r.success ? `✅ ${r.message || "xong"}` : `❌ ${r.error || "lỗi"}`, r.success ? "var(--accent-success)" : "var(--accent-danger)");
+    } catch (e) { log(`❌ ${e.message}`); status(`❌ ${e.message}`, "var(--accent-danger)"); }
+    finally { setRunning(false); refreshColumns(); }
+  });
+
+  // ----- Tạo cột còn thiếu -----
+  $("sw-auto-cols-btn")?.addEventListener("click", createMissingColumns);
+
+  $("sw-auto-sample").addEventListener("click", () => downloadExcelSample("sheet"));
+
+  // Nút "Template mẫu" ở thanh trên cùng: cho chọn một trong hai mẫu rồi mở hộp thoại lưu.
+  $("sw-template")?.addEventListener("click", async () => {
+    const kind = await appChoose("Chọn file mẫu cần tải. Người dùng mới nên bắt đầu từ Template đầy đủ.", [
+      { value: "fullsheet", label: "Template đầy đủ", hint: "Sheet ⚙config đủ các cột render, tải xuống, lên lịch (59 cột, có màu theo từng chế độ) kèm tab Hướng dẫn. Mở bằng Google Sheets (File > Nhập)." },
+      { value: "sheet", label: "Template tự động hoá", hint: "Các cột tạo profile, gán proxy, đăng nhập, tạo channel, Kênh BKT, kèm tab Hướng dẫn từng bước. Dán vào Sheet của bạn hoặc dùng làm mẫu." },
+    ], { title: "Tải template mẫu" });
+    if (kind) downloadExcelSample(kind);
+  });
+
+  // Nút "Tạo cột" ở thanh trên cùng: cùng logic với nút trong khung Tự động hóa
+  $("sw-create-cols")?.addEventListener("click", createMissingColumns);
+
+  $("sw-full-sample")?.addEventListener("click", () => downloadExcelSample("fullsheet"));
+
+  $("sw-auto-stop").addEventListener("click", async () => { await auto.stop(); log("⏹ Đã yêu cầu dừng — kênh đang chạy sẽ dừng ở bước kế tiếp."); });
+})();
+
+
+// ----- Tải file Excel mẫu (dùng chung cho Auto Login, Tạo channel và khung Sheet) -----
+async function downloadExcelSample(kind) {
+  if (!checkElectronAPI()) return;
+  try {
+    const r = await window.electronAPI.automation.saveSample(kind);
+    if (!r.success) { alert(`Không lưu được file mẫu: ${r.error}`); return; }
+    if (r.canceled) return;
+    showAutomationOutput?.(`📄 Đã lưu file mẫu: ${r.path}`);
+    alert(`Đã lưu file mẫu:\n${r.path}`);
+  } catch (error) {
+    alert(`Không lưu được file mẫu: ${getErrorMessage(error)}`);
+  }
+}
+
 // ============================================================================
-// TỰ ĐỘNG HOÁ (GPM + Google Sheet)
-// Mọi chức năng lấy danh sách kênh từ tab ⚙config của Google Sheet, chạy trên các kênh đã tick,
-// rồi ghi trạng thái từng kênh về Sheet. Mỗi chức năng hiện rõ nó ĐỌC và GHI những cột nào.
+// TỰ ĐỘNG HOÁ (GPM): chạy trên các profile GPM do người dùng chọn.
+// Danh sách profile lấy trực tiếp từ GPM local. Luồng Google Sheet (tạo profile, gán proxy,
+// tạo channel) nằm ở tab Theo dõi Sheet.
 // ============================================================================
 
 // Mỗi mục sidebar = một chức năng. `sub` trùng id khối tuỳ chọn (#automation-sub-<sub>).
 const AUTOMATION_TASKS = {
-  login:      { title: "Auto Login", task: "login", api: "login", btn: "▶ Đăng nhập",
-    desc: "Với mỗi kênh đã chọn: mở profile GPM và đăng nhập Gmail vào YouTube Studio (hỗ trợ 2FA và mail khôi phục). Tài khoản lấy từ cột tk của Sheet." },
-  thumb:      { title: "Auto đổi Thumbnail", task: "thumb", api: "changeThumb", btn: "▶ Đổi thumbnail",
-    desc: "Với mỗi kênh: vào Content, lọc video Scheduled, đổi thumbnail theo ảnh trùng tên video, rồi gắn end screen ngẫu nhiên." },
-  schedule:   { title: "Auto Lên lịch", task: "schedule", api: "schedule", btn: "▶ Lên lịch",
-    desc: "Với mỗi kênh: lọc video Draft và đặt lịch lần lượt theo cột Giờ đăng của kênh đó, mỗi ngày một lượt, tính từ ngày kế tiếp." },
-  distribute: { title: "Rải video cho kênh", task: "distribute", api: "distribute", btn: "▶ Rải và đăng", needsPreview: true,
-    desc: "Chia video trong một thư mục cho các kênh đã chọn, tải lên và đặt lịch theo cột Giờ đăng của từng kênh. Nên bấm Xem trước để kiểm tra cách chia." },
-  proxycheck: { title: "Kiểm tra proxy", task: "proxycheck", api: "proxyCheck", btn: "▶ Kiểm tra proxy", noConcurrencyLabel: "Số proxy kiểm tra cùng lúc",
-    desc: "Kiểm tra proxy đang gán trong profile GPM của từng kênh: sống hay chết và IP thoát ra. Mật khẩu proxy không bao giờ hiện." },
-  proxysync:  { title: "Đồng bộ proxy", task: "proxysync", api: "proxySync", btn: "▶ Gán proxy", hideConcurrency: true, confirm: true,
-    desc: "Lấy proxy ở cột Proxy tải (hoặc Proxy profile) của Sheet rồi gán vào profile GPM của từng kênh. Mỗi kênh cần proxy riêng; ô trống thì giữ nguyên proxy hiện có." },
-  addchannel: { title: "Thêm kênh mới", task: "addchannel", api: "addChannel", btn: "▶ Tạo profile và đăng nhập", confirm: true, hideConcurrency: true, usesPreviewNames: true,
-    desc: "Với kênh có cột tk nhưng chưa có GPM Profile ID: tạo profile GPM (Chrome 129), gán proxy, ghi Profile ID về Sheet, mở sẵn YouTube Studio và đăng nhập." },
+  login:         { title: "Auto Login", api: "login", btn: "▶ Đăng nhập", excel: "login",
+    desc: "Mở từng profile GPM đã chọn và đăng nhập Gmail vào YouTube Studio (hỗ trợ 2FA và mail khôi phục). Tài khoản lấy từ file Excel." },
+  thumb:         { title: "Auto đổi Thumbnail", api: "changeThumb", btn: "▶ Đổi thumbnail", preview: "run",
+    desc: "Với mỗi profile: vào Content, lọc video Scheduled, đổi thumbnail theo ảnh trùng tên video, rồi gắn end screen ngẫu nhiên." },
+  schedule:      { title: "Auto Lên lịch", api: "schedule", btn: "▶ Lên lịch", preview: "run",
+    desc: "Với mỗi profile: lọc video Draft và đặt lịch lần lượt theo giờ đăng, mỗi ngày một lượt, tính từ ngày kế tiếp." },
+  distribute:    { title: "Rải video cho kênh", api: "distribute", btn: "▶ Rải và đăng", preview: "distribute",
+    desc: "Chia video trong một thư mục cho các profile đã chọn, tải lên và đặt lịch theo giờ đăng. Nên bấm Xem trước để kiểm tra cách chia." },
+  proxycheck:    { title: "Kiểm tra proxy", api: "proxyCheck", btn: "▶ Kiểm tra proxy", noPreview: true, concurrencyLabel: "Số proxy kiểm tra cùng lúc",
+    desc: "Kiểm tra proxy đang gán trong từng profile GPM: sống hay chết và IP thoát ra. Mật khẩu proxy không bao giờ hiện." },
+  createchannel: { title: "Tạo channel", api: "createChannel", btn: "▶ Tạo channel", excel: "plan",
+    desc: "Với mỗi profile: cài đặt kênh (tag, mặc định tải lên) rồi tuỳ chỉnh kênh (tên, handle, mô tả) và xuất bản. Thông tin lấy từ file Excel." },
 };
 let automationCurrent = "login";
-let automationChannels = [];     // [{ sheetName, profileId, groupName, hasAccount, hasProxy, proxyMasked, ...status }]
-let automationTasksInfo = {};    // { task: { reads, writes, missingRequired, creatable, ready } }
-const automationSelected = new Set(); // sheetName đã tick (giữ nguyên khi đổi bộ lọc)
+let automationProfiles = []; // [{ id, name, groupId, hasProxy, proxyMasked }]
+let automationGroups = [];   // [{ id, name }]
+const automationSelected = new Set(); // id profile đã tick (giữ nguyên khi đổi bộ lọc)
 let automationRunning = false;
 
 const autoVal = (id) => document.getElementById(id)?.value?.trim() || "";
@@ -5833,74 +5966,71 @@ function selectAutomationSubTab(sub) {
   });
   document.getElementById("automation-title").textContent = t.title;
   document.getElementById("automation-desc").textContent = t.desc;
+  if (sub === "thumb") renderThumbOverrides();
   document.getElementById("automation-run-btn").textContent = t.btn;
   const cw = document.getElementById("automation-concurrency-wrap");
-  if (cw) {
-    cw.style.display = t.hideConcurrency ? "none" : "";
-    cw.querySelector("label").textContent = t.noConcurrencyLabel || "Số kênh chạy cùng lúc";
-  }
-  renderAutomationColumns();
+  if (cw) cw.querySelector("label").textContent = t.concurrencyLabel || "Số profile chạy cùng lúc";
+  const pv = document.getElementById("automation-preview-btn");
+  if (pv) pv.style.display = t.noPreview ? "none" : "";
 }
 document.querySelectorAll('.tab-button[data-tab="automation"]').forEach((btn) => {
   btn.addEventListener("click", () => {
     selectAutomationSubTab(btn.dataset.sub || "login");
-    if (!automationChannels.length) loadAutomationChannels();
+    if (!automationProfiles.length) loadAutomationProfiles();
   });
 });
 
-// ----- Nạp kênh + thông tin cột từ Sheet -----
-async function loadAutomationChannels() {
+// ----- Nạp profile từ GPM local -----
+async function loadAutomationProfiles() {
   if (!checkElectronAPI()) return;
   const statusEl = document.getElementById("automation-gpm-status");
-  statusEl.textContent = "⏳ Đang đọc Sheet...";
+  statusEl.textContent = "⏳ Đang đọc GPM...";
   statusEl.style.color = "var(--text-secondary)";
   try {
-    const r = await window.electronAPI.automation.sheetInfo({ gpmHost: autoHost() });
-    if (!r.success) throw new Error(r.error);
-    automationChannels = r.channels || [];
-    automationTasksInfo = r.tasks || {};
-    const names = new Set(automationChannels.map((c) => c.sheetName));
-    for (const n of [...automationSelected]) if (!names.has(n)) automationSelected.delete(n);
+    const r = await window.electronAPI.sheet.gpmListProfilesFull(autoHost());
+    if (!r.ok) throw new Error(r.error);
+    automationProfiles = r.profiles || [];
+    automationGroups = r.groups || [];
+    const ids = new Set(automationProfiles.map((p) => p.id));
+    for (const id of [...automationSelected]) if (!ids.has(id)) automationSelected.delete(id);
 
     const sel = document.getElementById("automation-group-filter");
     const cur = sel.value;
-    sel.innerHTML = '<option value="">Tất cả group GPM</option>' +
-      (r.groups || []).map((g) => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join("");
-    sel.value = (r.groups || []).includes(cur) ? cur : "";
+    sel.innerHTML = '<option value="">Tất cả group</option>' +
+      automationGroups.map((g) => `<option value="${escapeHtml(String(g.id))}">${escapeHtml(g.name)}</option>`).join("");
+    sel.value = automationGroups.some((g) => String(g.id) === cur) ? cur : "";
 
-    statusEl.textContent = `✅ ${automationChannels.length} kênh`;
+    statusEl.textContent = `✅ ${automationProfiles.length} profile`;
     statusEl.style.color = "var(--accent-success)";
-    renderAutomationChannels();
-    renderAutomationColumns();
+    renderAutomationProfiles();
   } catch (error) {
     statusEl.textContent = `❌ ${getErrorMessage(error)}`;
     statusEl.style.color = "var(--accent-danger)";
   }
 }
 
-function getFilteredAutomationChannels() {
+function getFilteredAutomationProfiles() {
   const group = autoVal("automation-group-filter");
   const q = autoVal("automation-profile-search").toLowerCase();
-  return automationChannels.filter((c) => (!group || c.groupName === group) && (!q || c.sheetName.toLowerCase().includes(q)));
+  return automationProfiles.filter((p) => (!group || String(p.groupId) === group) && (!q || p.name.toLowerCase().includes(q)));
 }
 
-function renderAutomationChannels() {
+function renderAutomationProfiles() {
   const list = document.getElementById("automation-profile-list");
   if (!list) return;
-  const shown = getFilteredAutomationChannels();
-  const badge = (c) => !c.profileId ? " 🆕" : !c.profileFound ? " ⚠" : "";
-  const tip = (c) => !c.profileId ? "Chưa có GPM Profile ID (kênh mới)" : !c.profileFound ? "Profile ID không có trong GPM" : (c.proxyMasked || "Chưa có proxy");
+  const groupName = new Map(automationGroups.map((g) => [String(g.id), g.name]));
+  const shown = getFilteredAutomationProfiles();
   list.innerHTML = shown.length
-    ? shown.map((c) => `
+    ? shown.map((p) => `
         <label class="auto-profile-item">
-          <input type="checkbox" data-name="${escapeHtml(c.sheetName)}" ${automationSelected.has(c.sheetName) ? "checked" : ""} />
-          <span title="${escapeHtml(tip(c))}">${escapeHtml(c.sheetName)}${badge(c)}</span>
-          <span class="grp">${escapeHtml(c.groupName || "")}</span>
+          <input type="checkbox" data-id="${escapeHtml(p.id)}" ${automationSelected.has(p.id) ? "checked" : ""} />
+          <span title="${escapeHtml(`Profile ID: ${p.id}\n${p.proxyMasked || "Chưa có proxy"}`)}">${escapeHtml(profileLabel(p))}${p.hasProxy ? "" : " ⚠"}</span>
+          <span class="grp">${escapeHtml(groupName.get(String(p.groupId)) || "")}</span>
         </label>`).join("")
-    : '<div style="padding:12px;color:var(--text-muted);font-size:12px;">Không có kênh nào.</div>';
+    : '<div style="padding:12px;color:var(--text-muted);font-size:12px;">Không có profile nào.</div>';
   list.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
     cb.addEventListener("change", () => {
-      cb.checked ? automationSelected.add(cb.dataset.name) : automationSelected.delete(cb.dataset.name);
+      cb.checked ? automationSelected.add(cb.dataset.id) : automationSelected.delete(cb.dataset.id);
       updateAutomationSelectionUi();
     });
   });
@@ -5908,50 +6038,53 @@ function renderAutomationChannels() {
 }
 
 function updateAutomationSelectionUi() {
-  const shown = getFilteredAutomationChannels();
+  renderThumbOverrides();
+  const shown = getFilteredAutomationProfiles();
   const countEl = document.getElementById("automation-selected-count");
   if (countEl) countEl.textContent = String(automationSelected.size);
   const all = document.getElementById("automation-select-all");
-  if (all) all.checked = shown.length > 0 && shown.every((c) => automationSelected.has(c.sheetName));
+  if (all) all.checked = shown.length > 0 && shown.every((p) => automationSelected.has(p.id));
 }
 
 function toggleAutomationSelectAll(checked) {
-  for (const c of getFilteredAutomationChannels()) checked ? automationSelected.add(c.sheetName) : automationSelected.delete(c.sheetName);
-  renderAutomationChannels();
+  for (const p of getFilteredAutomationProfiles()) checked ? automationSelected.add(p.id) : automationSelected.delete(p.id);
+  renderAutomationProfiles();
 }
 
-// ----- Khung "chức năng này đọc/ghi cột nào" -----
-function renderAutomationColumns() {
-  const box = document.getElementById("automation-columns");
-  const actions = document.getElementById("automation-columns-actions");
-  if (!box || !actions) return;
-  const info = automationTasksInfo[AUTOMATION_TASKS[automationCurrent].task];
-  if (!info) {
-    box.innerHTML = '<span style="color:var(--text-muted)">Chưa đọc được Sheet — kiểm tra cấu hình ở tab Theo dõi Sheet rồi bấm 🔄.</span>';
-    actions.innerHTML = "";
-    return;
-  }
-  const chip = (c) => {
-    const color = c.present ? "var(--accent-success)" : c.required ? "var(--accent-danger)" : "var(--text-muted)";
-    const mark = c.present ? "✓" : c.required ? "✗ thiếu" : "(tuỳ chọn, chưa có)";
-    return `<span style="display:inline-block;margin:0 8px 0 0;color:${color};">${escapeHtml(c.label)} <small style="display:inline;margin:0;">${mark}</small></span>`;
-  };
-  const row = (title, cols) => `<div><strong style="color:var(--text-secondary);display:inline-block;min-width:72px;">${title}</strong>${cols.length ? cols.map(chip).join("") : '<span style="color:var(--text-muted)">—</span>'}</div>`;
-  box.innerHTML = row("Đọc từ", info.reads) + row("Ghi vào", info.writes);
-  actions.innerHTML = info.creatable.length
-    ? `<button class="btn btn-secondary" style="padding:4px 12px;" onclick="createAutomationColumns()">➕ Tạo cột còn thiếu (${info.creatable.map(escapeHtml).join(", ")})</button>`
-    : "";
+// ----- Thư mục thumbnail riêng cho từng profile: khoá là PROFILE ID, không phải tên -----
+const thumbOwn = new Map(); // profileId -> thư mục riêng (giữ khi bỏ tick rồi tick lại)
+
+function renderThumbOverrides() {
+  const box = document.getElementById("automation-thumb-own");
+  if (!box) return;
+  const sel = getSelectedAutomationProfiles();
+  if (!sel.length) { box.innerHTML = '<div class="thumb-own-empty">Chưa tick profile nào ở thanh bên trái.</div>'; return; }
+  const common = autoVal("automation-thumb-folder");
+  box.innerHTML = sel.map((p) => `
+    <div class="thumb-own-row" data-id="${escapeHtml(p.id)}">
+      <div class="thumb-own-name" title="Profile ID: ${escapeHtml(p.id)}">${escapeHtml(p.label)}<small>${escapeHtml(String(p.id).slice(0, 8))}…</small></div>
+      <input type="text" readonly value="${escapeHtml(thumbOwn.get(p.id) || "")}" placeholder="${escapeHtml(common ? "Dùng thư mục chung: " + common : "Chưa chọn thư mục chung — hãy chọn thư mục riêng")}" />
+      <span style="display:flex;gap:6px;">
+        <button class="btn btn-secondary" style="min-width:0;padding:6px 12px;" data-act="pick">Chọn</button>
+        <button class="btn btn-secondary" style="min-width:0;padding:6px 10px;${thumbOwn.get(p.id) ? "" : "visibility:hidden;"}" data-act="clear" title="Bỏ thư mục riêng">×</button>
+      </span>
+    </div>`).join("");
+  box.querySelectorAll(".thumb-own-row").forEach((row) => {
+    const id = row.dataset.id;
+    row.querySelector('[data-act="pick"]').addEventListener("click", async () => {
+      if (!checkElectronAPI()) return;
+      const dir = await window.electronAPI.selectFolder();
+      if (dir) { thumbOwn.set(id, dir); renderThumbOverrides(); }
+    });
+    row.querySelector('[data-act="clear"]').addEventListener("click", () => { thumbOwn.delete(id); renderThumbOverrides(); });
+  });
 }
 
-async function createAutomationColumns() {
-  if (!checkElectronAPI() || automationRunning) return;
-  const t = AUTOMATION_TASKS[automationCurrent];
-  const info = automationTasksInfo[t.task];
-  if (!info?.creatable.length) return;
-  if (!confirm(`Thêm ${info.creatable.length} cột vào CUỐI dòng tiêu đề của tab ⚙config:\n• ${info.creatable.join("\n• ")}\n\nKhông xoá hay sửa cột nào đang có. Tiếp tục?`)) return;
-  const r = await window.electronAPI.automation.createColumns({ gpmHost: autoHost(), task: t.task });
-  if (!r.success) { alert(`Không tạo được cột: ${r.error}`); return; }
-  await loadAutomationChannels();
+// Chỉ gửi thư mục riêng của các profile ĐANG ĐƯỢC TICK (khoá = Profile ID).
+function getThumbFolders() {
+  const out = {};
+  for (const p of getSelectedAutomationProfiles()) if (thumbOwn.get(p.id)) out[p.id] = thumbOwn.get(p.id);
+  return out;
 }
 
 // ----- Chọn file / thư mục -----
@@ -5960,7 +6093,7 @@ async function pickAutomationFile(inputId) {
   const file = await window.electronAPI.selectFile({ filters: [{ name: "Excel", extensions: ["xlsx", "xls"] }] });
   if (file) document.getElementById(inputId).value = file;
 }
-async function pickAutomationFolder(inputId) {
+async function pickAutomationFolder(inputId) { // trả về Promise<void>, đợi chọn xong
   if (!checkElectronAPI()) return;
   const dir = await window.electronAPI.selectFolder();
   if (dir) document.getElementById(inputId).value = dir;
@@ -5986,60 +6119,79 @@ function setAutomationRunning(running) {
 }
 
 // ----- Gom tuỳ chọn của chức năng hiện tại -----
+// Đuôi ID chỉ hiện khi tên bị trùng, để người dùng phân biệt được hai profile cùng tên.
+function profileLabel(p) {
+  const dup = automationProfiles.filter((x) => x.name.trim().toLowerCase() === p.name.trim().toLowerCase()).length > 1;
+  return dup ? `${p.name} #${String(p.id).slice(0, 6)}` : p.name;
+}
+
+function getSelectedAutomationProfiles() {
+  return automationProfiles.filter((p) => automationSelected.has(p.id)).map((p) => ({ id: p.id, name: p.name, label: profileLabel(p) }));
+}
+
 function getAutomationOptions() {
-  const t = AUTOMATION_TASKS[automationCurrent];
-  const o = { task: t.task, gpmHost: autoHost(), names: [...automationSelected] };
-  if (!t.hideConcurrency) o.concurrency = parseInt(autoVal("automation-concurrency"), 10) || 1;
-  if (automationCurrent === "thumb") {
-    o.thumbFolder = autoVal("automation-thumb-folder") || undefined;
-    o.numVideos = parseInt(autoVal("automation-thumb-num"), 10) || 8;
-    o.linksFile = autoVal("automation-thumb-links") || undefined;
-  } else if (automationCurrent === "schedule") {
-    o.numDays = parseInt(autoVal("automation-sch-days"), 10) || 1;
-    o.startDate = autoVal("automation-sch-start") || undefined;
-  } else if (automationCurrent === "distribute") {
-    o.videoFolder = autoVal("automation-dist-videos");
-    o.thumbFolder = autoVal("automation-dist-thumbs") || undefined;
-    o.mode = autoVal("automation-dist-mode") || "roundrobin";
-    o.perChannel = parseInt(autoVal("automation-dist-per"), 10) || 1;
-  } else if (automationCurrent === "addchannel") {
-    o.defaultVersion = autoVal("automation-ac-version") || "129";
-    o.selectedNames = [...automationSelected];
-    o.doLogin = !!document.getElementById("automation-ac-login")?.checked;
+  const o = { gpmHost: autoHost(), profiles: getSelectedAutomationProfiles(), concurrency: parseInt(autoVal("automation-concurrency"), 10) || 1 };
+  switch (automationCurrent) {
+    case "login": o.accountsFile = autoVal("automation-login-file"); break;
+    case "thumb":
+      o.thumbFolder = autoVal("automation-thumb-folder");
+      o.numVideos = autoVal("automation-thumb-num");
+      o.linksFile = autoVal("automation-thumb-links") || undefined;
+      o.thumbFolders = getThumbFolders(); // { [Profile ID]: thư mục riêng }
+      break;
+    case "schedule":
+      o.numDays = autoVal("automation-sch-days");
+      o.startDate = autoVal("automation-sch-start") || undefined; // ô chọn ngày cho ra 2026-04-04
+      o.postTimes = autoVal("automation-sch-times");
+      break;
+    case "distribute":
+      o.videoFolder = autoVal("automation-dist-videos");
+      o.thumbFolder = autoVal("automation-dist-thumbs") || undefined;
+      o.mode = autoVal("automation-dist-mode") || "roundrobin";
+      o.perChannel = parseInt(autoVal("automation-dist-per"), 10) || 1;
+      o.postTimes = autoVal("automation-dist-times");
+      break;
+    case "createchannel":
+      o.planFile = autoVal("automation-cc-file");
+      o.accountsFile = autoVal("automation-cc-accounts") || undefined;
+      break;
   }
   return o;
 }
 
-function checkAutomationInputs() {
-  const t = AUTOMATION_TASKS[automationCurrent];
-  const info = automationTasksInfo[t.task];
-  if (info && !info.ready) return `Sheet thiếu cột bắt buộc: ${info.missingRequired.join(", ")}. Bấm "Tạo cột còn thiếu" hoặc tự thêm vào dòng tiêu đề.`;
-  if (automationSelected.size === 0 && automationCurrent !== "addchannel") return "Hãy tick chọn ít nhất 1 kênh ở thanh bên trái.";
-  if (automationCurrent === "distribute" && !autoVal("automation-dist-videos")) return "Hãy chọn thư mục video.";
+function checkAutomationInputs(o) {
+  if (!o.profiles.length) return "Hãy tick chọn ít nhất 1 profile ở thanh bên trái.";
+  switch (automationCurrent) {
+    case "login": if (!o.accountsFile) return "Hãy chọn file Excel tài khoản."; break;
+    case "thumb": {
+      const missing = o.profiles.filter((p) => !o.thumbFolder && !(o.thumbFolders || {})[p.id]);
+      if (missing.length) return `Hãy chọn thư mục thumbnail chung, hoặc chọn thư mục riêng cho: ${missing.map((p) => p.label).join(", ")}.`;
+      break;
+    }
+    case "schedule": if (!o.postTimes) return "Hãy nhập giờ đăng."; break;
+    case "distribute":
+      if (!o.videoFolder) return "Hãy chọn thư mục video.";
+      if (!o.postTimes) return "Hãy nhập giờ đăng.";
+      break;
+    case "createchannel": if (!o.planFile) return "Hãy chọn file Excel tạo channel."; break;
+  }
   return "";
 }
 
 // ----- Xem trước (không mở trình duyệt, không ghi gì) -----
 async function previewAutomation() {
   if (!checkElectronAPI() || automationRunning) return;
-  const err = checkAutomationInputs();
+  const o = getAutomationOptions();
+  const err = checkAutomationInputs(o);
   if (err) { alert(err); return; }
   clearAutomationOutput();
   setAutomationRunning(true);
   try {
-    const r = await window.electronAPI.automation.preview(getAutomationOptions());
-    if (!r.success) { showAutomationOutput(`❌ ${r.error}`); return; }
-    showAutomationOutput("👁 XEM TRƯỚC (chưa chạy gì)\n");
-    if (r.kind === "addchannel") {
-      const label = { create: "TẠO MỚI", reuse: "DÙNG LẠI", skip: "BỎ QUA", error: "LỖI" };
-      for (const p of r.plan) {
-        showAutomationOutput(`[${label[p.action] || p.action}] ${p.sheetName} (dòng ${p.rowIndex})${p.note ? " — " + p.note : ""}${p.proxyMasked ? " · proxy " + p.proxyMasked : p.action === "create" ? " · không có proxy" : ""}`);
-      }
-      const n = (a) => r.plan.filter((p) => p.action === a).length;
-      showAutomationOutput(`\nTạo mới ${n("create")}, dùng lại ${n("reuse")}, bỏ qua ${n("skip")}, lỗi ${n("error")}.`);
-      return;
-    }
-    if (r.kind === "distribute") {
+    const t = AUTOMATION_TASKS[automationCurrent];
+    if (t.preview === "distribute") {
+      const r = await window.electronAPI.automation.distributePreview(o);
+      if (!r.success) { showAutomationOutput(`❌ ${r.error}`); return; }
+      showAutomationOutput("👁 XEM TRƯỚC (chưa đăng gì)\n");
       let total = 0;
       for (const c of r.plan.channels) {
         showAutomationOutput(`■ ${c.name}: ${c.items.length} video`);
@@ -6049,10 +6201,38 @@ async function previewAutomation() {
         }
       }
       showAutomationOutput(`\nTổng ${total} video${r.plan.leftover ? `, ${r.plan.leftover} video dư không đăng lượt này` : ""}.`);
-    } else {
-      showAutomationOutput(`Sẽ chạy ${r.ready.length} kênh: ${r.ready.join(", ") || "(không có)"}`);
+      return;
     }
-    for (const s of r.skipped || []) showAutomationOutput(`⏭ ${s.name}: ${s.reason}`);
+    if (t.preview === "run") {
+      const r = await window.electronAPI.automation.previewRun({ ...o, kind: automationCurrent });
+      if (!r.success) { showAutomationOutput(`❌ ${r.error}`); return; }
+      showAutomationOutput("👁 XEM TRƯỚC (chưa chạy gì)\n");
+      if (r.kind === "thumb") {
+        for (const p of r.ready) showAutomationOutput(`■ ${p.name}${p.bkt ? " 💰BKT" : ""}: ${p.numVideos} video · ${p.images} ảnh · ${p.own ? "thư mục RIÊNG" : "thư mục chung"}\n    ${p.folder}`);
+        for (const x of r.skipped) showAutomationOutput(`⏭ ${x.name}: ${x.reason}`);
+        showAutomationOutput(`\nSẽ chạy ${r.ready.length}/${r.ready.length + r.skipped.length} profile.`);
+      } else {
+        showAutomationOutput(`Giờ đăng mỗi ngày: ${r.times.join(", ")}`);
+        showAutomationOutput(`Các ngày: ${r.days.join(", ")}`);
+        showAutomationOutput(`Mỗi kênh cần ${r.videosPerProfile} video nháp (Draft). Thiếu thì lên lịch được bao nhiêu hay bấy nhiêu.\n`);
+        showAutomationOutput(`Sẽ chạy ${r.profiles.length} profile: ${r.profiles.join(", ")}`);
+        if (r.bkt?.length) showAutomationOutput(`💰 Kênh BKT (chạy theo quy trình riêng): ${r.bkt.join(", ")}`);
+      }
+      return;
+    }
+    if (t.excel && (t.excel === "login" || t.excel === "plan")) {
+      const r = await window.electronAPI.automation.previewExcel({
+        ...o, kind: t.excel,
+      });
+      if (!r.success) { showAutomationOutput(`❌ ${r.error}`); return; }
+      showAutomationOutput(`👁 XEM TRƯỚC (chưa chạy gì)\n\nExcel có ${r.total} dòng hợp lệ.`);
+      showAutomationOutput(`Sẽ chạy ${r.ready.length} profile: ${r.ready.join(", ") || "(không có)"}`);
+      for (const n of r.missing) showAutomationOutput(`⏭ ${n}: không có dòng nào trong Excel khớp (cột A)`);
+      for (const n of r.ambiguous) showAutomationOutput(`⏭ ${n}: Excel có nhiều dòng cùng khoá ở cột A`);
+      for (const n of r.duplicated || []) showAutomationOutput(`⏭ ${n}: tên profile trùng với profile khác trong GPM — ghi Profile ID vào cột A`);
+      return;
+    }
+    showAutomationOutput(`👁 XEM TRƯỚC (chưa chạy gì)\n\nSẽ chạy ${o.profiles.length} profile: ${o.profiles.map((p) => p.name).join(", ")}`);
   } catch (error) {
     showAutomationOutput(`❌ ${getErrorMessage(error)}`);
   } finally {
@@ -6064,16 +6244,15 @@ async function previewAutomation() {
 async function runAutomation() {
   if (!checkElectronAPI() || automationRunning) return;
   const t = AUTOMATION_TASKS[automationCurrent];
-  const err = checkAutomationInputs();
-  if (err) { alert(err); return; }
   const o = getAutomationOptions();
+  const err = checkAutomationInputs(o);
+  if (err) { alert(err); return; }
 
   const warn = {
-    distribute: `Sẽ mở ${automationSelected.size} kênh và ĐĂNG video thật lên YouTube theo lịch.\nBạn đã bấm "Xem trước" để kiểm tra cách chia chưa? Tiếp tục chạy?`,
-    proxysync: `Gán proxy từ Sheet vào ${automationSelected.size} profile GPM, ghi đè proxy hiện tại. Tiếp tục?`,
-    addchannel: `Sẽ TẠO PROFILE MỚI trong GPM${o.doLogin ? " và đăng nhập tài khoản Google" : ""} cho các kênh mới trong Sheet.\nBạn đã bấm "Xem trước" chưa? Tiếp tục chạy?`,
+    distribute: `Sẽ mở ${o.profiles.length} profile và ĐĂNG video thật lên YouTube theo lịch.\nBạn đã bấm "Xem trước" để kiểm tra cách chia chưa? Tiếp tục chạy?`,
+    createchannel: `Sẽ chỉnh sửa channel thật trên ${o.profiles.length} profile (tên, handle, mô tả, cài đặt tải lên) và Xuất bản. Tiếp tục?`,
   }[automationCurrent];
-  if (warn && !confirm(warn)) return;
+  if (warn && !(await appConfirm(warn, { title: t.title, okText: "Chạy" }))) return;
 
   clearAutomationOutput();
   window.electronAPI.automation.removeLogListener();
@@ -6087,14 +6266,13 @@ async function runAutomation() {
     showAutomationOutput(`\n❌ ${getErrorMessage(error)}`);
   } finally {
     setAutomationRunning(false);
-    loadAutomationChannels(); // làm mới Profile ID / trạng thái vừa được ghi vào Sheet
   }
 }
 
 async function stopAutomationRun() {
   if (!checkElectronAPI()) return;
   await window.electronAPI.automation.stop();
-  showAutomationOutput("⏹ Đã yêu cầu dừng — các kênh đang chạy sẽ dừng ở bước kế tiếp.");
+  showAutomationOutput("⏹ Đã yêu cầu dừng — các profile đang chạy sẽ dừng ở bước kế tiếp.");
 }
 
 // ============================================================================

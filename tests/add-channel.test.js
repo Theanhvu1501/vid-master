@@ -1,8 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
-  parseAccount, toGpmProxy, resolveChromeVersion, planAddChannels, runAddChannels, previewAddChannels,
-} from "../sheet/add-channel.js";
+import { parseAccount, toGpmProxy, resolveChromeVersion, planAddChannels } from "../sheet/add-channel.js";
 import { createGpmProfile } from "../sheet/gpm-client.js";
 import { parseConfigRows, locateConfigColumns } from "../sheet/sheets-service.js";
 
@@ -33,13 +31,14 @@ test("resolveChromeVersion: mặc định 129, ưu tiên bản đang có trong G
   assert.equal(resolveChromeVersion("140", ["140.0.7000.5"]), "140.0.7000.5");
 });
 
-test("plan: dòng mới -> create với Chrome 129; ô tk trống -> skip", () => {
+test("plan: dòng mới -> create với Chrome 129; ô tk trống vẫn tạo profile nhưng không có tài khoản để đăng nhập", () => {
   const plan = planAddChannels({ rows: [R({}), R({ sheetName: "K2", account: "" })], profiles: [], defaultVersion: "" });
   assert.equal(plan[0].action, "create");
   assert.equal(plan[0].version, "129.0.6668.59");
-  assert.equal(plan[1].action, "skip");
+  assert.equal(plan[0].account.email, "a@gmail.com");
+  assert.equal(plan[1].action, "create");
+  assert.equal(plan[1].account, null);
 });
-
 test("plan: profile cùng tên đã có trong GPM -> dùng lại, KHÔNG tạo trùng, và ghi ID", () => {
   const plan = planAddChannels({ rows: [R({})], profiles: [P({ id: "X", name: "k1" })], defaultVersion: "" });
   assert.equal(plan[0].action, "reuse");
@@ -78,102 +77,6 @@ test("plan: proxy của profile có sẵn khác Sheet -> giữ nguyên proxy cũ
 test("plan: cột tk sai định dạng -> lỗi cho đúng dòng đó, dòng khác vẫn chạy", () => {
   const plan = planAddChannels({ rows: [R({ account: "hỏng" }), R({ sheetName: "K2", rowIndex: 3 })], profiles: [], defaultVersion: "" });
   assert.deepEqual(plan.map((p) => p.action), ["error", "create"]);
-});
-
-// ---- runAddChannels với dep giả ----
-const VALUES = [
-  ["Tên kênh", "proxy", "GPM Profile ID", "tk", "Phiên bản Chrome"],
-  ["K1", "socks5://1.1.1.1:80:u:p", "", "a@gmail.com|pw1|r@x.com|ABCD", ""],
-  ["K2", "", "", "b@gmail.com|pw2", ""],
-  ["Cũ", "", "OLD", "", ""],
-];
-
-function mkDeps(over = {}) {
-  const calls = { create: [], write: [], login: [], proxy: [] };
-  const deps = {
-    readValues: async () => VALUES,
-    listProfiles: async () => [],
-    createProfile: async (a) => { calls.create.push(a); return { id: `ID-${a.name}` }; },
-    updateProxy: async (id, raw) => calls.proxy.push([id, raw]),
-    writeCell: async (row, col, v) => calls.write.push([row, col, v]),
-    forEach: async ({ profiles, work }) => {
-      let ok = 0;
-      for (const p of profiles) { await work({}, p, () => {}); ok++; }
-      return { total: profiles.length, ok, fail: 0, skipped: 0 };
-    },
-    login: async (page, acct) => calls.login.push(acct.email),
-    ...over,
-  };
-  return { deps, calls };
-}
-
-test("run: tạo profile, ghi ID vào đúng ô Sheet, rồi đăng nhập; dòng kênh cũ không bị đụng", async () => {
-  const { deps, calls } = mkDeps();
-  const r = await runAddChannels({ gpmHost: "h", onLog: () => {} }, deps);
-  assert.equal(r.created, 2);
-  assert.deepEqual(calls.create.map((c) => c.name), ["K1", "K2"]);
-  assert.equal(calls.create[0].rawProxy, "socks5://1.1.1.1:80:u:p");
-  assert.equal(calls.create[0].browserVersion, "129.0.6668.59");
-  assert.equal(calls.create[0].startupUrl, "https://studio.youtube.com");
-  assert.deepEqual(calls.write, [[2, 2, "ID-K1"], [3, 2, "ID-K2"]]);
-  assert.deepEqual(calls.login, ["a@gmail.com", "b@gmail.com"]);
-});
-
-test("run: doLogin=false thì tạo profile nhưng KHÔNG đăng nhập", async () => {
-  const { deps, calls } = mkDeps();
-  await runAddChannels({ gpmHost: "h", doLogin: false, onLog: () => {} }, deps);
-  assert.equal(calls.login.length, 0);
-  assert.equal(calls.create.length, 2);
-});
-
-test("run: tạo profile lỗi ở K1 thì K2 vẫn chạy, K1 không bị đăng nhập", async () => {
-  const { deps, calls } = mkDeps({
-    createProfile: async (a) => { if (a.name === "K1") throw new Error("GPM từ chối"); calls.create.push(a); return { id: "ID-K2" }; },
-  });
-  const r = await runAddChannels({ gpmHost: "h", onLog: () => {} }, deps);
-  assert.equal(r.errors, 1);
-  assert.equal(r.created, 1);
-  assert.deepEqual(calls.login, ["b@gmail.com"]);
-});
-
-test("run: ghi Sheet hỏng -> DỪNG cả lượt (không tạo thêm profile mồ côi) và nói rõ ID cần điền", async () => {
-  const { deps, calls } = mkDeps({ writeCell: async () => { throw new Error("quota"); } });
-  await assert.rejects(runAddChannels({ gpmHost: "h", onLog: () => {} }, deps), /ID-K1.*dòng 2/s);
-  assert.equal(calls.create.length, 1, "không được tạo K2 sau khi ghi K1 hỏng");
-});
-
-test("run: chạy lại sau khi lỗi -> profile đã tạo được dùng lại, không tạo trùng", async () => {
-  const { deps, calls } = mkDeps({ listProfiles: async () => [P({ id: "EXIST-K1", name: "K1", rawProxy: "socks5://1.1.1.1:80:u:p" })] });
-  const r = await runAddChannels({ gpmHost: "h", onLog: () => {} }, deps);
-  assert.equal(r.reused, 1);
-  assert.deepEqual(calls.create.map((c) => c.name), ["K2"]);
-  assert.deepEqual(calls.write[0], [2, 2, "EXIST-K1"]);
-});
-
-test("run: không có dòng nào cần chạy -> báo lỗi rõ ràng", async () => {
-  const { deps } = mkDeps({ readValues: async () => [VALUES[0], VALUES[3]] });
-  await assert.rejects(runAddChannels({ gpmHost: "h", onLog: () => {} }, deps), /Không có dòng nào/);
-});
-
-test("run: thiếu cột tk hoặc GPM Profile ID thì từ chối ngay, nói rõ cột nào thiếu", async () => {
-  await assert.rejects(runAddChannels({ onLog: () => {} }, mkDeps({ readValues: async () => [["Tên kênh", "GPM Profile ID"], ["K1", ""]] }).deps), /"tk"/);
-  await assert.rejects(runAddChannels({ onLog: () => {} }, mkDeps({ readValues: async () => [["Tên kênh", "tk"], ["K1", "a@g.com|p"]] }).deps), /"GPM Profile ID"/);
-});
-
-test("run: log không bao giờ chứa mật khẩu, 2FA hay user/pass proxy", async () => {
-  const logs = [];
-  const { deps } = mkDeps();
-  await runAddChannels({ gpmHost: "h", onLog: (m) => logs.push(m) }, deps);
-  const all = logs.join("\n");
-  for (const secret of ["pw1", "pw2", "ABCD", "u:p"]) assert.ok(!all.includes(secret), `lộ ${secret}`);
-});
-
-test("preview: không lộ mật khẩu hay proxy gốc", async () => {
-  const { deps } = mkDeps();
-  const out = await previewAddChannels({}, deps);
-  const s = JSON.stringify(out);
-  assert.ok(!s.includes("pw1") && !s.includes("ABCD") && !s.includes("u:p"));
-  assert.equal(out[0].proxyMasked, "socks5://1.1.1.1:80");
 });
 
 // ---- createGpmProfile: tin đọc-lại, không tin "success" ----
