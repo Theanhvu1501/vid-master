@@ -63,6 +63,8 @@ export function createUploadQueue({
   const pendingUrls = new Map();      // sheetName -> Map(sourceUrl, số job) — chặn enqueue trùng
   const channelEnded = new Set();     // sheetName — runner đã báo lượt này hết job cho kênh
   const reported = new Set();         // sheetName — đã gửi tin của kênh trong lượt này
+  const summarized = new Set();       // sheetName — đã phát sự kiện tổng kết kênh trong lượt này
+  const channelFailed = new Map();    // sheetName -> số video hỏng ở bước tải/render lượt này (runner báo qua endChannel)
   const reportTasks = new Set();      // Promise của các tin đang chụp/gửi
   let pending = 0;                // số job đang chờ/chạy
   let flushTimer = null;
@@ -153,13 +155,34 @@ export function createUploadQueue({
   // Lọc `results` và ghi `reported` TRƯỚC mọi await: hai lời gọi tới cùng lúc (từ
   // endChannel và từ job cuối) không thể gửi hai lần, và digest có splice `results`
   // giữa chừng thì tin của kênh cũng đã giữ được bản sao của mình.
-  function maybeReportChannel(sheetName) {
-    if (!notifyChannel) return;                                  // tắt công tắc → khỏi tốn ~20s chụp
-    if (!channelEnded.has(sheetName)) return;                    // runner chưa báo hết job
-    if ((pendingByChannel.get(sheetName) ?? 0) > 0) return;       // còn video đang upload
-    if (reported.has(sheetName)) return;
+  // Tổng kết MỘT kênh khi kênh xong hẳn (runner đã báo hết job và không còn video đang upload): phát đúng MỘT sự kiện
+  // "channel-summary" mang số video thành công / lỗi upload / chờ đăng / lỗi tải-render. Chạy bất kể công tắc Telegram có ảnh.
+  // Trả về kết quả của kênh (để tin Telegram có ảnh dùng tiếp) hoặc null nếu chưa tới lúc / không có gì để báo.
+  // Ghi `summarized` TRƯỚC mọi await để hai lời gọi tới cùng lúc không phát hai lần.
+  function summarizeChannel(sheetName) {
+    if (!channelEnded.has(sheetName)) return null;               // runner chưa báo hết job
+    if ((pendingByChannel.get(sheetName) ?? 0) > 0) return null;  // còn video đang upload
+    if (summarized.has(sheetName)) return null;
     const mine = results.filter((r) => r.sheetName === sheetName);
-    if (!mine.length) return;                                    // không có video mới → không gửi
+    const failed = channelFailed.get(sheetName) ?? 0;
+    if (!mine.length && !failed) return null;                    // kênh chẳng làm gì lượt này → không báo
+    summarized.add(sheetName);
+    const ok = mine.filter((r) => r.ok).length;
+    const waiting = mine.filter((r) => !r.ok && r.waiting).length;
+    const uploadErr = mine.filter((r) => !r.ok && !r.waiting).length;
+    try { emit({ type: "channel-summary", channel: sheetName, ok, uploadErr, waiting, failed }); } catch { /* ignore */ }
+    return mine;
+  }
+
+  // Kênh vừa xong → gửi tin của riêng kênh đó (ảnh trang Nội dung + kết quả).
+  // Lọc `results` và ghi `reported` TRƯỚC mọi await: hai lời gọi tới cùng lúc (từ
+  // endChannel và từ job cuối) không thể gửi hai lần, và digest có splice `results`
+  // giữa chừng thì tin của kênh cũng đã giữ được bản sao của mình.
+  function maybeReportChannel(sheetName) {
+    const mine = summarizeChannel(sheetName);                     // luôn phát tổng kết, kể cả khi tắt công tắc ảnh
+    if (!notifyChannel) return;                                  // tắt công tắc → khỏi tốn ~20s chụp
+    if (!mine || !mine.length) return;                           // không có video mới → không gửi tin ảnh
+    if (reported.has(sheetName)) return;
     reported.add(sheetName);
 
     const task = sendChannelReport(sheetName, mine).finally(() => reportTasks.delete(task));
@@ -186,7 +209,9 @@ export function createUploadQueue({
 
   // Runner báo: lượt này hết job cho kênh này (gọi ở finally của runChannel).
   // Đồng bộ và không bao giờ ném lỗi — runner gọi trong finally, không await.
-  function endChannel(sheetName) {
+  function endChannel(sheetName, info = {}) {
+    const failed = Number(info?.failed) || 0;
+    if (failed > 0) channelFailed.set(sheetName, failed); else channelFailed.delete(sheetName);
     channelEnded.add(sheetName);
     try { maybeReportChannel(sheetName); } catch (e) { log(`[${sheetName}] lỗi báo kênh: ${e?.message || e}`); }
   }
@@ -338,6 +363,8 @@ export function createUploadQueue({
     channelCache.clear();
     channelEnded.clear();
     reported.clear();
+    summarized.clear();
+    channelFailed.clear();
   }
   // Runner báo: lượt chạy xong → cho phép gửi digest khi upload cũng rỗng.
   function endRun() { runActive = false; if (pending === 0) { scheduleFlush(); scheduleClose(); } }

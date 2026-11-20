@@ -557,3 +557,96 @@ test("queue: hasPending đúng theo kênh + url, tắt sau khi job xong", async 
   await q.drain();
   assert.equal(q.hasPending("K", "http://u/1"), false);
 });
+
+// ---------------- tổng kết từng kênh (channel-summary) ----------------
+function summaryQueue(over = {}) {
+  const events = [];
+  const failNow = new Set(over.failTitles || []);
+  const q = createUploadQueue({
+    readChannelUploads: emptyUploads,
+    connect: async () => ({ page: {} }),
+    closeConn: async () => {},
+    runUpload: async (o) => { o.onUploaded?.(); if (failNow.has(o.title)) throw new Error("YouTube đơ"); }, // ném SAU onUploaded = lỗi upload thật (không thử lại)
+    now: () => NOW, listFiles: () => ["v1.jpg"], log: () => {}, retries: 1, retryDelayMs: 0,
+    emit: (e) => events.push(e), notifyDigest: async () => {}, notifyChannel: null,
+    capture: async () => Buffer.from("PNG"), flushMs: 1, ...over,
+  });
+  return { q, events, summaries: () => events.filter((e) => e.type === "channel-summary") };
+}
+
+test("channel-summary: mỗi kênh đúng MỘT sự kiện, đếm đúng thành công / lỗi upload, kể cả khi tắt tin Telegram có ảnh", async () => {
+  const { q, summaries } = summaryQueue({ failTitles: ["v3"] });
+  const three = (n) => ({ ...jobOf("KenhA", "p1", n), postTimes: "8:00, 12:00, 18:00" }); // đủ 3 slot: video thứ 3 phải tới bước upload rồi mới lỗi
+  q.enqueue(three(1));
+  q.enqueue(three(2));
+  q.enqueue(three(3)); // lỗi upload
+  q.endChannel("KenhA");
+  q.enqueue(jobOf("KenhB", "p2", 1));
+  q.endChannel("KenhB");
+  await q.drain();
+
+  const s = summaries();
+  assert.equal(s.length, 2, "hai kênh -> hai sự kiện, không phải ba video");
+  const a = s.find((x) => x.channel === "KenhA"), b = s.find((x) => x.channel === "KenhB");
+  assert.deepEqual([a.ok, a.uploadErr, a.waiting, a.failed], [2, 1, 0, 0]);
+  assert.deepEqual([b.ok, b.uploadErr, b.waiting, b.failed], [1, 0, 0, 0]);
+});
+
+test("channel-summary: chỉ phát SAU khi video cuối của kênh upload xong (endChannel tới trước hay sau đều đúng một lần)", async () => {
+  const early = summaryQueue();
+  early.q.enqueue(jobOf("KenhA", "p1", 1));
+  early.q.endChannel("KenhA"); // job chưa chạy xong
+  assert.equal(early.summaries().length, 0, "còn video đang upload thì chưa tổng kết");
+  await early.q.drain();
+  assert.equal(early.summaries().length, 1);
+
+  const late = summaryQueue();
+  await late.q.enqueue(jobOf("KenhA", "p1", 1));
+  late.q.endChannel("KenhA"); // job đã xong hẳn
+  late.q.endChannel("KenhA"); // gọi lặp không được báo lần hai
+  await late.q.drain();
+  assert.equal(late.summaries().length, 1);
+});
+
+test("channel-summary: lỗi tải/render do runner báo qua endChannel được đếm riêng; kênh chỉ có lỗi vẫn được báo", async () => {
+  const { q, summaries } = summaryQueue();
+  q.endChannel("KenhA", { failed: 3 }); // không video nào tới được bước upload
+  await q.drain();
+  const s = summaries();
+  assert.equal(s.length, 1);
+  assert.deepEqual([s[0].ok, s[0].uploadErr, s[0].failed], [0, 0, 3]);
+
+  const mixed = summaryQueue();
+  mixed.q.enqueue(jobOf("KenhB", "p2", 1));
+  mixed.q.endChannel("KenhB", { failed: 1 });
+  await mixed.q.drain();
+  assert.deepEqual([mixed.summaries()[0].ok, mixed.summaries()[0].failed], [1, 1]);
+});
+
+test("channel-summary: kênh không làm gì lượt này (không video, không lỗi) -> im lặng; lượt sau báo lại bình thường", async () => {
+  const { q, summaries } = summaryQueue();
+  q.endChannel("KenhA");
+  await q.drain();
+  assert.deepEqual(summaries(), [], "không có gì để báo thì không phát sự kiện");
+
+  q.beginRun(); // lượt mới: trạng thái "đã báo" được xóa
+  q.enqueue(jobOf("KenhA", "p1", 1));
+  q.endChannel("KenhA");
+  await q.drain();
+  assert.equal(summaries().length, 1);
+  q.beginRun();
+  q.enqueue(jobOf("KenhA", "p1", 2));
+  q.endChannel("KenhA", { failed: 0 });
+  await q.drain();
+  assert.equal(summaries().length, 2, "mỗi lượt chạy báo một lần cho kênh");
+});
+
+test("channel-summary: hết slot hôm sau (⏸ chờ) đếm là CHỜ ĐĂNG, không đếm là lỗi upload, và không phải lỗi thành công", async () => {
+  const { q, summaries } = summaryQueue({ listFiles: () => ["v1.jpg"] });
+  q.enqueue({ ...jobOf("KenhA", "p1", 1), postTimes: "" }); // không có giờ đăng -> không cấp được slot -> chờ
+  q.endChannel("KenhA");
+  await q.drain();
+  const s = summaries();
+  assert.equal(s.length, 1);
+  assert.deepEqual([s[0].ok, s[0].uploadErr, s[0].waiting], [0, 0, 1]);
+});

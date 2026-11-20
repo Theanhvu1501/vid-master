@@ -295,6 +295,24 @@ test("runNow records error and skips count when render throws", async () => {
   assert.equal(getState()["Kênh A"], undefined); // không render thành công nào
 });
 
+test("runNow báo số video hỏng ở bước tải/render cho hàng đợi upload (để tổng kết kênh đếm lỗi máy riêng)", async () => {
+  const ended = [];
+  const uploadQueue = { enqueue: () => {}, beginRun: () => {}, endRun: () => {}, endChannel: (name, info) => ended.push({ name, info }) };
+  const { deps } = makeDeps({ renderer: async () => { throw new Error("ffmpeg boom"); } });
+  await createSheetRunner({ ...deps, uploadQueue }).runNow();
+  assert.equal(ended.length, 1, "mỗi kênh báo hết job đúng một lần");
+  assert.equal(ended[0].name, "Kênh A");
+  assert.equal(ended[0].info.failed, 2, "2 video render lỗi -> failed = 2");
+});
+
+test("runNow: render thành công hết thì failed = 0", async () => {
+  const ended = [];
+  const uploadQueue = { enqueue: () => {}, beginRun: () => {}, endRun: () => {}, endChannel: (name, info) => ended.push({ name, info }) };
+  const { deps } = makeDeps();
+  await createSheetRunner({ ...deps, uploadQueue }).runNow();
+  assert.equal(ended[0].info.failed, 0);
+});
+
 test("runNow errors channel with no backgrounds", async () => {
   const { deps, calls } = makeDeps({ listBackgrounds: () => [] });
   await createSheetRunner(deps).runNow();

@@ -98,6 +98,7 @@ export function createSheetRunner(deps) {
 
   async function runChannel(ch, today) {
     if (!ch.enabled) return;
+    let failedVideos = 0; // video hỏng ở bước tải/render lượt này (lỗi máy/mạng, khác với lỗi upload) -> báo trong tổng kết kênh
     // finally ở cuối hàm: mọi đường thoát sớm (proxy sai, không có background…) đều
     // phải báo hàng đợi rằng lượt này hết job cho kênh, để nó chốt tin của kênh.
     try {
@@ -374,6 +375,7 @@ export function createSheetRunner(deps) {
           const prefix = stage === "download" ? ST.ERR_DL : ST.ERR_RENDER;
           const text = attempts >= MAX_ATTEMPTS ? skipText(msg) : `${prefix} ${msg}`;
           try { await sheetsApi.setUrlStatus(ch.sheetName, item.rowIndex, text); } catch { /* ignore */ }
+          failedVideos++;
           emit({ type: "error", channel: ch.sheetName, url: item.url, message: msg });
         }
       })));
@@ -381,7 +383,7 @@ export function createSheetRunner(deps) {
       emit({ type: "error", channel: ch.sheetName, message: String(e?.message || e).slice(0, 200) });
     } finally {
       // Không await: việc chụp+gửi chạy nền để runner đi tiếp kênh sau ngay.
-      if (uploadQueue) uploadQueue.endChannel(ch.sheetName);
+      if (uploadQueue) uploadQueue.endChannel(ch.sheetName, { failed: failedVideos });
     }
   }
 

@@ -93,7 +93,7 @@ test("sheetEventToMonitor: giữ kết quả quan trọng, bỏ bước trung gi
   assert.equal(sheetEventToMonitor({ type: "upload-status", channel: "k", status: "❌ lỗi: x" }).level, "error");
   assert.equal(sheetEventToMonitor({ type: "upload-status", channel: "k", status: "⏸ chờ: hết slot ngày mai" }).level, "warning");
   assert.equal(sheetEventToMonitor({ type: "upload-status", channel: "k", status: "⏳ đang upload" }), null);
-  assert.equal(sheetEventToMonitor({ type: "video-rendered", channel: "k", title: "V" }).level, "success");
+  assert.equal(sheetEventToMonitor({ type: "video-rendered", channel: "k", title: "V" }), null, "render từng video không còn là thông báo: chỉ báo một lần khi cả kênh xong");
   assert.equal(sheetEventToMonitor({ type: "error", channel: "k", message: "boom" }).level, "error");
   assert.equal(sheetEventToMonitor({ type: "log", message: "x" }), null);
   assert.equal(sheetEventToMonitor({ type: "channel-status", channel: "k", status: "đang tải" }), null);
@@ -128,3 +128,23 @@ test("createProxyHealth: checkFn ném lỗi -> ghi là chết, không làm hỏn
   assert.deepEqual([h.snapshot().a.ok, h.snapshot().a.error], [false, "curl chết"]);
 });
 
+
+test("channel-summary: một thông báo mỗi kênh với số video thành công / lỗi upload / lỗi tải-render / chờ đăng", () => {
+  const e = (o) => sheetEventToMonitor({ type: "channel-summary", channel: "K1", ok: 0, uploadErr: 0, waiting: 0, failed: 0, ...o });
+  const good = e({ ok: 3 });
+  assert.deepEqual([good.level, good.kind, good.channel], ["success", "channel", "K1"]);
+  assert.equal(good.message, "✅ 3 video thành công");
+
+  const mixed = e({ ok: 2, uploadErr: 1, failed: 2 });
+  assert.equal(mixed.level, "error");
+  assert.equal(mixed.message, "✅ 2 video thành công · ❌ 1 lỗi upload · ⚠️ 2 lỗi tải/render");
+
+  const waiting = e({ ok: 1, waiting: 2 });
+  assert.equal(waiting.level, "warning", "chỉ chờ đăng (chưa lỗi) là cảnh báo nhẹ, không đỏ");
+  assert.equal(waiting.message, "✅ 1 video thành công · ⏸ 2 chờ đăng");
+
+  assert.equal(e({ failed: 4 }).message, "✅ 0 video thành công · ⚠️ 4 lỗi tải/render", "kênh chỉ có lỗi vẫn báo, ghi rõ 0 thành công");
+  assert.equal(e({}), null, "không có gì để báo thì không gửi");
+  assert.equal(e({ ok: -5, uploadErr: "abc" }), null, "số liệu rác không thành thông báo sai");
+  assert.equal(sheetEventToMonitor({ type: "channel-summary", ok: 1 }).channel, null, "thiếu tên kênh không làm hỏng");
+});

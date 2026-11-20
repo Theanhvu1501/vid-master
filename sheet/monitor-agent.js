@@ -117,7 +117,19 @@ export function sheetEventToMonitor(evt) {
   const channel = evt.channel || null;
   switch (evt.type) {
     case "video-rendered":
-      return { level: "success", kind: "render", channel: safeText(channel, 120) || null, message: safeText(`Render xong: ${evt.title || evt.sourceUrl || "video"}`, 300) };
+      return null; // từng video render xong quá ồn: chỉ báo MỘT lần khi cả kênh xong (channel-summary)
+    case "channel-summary": {
+      // Một thông báo cho mỗi kênh: bao nhiêu video lên lịch thành công, bao nhiêu lỗi (upload / lỗi máy ở bước tải-render).
+      const ok = Math.max(0, Number(evt.ok) || 0), upErr = Math.max(0, Number(evt.uploadErr) || 0);
+      const wait = Math.max(0, Number(evt.waiting) || 0), fail = Math.max(0, Number(evt.failed) || 0);
+      const bad = upErr + fail;
+      if (!ok && !bad && !wait) return null;
+      const parts = [`✅ ${ok} video thành công`];
+      if (upErr) parts.push(`❌ ${upErr} lỗi upload`);
+      if (fail) parts.push(`⚠️ ${fail} lỗi tải/render`);
+      if (wait) parts.push(`⏸ ${wait} chờ đăng`);
+      return { level: bad ? "error" : wait ? "warning" : "success", kind: "channel", channel: safeText(channel, 120) || null, message: safeText(parts.join(" · "), 300) };
+    }
     case "upload-status": {
       const s = String(evt.status || "");
       const t = evt.title ? ` · ${evt.title}` : "";
