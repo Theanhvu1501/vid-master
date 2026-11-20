@@ -17,3 +17,7 @@ bin
 sheet-settings.json
 .app-session.bin
 .app-login-hint.json
+
+# Dữ liệu app tự sinh khi chạy: bản sao dữ liệu tài khoản (cache offline) và preset dựng sẵn
+.web-cache/
+presets/
