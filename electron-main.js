@@ -14,7 +14,6 @@ import sharp from "sharp";
 import { createSheetRunner } from "./sheet/sheet-runner.js";
 import { createWebStore, createDiskStore } from "./sheet/web-store.js";
 import { planProxySync, addrOfProxy } from "./sheet/proxy-sync.js";
-import { createYoutubeClient, fetchChannelStats, fetchSourceVideos, pickNewUrls, DEFAULT_YT_API_KEY } from "./sheet/youtube-api.js";
 import { parseScheduledISO, formatStamp } from "./sheet/schedule-slots.js";
 import { testGpmConnection, connectAndOpenStudio, connectProfile, getGpmApiVersion, listGpmGroups, listGpmProfilesFull, createGpmProfile, updateGpmProfileProxy } from "./sheet/gpm-client.js";
 import { runLogin, runChangeThumb, runSchedule, stopAutomation, resetCancel, forEachProfile, loginOne, checkCancelled, isCancelled } from "./sheet/youtube-automation.js";
@@ -1421,7 +1420,7 @@ function sheetSettingsPath() {
 }
 function loadSheetSettings() {
   try { return JSON.parse(fs.readFileSync(sheetSettingsPath(), "utf-8")); }
-  catch { return { channelsRoot: "", pollSec: 300, autoRunOnOpen: false, useGPU: false, videoSpeed: 0.95, gpuVideoCodec: "h264_nvenc", ytApiKey: "", gpmIdleCloseMin: 10, cleanupEnabled: false, cleanupKeepDays: 1 }; }
+  catch { return { channelsRoot: "", pollSec: 300, autoRunOnOpen: false, useGPU: false, videoSpeed: 0.95, gpuVideoCodec: "h264_nvenc", gpmIdleCloseMin: 10, cleanupEnabled: false, cleanupKeepDays: 1 }; }
 }
 function saveSheetSettings(s) { fs.writeFileSync(sheetSettingsPath(), JSON.stringify(s, null, 2), "utf-8"); }
 
@@ -1822,9 +1821,7 @@ function cutClip({ input, output, seconds }) {
 }
 
 // ===== Theo dõi kênh YouTube =====
-function ytClientFrom(st) {
-  return createYoutubeClient((st.ytApiKey || "").trim() || DEFAULT_YT_API_KEY);
-}
+// App KHÔNG giữ API key YouTube nào: mọi lời gọi YouTube đi qua server, dùng key dùng chung do quản trị viên đặt trên web.
 
 // Không còn Sheet: điều kiện duy nhất là đã đăng nhập tài khoản.
 function requireSheetSettings() {
@@ -1840,25 +1837,34 @@ function saveStatsCache(rows) {
   try { fs.writeFileSync(statsCachePath(), JSON.stringify({ at: Date.now(), rows }), "utf-8"); } catch { /* không quan trọng */ }
 }
 
-// Lấy số liệu từ YouTube cho mọi kênh có Link kênh, rồi lưu cục bộ. Một kênh hỏng chỉ làm hỏng dòng của nó.
+// Lấy số liệu từ YouTube (qua server, key dùng chung) cho mọi kênh có Link kênh, rồi lưu cục bộ. Một kênh hỏng chỉ làm hỏng dòng của nó.
+// Lỗi của YouTube/key (chưa có key, key bị từ chối, hết quota) được báo đúng nguyên nhân, không phải "mọi kênh đều lỗi".
+const ytErrorText = (e) => {
+  const code = e?.code || "", msg = String(e?.message || e);
+  if (code === "no-key") return "Hệ thống chưa có API key YouTube. Nhờ quản trị viên thêm ở trang web: tab Cấu hình → API key YouTube.";
+  if (code === "forbidden" || code === "key") return "API key YouTube dùng chung bị từ chối hoặc không hợp lệ. Quản trị viên cần thay key ở trang web (tab Cấu hình → API key YouTube).";
+  if (code === "quota") return "API key YouTube đã hết hạn mức hôm nay (quota). Thử lại ngày mai hoặc dùng key khác.";
+  return msg;
+};
 async function refreshChannelStats() {
   const st = loadSheetSettings();
   const bad = requireSheetSettings(st);
   if (bad) return { ok: false, error: bad };
+  let r;
+  try { r = await webStore().youtubeStats(); }
+  catch (err) { return { ok: false, offline: !!err?.offline, code: err?.code || "", error: ytErrorText(err) }; }
   const channels = await webChannels();
-  const targets = channels.filter((c) => c.channelUrl);
-  const stats = targets.length ? await fetchChannelStats(ytClientFrom(st), targets.map((c) => c.channelUrl)) : [];
-  const statByName = new Map(targets.map((c, i) => [c.sheetName, stats[i]]));
+  const byName = new Map((r.rows || []).map((x) => [x.name, x]));
   const updatedAt = formatStamp(new Date());
   const rows = [];
   for (const ch of channels) {
     const base = { sheetName: ch.sheetName, sourceHandle: ch.sourceHandle || "", channelUrl: ch.channelUrl || "" };
-    const s = statByName.get(ch.sheetName);
-    if (!s) { rows.push({ ...base }); continue; } // kênh không khai Link kênh
+    const s = byName.get(ch.sheetName);
+    if (!s || s.noUrl) { rows.push({ ...base }); continue; } // kênh không khai Link kênh
     if (s.error) { rows.push({ ...base, error: s.error }); continue; }
     rows.push({ ...base, subscribers: s.subscribers, views: s.views, videoCount: s.videoCount, hidden: s.hidden, updatedAt });
   }
-  saveStatsCache(rows.filter((r) => !r.error));
+  saveStatsCache(rows.filter((x) => !x.error));
   return { ok: true, rows, missing: [] };
 }
 
@@ -1882,20 +1888,19 @@ async function listStatsChannels() {
   };
 }
 
-// sortBy: "views" (view cao nhất) | "newest" (mới nhất). Thêm video nguồn mới vào danh sách của kênh trên web.
+// sortBy: "views" (view cao nhất) | "newest" (mới nhất). Server gọi YouTube bằng key dùng chung, lọc trùng và thêm vào danh sách của kênh.
 async function fetchSourceUrlsFor(sheetName, sortBy = "views") {
   const st = loadSheetSettings();
   const bad = requireSheetSettings(st);
   if (bad) return { ok: false, error: bad };
-  const channels = await webChannels();
-  const ch = channels.find((c) => c.sheetName === sheetName);
-  if (!ch) return { ok: false, error: `Không thấy kênh "${sheetName}" trên web (hoặc kênh chưa được gán cho máy này).` };
-  if (!ch.sourceHandle) return { ok: false, error: "Kênh chưa điền @handle nguồn." };
-  const videos = await fetchSourceVideos(ytClientFrom(st), ch.sourceHandle, { sortBy });
-  const existing = (await webUrls(sheetName)).map((r) => r.url);
-  const fresh = pickNewUrls(existing, videos.map((v) => v.url));
-  await webStore().appendUrls(sheetName, fresh);
-  return { ok: true, added: fresh.length, skipped: videos.length - fresh.length };
+  await webChannels(); // làm mới bản đồ tên kênh -> id trên web
+  try {
+    const r = await webStore().fetchSourceUrls(sheetName, sortBy);
+    return { ok: true, added: r.added, skipped: r.skipped };
+  } catch (err) {
+    if (err?.status === 404) return { ok: false, error: `Không thấy kênh "${sheetName}" trên web (hoặc kênh chưa được gán cho máy này).` };
+    return { ok: false, offline: !!err?.offline, code: err?.code || "", error: ytErrorText(err) };
+  }
 }
 
 // Ảnh chụp các trường cấu hình mà buildSheetRunner đọc MỘT LẦN lúc dựng. Đổi bất kỳ trường
@@ -1949,6 +1954,15 @@ ipcMain.handle("channels:stats", async (e, { days } = {}) => {
       c.yt = s ? { subscribers: s.subscribers ?? null, views: s.views ?? null, videoCount: s.videoCount ?? null, hidden: !!s.hidden, updatedAt: s.updatedAt || null } : null;
     }
     return r;
+  } catch (err) { return { ok: false, offline: !!err?.offline, error: String(err?.message || err) }; }
+});
+// Danh sách URL video của một kênh (từ web, có ETag + bản lưu khi mất mạng), kèm trạng thái cột tải/render và upload
+ipcMain.handle("channels:videos", async (e, { sheetName } = {}) => {
+  try {
+    if (!webConfigured()) return { ok: false, error: "Chưa đăng nhập." };
+    const name = String(sheetName || "").trim();
+    if (!name) return { ok: false, error: "Thiếu tên kênh" };
+    return { ok: true, rows: await webUrls(name) };
   } catch (err) { return { ok: false, offline: !!err?.offline, error: String(err?.message || err) }; }
 });
 ipcMain.handle("channels:update", async (e, { id, body } = {}) => {

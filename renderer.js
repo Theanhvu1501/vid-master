@@ -4983,6 +4983,30 @@ async function runConcat() {
     return c;
   }
 
+  // Kênh đã bị xóa (hoặc chuyển máy) ở web: gỡ khỏi bảng và bộ nhớ. Kênh đang có video chạy dở thì GIỮ LẠI
+  // để không nuốt mất tiến trình đang diễn ra; nó sẽ biến mất ở lần đồng bộ sau khi chạy xong.
+  // Kênh đang làm việc dở (mở GPM hoặc có video đang tải/render/upload): không được gỡ giữa chừng
+  const isBusy = (c) => c.gpm.state === "busy" || [...c.videos.values()].some((v) => (v.state || v.upload) && !isDone(v) && !isErr(v));
+  function removeChannel(name) {
+    const c = channels.get(name);
+    if (!c) return false;
+    if (isBusy(c)) return false;
+    try { c.row?.tr?.remove(); } catch { /* ignore */ }
+    try { c.el?.card?.remove?.(); } catch { /* ignore */ }
+    channels.delete(name);
+    if (selectedName === name) selectedName = null;
+    return true;
+  }
+  // Đồng bộ danh sách kênh với web: tạo kênh mới, gỡ kênh không còn. Trả về tên các kênh còn giữ lại dù web không còn.
+  function dropMissing(webNames) {
+    const keep = new Set(webNames), kept = [];
+    for (const name of [...channels.keys()]) {
+      if (keep.has(name)) continue;
+      if (!removeChannel(name)) kept.push(name);
+    }
+    return kept;
+  }
+
   function ensureVideo(c, url, title) {
     let v = c.videos.get(url);
     if (!v) { v = { url, title: "", state: "", upload: "", error: "" }; c.videos.set(url, v); }
@@ -5410,11 +5434,115 @@ async function runConcat() {
       c.open = true; renderVideos(c);
       const act = activityText(c);
       const s = document.createElement("div"); s.className = "cv-note" + (act.err ? " warn" : ""); s.textContent = act.text;
-      body.append(s, c.el.body); c.el.body.style.display = "";
+      const listBox = document.createElement("div"); listBox.className = "vl";
+      body.append(s, listBox, c.el.body); c.el.body.style.display = "";
+      mountUrlList(listBox, c);
     }
   }
   // Helper escape HTML
   function escHtml(v) { return String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+  // ===== Danh sách URL của kênh (cùng dữ liệu với tab Video trên web) =====
+  // Trạng thái theo kênh: bộ lọc, ô tìm, trang. Nhớ trong phiên để đổi qua lại giữa các kênh không mất.
+  const urlView = new Map(); // tên kênh -> { rows, f, q, page, loading, err }
+  const URL_PER_PAGE = 50;
+  const VL = () => window.UrlList;
+  const fmtNum = (n) => Number(n || 0).toLocaleString("vi-VN");
+  function urlStateOf(name) {
+    if (!urlView.has(name)) urlView.set(name, { rows: null, f: "all", q: "", page: 0, loading: false, err: null });
+    return urlView.get(name);
+  }
+  async function loadUrlList(c, host) {
+    const v = urlStateOf(c.name);
+    if (v.loading) return;
+    v.loading = true; v.err = null;
+    if (host) paintUrlList(c, host);
+    try {
+      const r = await window.electronAPI.sheet.channelVideos(c.name);
+      if (!r?.ok) throw new Error(r?.error || "Không tải được danh sách video");
+      v.rows = r.rows || [];
+    } catch (e) { v.err = e?.message || String(e); }
+    finally { v.loading = false; }
+    // chỉ vẽ lại nếu người dùng vẫn đang xem đúng kênh này ở tab Video
+    const still = sideEl?.querySelector(".vl");
+    if (still && selectedName === c.name && sideTab === "run") paintUrlList(c, still);
+  }
+  function mountUrlList(host, c) {
+    paintUrlList(c, host);
+    loadUrlList(c, null);
+  }
+  function paintUrlList(c, host) {
+    if (!host || !VL()) return;
+    const v = urlStateOf(c.name);
+    host.textContent = "";
+    if (v.rows === null) {
+      const d = document.createElement("div"); d.className = "vl-note";
+      d.textContent = v.err ? "⚠ " + v.err : "⏳ Đang tải danh sách video…";
+      if (v.err) { const b = document.createElement("button"); b.type = "button"; b.className = "sw-mini-btn"; b.textContent = "Thử lại"; b.addEventListener("click", () => loadUrlList(c, host)); d.append(" ", b); }
+      host.append(d); return;
+    }
+    const sum = VL().summarize(v.rows);
+    const head = document.createElement("div"); head.className = "vl-sum";
+    const pill = (label, n, key) => {
+      const b = document.createElement("button"); b.type = "button"; b.className = "vl-pill" + (v.f === key ? " on" : "");
+      const strong = document.createElement("b"); strong.textContent = String(n);
+      b.append(strong, " " + label);
+      b.addEventListener("click", () => { v.f = key; v.page = 0; paintUrlList(c, host); });
+      return b;
+    };
+    head.append(pill("Tất cả", sum.total, "all"));
+    for (const [k, label] of VL().FILTERS) if (k !== "all" && sum[k] > 0) head.append(pill(label, sum[k], k));
+    const reload = document.createElement("button"); reload.type = "button"; reload.className = "sw-mini-btn"; reload.textContent = "⟳"; reload.title = "Nạp lại danh sách từ web";
+    reload.addEventListener("click", () => loadUrlList(c, host));
+    head.append(reload);
+
+    const bar = document.createElement("div"); bar.className = "vl-bar";
+    const q = document.createElement("input"); q.type = "text"; q.placeholder = "Tìm trong danh sách…"; q.value = v.q; q.autocomplete = "off"; q.setAttribute("aria-label", "Tìm video");
+    let qt = null;
+    q.addEventListener("input", () => {
+      clearTimeout(qt);
+      qt = setTimeout(() => { v.q = q.value; v.page = 0; paintUrlList(c, host); const n = host.querySelector(".vl-bar input"); if (n) { n.focus(); n.setSelectionRange(n.value.length, n.value.length); } }, 250);
+    });
+    bar.append(q);
+
+    const list = VL().filterRows(v.rows, v.f, v.q);
+    const pages = Math.max(1, Math.ceil(list.length / URL_PER_PAGE));
+    v.page = Math.min(v.page, pages - 1);
+    const slice = list.slice(v.page * URL_PER_PAGE, (v.page + 1) * URL_PER_PAGE);
+
+    const box = document.createElement("div"); box.className = "vl-tbl";
+    if (!slice.length) {
+      const d = document.createElement("div"); d.className = "vl-note";
+      d.textContent = sum.total ? "Không có video phù hợp bộ lọc." : "Kênh chưa có video nào. Thêm URL ở trang web (Dán danh sách, Nhập Excel hoặc Lấy URL nguồn).";
+      box.append(d);
+    } else {
+      const table = document.createElement("table"); const tb = document.createElement("tbody");
+      for (const r of slice) {
+        const key = VL().stateOf(r), tr = document.createElement("tr");
+        const tdU = document.createElement("td"); tdU.className = "vl-url"; tdU.textContent = r.url; tdU.title = r.url;
+        const tdS = document.createElement("td"); const chip = document.createElement("span"); chip.className = "vl-chip " + (VL().TONE[key] || ""); chip.textContent = VL().LABEL[key]; tdS.append(chip);
+        const det = VL().detailOf(r), tdD = document.createElement("td"); tdD.className = "vl-det"; tdD.textContent = det; tdD.title = det;
+        tr.append(tdU, tdS, tdD); tb.append(tr);
+      }
+      table.append(tb); box.append(table);
+    }
+
+    const pager = document.createElement("div"); pager.className = "vl-pager";
+    const prev = document.createElement("button"); prev.type = "button"; prev.className = "sw-mini-btn"; prev.textContent = "Trước"; prev.disabled = v.page <= 0;
+    const next = document.createElement("button"); next.type = "button"; next.className = "sw-mini-btn"; next.textContent = "Sau"; next.disabled = v.page >= pages - 1;
+    prev.addEventListener("click", () => { v.page--; paintUrlList(c, host); });
+    next.addEventListener("click", () => { v.page++; paintUrlList(c, host); });
+    const info = document.createElement("span");
+    info.textContent = list.length ? (v.page * URL_PER_PAGE + 1) + "–" + (v.page * URL_PER_PAGE + slice.length) + " / " + fmtNum(list.length) : "0";
+    pager.append(prev, info, next);
+    host.append(head, bar, box, pager);
+  }
+  // Web thêm/xóa/làm lại video hoặc app vừa ghi trạng thái: danh sách đang mở phải nạp lại
+  function refreshUrlListIfOpen() {
+    if (!selectedName || sideTab !== "run") return;
+    const c = channels.get(selectedName), host = sideEl?.querySelector(".vl");
+    if (c && host) loadUrlList(c, null);
+  }
+
   async function toggleEnabled(c) {
     const wc = window.ChannelConfigUI?.get(c.name);
     if (!wc || !window.electronAPI?.sheet?.channelsUpdate) { setBanner("Chưa tải được cấu hình kênh từ web, thử lại sau ít giây.", "warn"); return; }
@@ -5462,7 +5590,12 @@ async function runConcat() {
     try {
       const r = await api.gpmListChannels();
       if (!r?.ok) { setEmpty("Chưa tải được danh sách kênh."); setBanner(`❌ ${r?.error || "lỗi"}`, "error"); return; }
-      if (!r.channels.length) { setEmpty("Chưa có kênh nào được gán cho máy này. Vào trang web để thêm kênh và gán máy."); loaded = true; return; }
+      dropMissing(r.channels.map((x) => x.sheetName));
+      if (!r.channels.length) {
+        selectedName = null; renderSide(true);
+        if (!channels.size) setEmpty("Chưa có kênh nào được gán cho máy này. Vào trang web để thêm kênh và gán máy.");
+        loaded = true; return;
+      }
       // Gộp, KHÔNG xoá: runner có thể đã chạy (autoRunOnOpen) và tạo card từ sự kiện
       // trước khi người dùng mở tab. Xoá sạch ở đây sẽ nuốt mất video đang chạy.
       tbody.querySelector(".sw-empty")?.parentElement?.remove();
@@ -5511,10 +5644,12 @@ async function runConcat() {
     try {
       const r = await api.gpmListChannels();
       if (!r?.ok) return;
-      // Web thêm/xóa/chuyển kênh: danh sách đổi thì nạp lại cả bảng
-      const names = r.channels.map((x) => x.sheetName).sort().join("|");
-      const have = [...channels.keys()].sort().join("|");
-      if (loaded && names !== have) { loaded = false; loadChannelsOnce(); return; }
+      // Web thêm/xóa/chuyển kênh: danh sách đổi thì nạp lại cả bảng (loadChannelsOnce thêm kênh mới và gỡ kênh không còn).
+      // Kênh đang chạy dở bị web xóa vẫn được giữ lại tới khi chạy xong, nên chỉ so các kênh còn tồn tại ở cả hai phía.
+      const webNames = new Set(r.channels.map((x) => x.sheetName));
+      const added = r.channels.some((x) => !channels.has(x.sheetName));
+      const gone = [...channels.keys()].some((n) => !webNames.has(n) && !isBusy(channels.get(n)));
+      if (loaded && (added || gone)) { loaded = false; loadChannelsOnce(); return; }
       for (const ch of r.channels) {
         const c = ensureChannel(ch.sheetName);
         c.countToday = ch.countToday || 0;
@@ -5557,7 +5692,7 @@ async function runConcat() {
   // Server báo qua kết nối giám sát: nạp lại ngay (gộp tín hiệu sát nhau). Hỏi lại định kỳ chỉ còn là lưới an toàn
   // phòng tín hiệu bị mất khi đứt mạng, nên thưa hơn nhiều so với trước.
   let syncDebounce = null;
-  api.onChannelsChanged?.(() => { clearTimeout(syncDebounce); syncDebounce = setTimeout(() => syncFromWeb({ signal: true }), 300); });
+  api.onChannelsChanged?.(() => { clearTimeout(syncDebounce); syncDebounce = setTimeout(() => { syncFromWeb({ signal: true }); refreshUrlListIfOpen(); }, 300); });
   setInterval(() => syncFromWeb(), 120000);
   window.addEventListener("focus", () => syncFromWeb());
 
@@ -5571,6 +5706,7 @@ async function runConcat() {
       if (!loaded) { loadChannelsOnce(); await new Promise((r) => setTimeout(r, 400)); }
       else {
         const ok = await syncFromWeb({ manual: true });
+        refreshUrlListIfOpen();
         if (!ok) throw new Error("Chưa tải lại được, thử lại sau ít giây");
       }
       setBanner("", null);
@@ -5706,7 +5842,6 @@ async function runConcat() {
     $("sw-gpm-tg-photo").checked = !!s.gpmTelegramPhoto;
     $("sw-gpm-tg-fields").style.display = s.gpmTelegramEnabled ? "" : "none";
     $("sw-monitor-enabled").checked = !!s.monitorEnabled;
-    $("sw-yt-api-key").value = s.ytApiKey || "";
     $("sw-cookies-folder").value = s.cookiesFolder || "";
     // Ô chọn 1 file cookie đã bỏ khỏi UI (chỉ còn thư mục), nhưng giá trị cũ vẫn
     // phải giữ và ghi lại: xoá đi là người đang chạy bằng 1 file cookie mất sạch
@@ -5763,7 +5898,6 @@ async function runConcat() {
       gpmTelegramTopicId: $("sw-gpm-tg-topic").value.trim(),
       gpmTelegramPhoto: $("sw-gpm-tg-photo").checked,
       monitorEnabled: $("sw-monitor-enabled").checked,
-      ytApiKey: $("sw-yt-api-key").value.trim(),
       // Trống = cố ý lùi về cookie ở tab "Tải video", nên phải ghi xuống chuỗi rỗng
       // chứ không được bỏ khoá đi.
       cookiesFolder: $("sw-cookies-folder").value.trim(),
@@ -5776,7 +5910,7 @@ async function runConcat() {
   let saveTimer = null;
   async function saveNow() { await api.saveSettings(currentSettings()); }
   function saveDebounced() { clearTimeout(saveTimer); saveTimer = setTimeout(saveNow, 400); }
-  ["sw-poll", "sw-video-speed", "sw-yt-api-key", "sw-gpm-idle-close", "sw-cleanup-days"].forEach((id) =>
+  ["sw-poll", "sw-video-speed", "sw-gpm-idle-close", "sw-cleanup-days"].forEach((id) =>
     $(id)?.addEventListener("input", saveDebounced));
   ["sw-auto-open", "sw-use-gpu", "sw-gpm-enabled", "sw-gpm-tg-photo", "sw-monitor-enabled"].forEach((id) =>
     $(id)?.addEventListener("change", saveNow));

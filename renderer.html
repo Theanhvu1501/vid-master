@@ -1315,6 +1315,31 @@ small {
   background: rgba(var(--accent-rgb), 0.08);
 }
 
+/* ===== Danh sách URL của kênh trong tab Video (renderer.js: paintUrlList) ===== */
+.vl { margin-bottom: var(--space-md); }
+.vl-sum { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: var(--space-sm); }
+.vl-pill { display: inline-flex; align-items: baseline; gap: 5px; padding: 3px 10px; border-radius: 14px; border: 1px solid var(--border-default); background: var(--bg-tertiary); color: var(--text-secondary); font-size: 12px; cursor: pointer; }
+.vl-pill b { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.vl-pill:hover { border-color: var(--text-muted); }
+.vl-pill.on { background: rgba(var(--accent-rgb), .15); border-color: var(--accent-primary); color: var(--text-primary); }
+.vl-bar { margin-bottom: var(--space-sm); }
+.vl-bar input { width: 100%; padding: 7px 10px; font-size: 13px; background: var(--bg-tertiary); border: 1px solid var(--border-default); border-radius: var(--radius-md); color: var(--text-primary); }
+.vl-bar input:focus { outline: none; border-color: var(--accent-primary); }
+.vl-tbl { max-height: 360px; overflow: auto; border: 1px solid var(--border-default); border-radius: var(--radius-md); }
+.vl-tbl table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.vl-tbl td { padding: 6px 10px; border-bottom: 1px solid var(--border-default); vertical-align: middle; }
+.vl-tbl tr:last-child td { border-bottom: 0; }
+.vl-tbl tr:hover td { background: var(--bg-hover); }
+.vl-url { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: Consolas, Monaco, monospace; font-size: 11px; }
+.vl-det { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
+.vl-chip { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; white-space: nowrap; background: var(--bg-tertiary); border: 1px solid var(--border-default); color: var(--text-secondary); }
+.vl-chip.ok { color: var(--accent-success); border-color: rgba(81,207,102,.4); background: rgba(81,207,102,.08); }
+.vl-chip.err { color: var(--accent-danger); border-color: rgba(255,107,107,.45); background: rgba(255,107,107,.08); }
+.vl-chip.warn { color: var(--accent-warning); border-color: rgba(252,196,25,.45); background: rgba(252,196,25,.08); }
+.vl-chip.brand { color: var(--accent-primary); border-color: rgba(var(--accent-rgb), .45); background: rgba(var(--accent-rgb), .08); }
+.vl-pager { display: flex; align-items: center; justify-content: center; gap: var(--space-md); margin-top: var(--space-sm); font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.vl-note { padding: var(--space-md); font-size: 12px; color: var(--text-muted); border: 1px dashed var(--border-default); border-radius: var(--radius-md); text-align: center; }
+
 /* ===== Tab Thống kê kênh (channel-dashboard.js) ===== */
 /* Một màn hình: chỉ số + hàng biểu đồ thấp + bảng chi tiết chiếm phần còn lại (tự cuộn bên trong, tiêu đề cột đứng yên) */
 #channel-stats.active { display: flex; flex-direction: column; height: 100%; min-height: 0; }
@@ -4036,7 +4061,7 @@ label.with-icon::before {
           <div class="card-section">
             <div class="card-section-title">Nguồn</div>
               <div class="form-group">
-            <label>YouTube API key (để trống = dùng key mặc định)</label>
+            <label>YouTube API key (bắt buộc ở tab này)</label>
             <input type="text" id="get-url-api-key" placeholder="AIza..." />
           </div>
               <div class="form-group">
@@ -4639,8 +4664,6 @@ label.with-icon::before {
           <div id="sw-cleanup-hint" class="sw-cfg-hint" style="display:none;">
             Video đang chờ upload hoặc upload lỗi luôn được giữ lại. <b>Lần chạy đầu sau khi bật sẽ dọn sạch mọi video cũ</b>. Đặt 0 = xoá ngay khi video đã lên lịch xong.
           </div>
-          <!-- API key YouTube đã cấu hình dùng chung trên web: ẩn ở app, giữ ô để renderer.js đọc/ghi không lỗi -->
-          <input id="sw-yt-api-key" type="hidden">
 
           <h4 class="sw-cfg-group" data-g="gpm">GPM &amp; thông báo</h4>
           <div class="sw-cfg-checks" style="margin-bottom:12px;">
@@ -4886,6 +4909,7 @@ label.with-icon::before {
 
     <script src="app-dialog.cjs"></script>
     <script src="channel-config-ui.js"></script>
+    <script src="url-list.js"></script>
     <script src="channel-dashboard.js"></script>
     <script src="renderer.js"></script>
     <!-- Giai đoạn 2B: hàm thuần tính anchor cho canvas kéo thả (sheet/composer-geometry.cjs) —
