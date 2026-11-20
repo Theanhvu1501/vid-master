@@ -79,3 +79,119 @@ test("isSecretLooking: nhận ra đường dẫn, URL có mật khẩu, khóa Go
   for (const v of ["C:\\a\\b", "D:/x/y", "/home/u/x", "\\\\server\\share", "http://u:p@h:80", "AIzaSyA-1234567890123456789012345678901", "eyJabc12345.eyJdef12345.sig123456"]) assert.ok(isSecretLooking(v), v);
   for (const v of ["0.7", 0.7, true, "chromaKey", "D4F9D7", "topTransparent", "", null, 220]) assert.ok(!isSecretLooking(v), String(v));
 });
+
+import { renderToBatchPatch, batchToRenderShared } from "../sheet/render-share.js";
+
+test("renderToBatchPatch: gửi thông số mẻ và phần render dùng chung, không có đường dẫn/khóa", () => {
+  const p = renderToBatchPatch(FULL);
+  assert.equal(p.totalDays, 3); assert.equal(p.videosPerDay, 5); assert.equal(p.cycleDays, 19);
+  assert.equal(p.render.renderMode, "chromaKey");
+  const text = JSON.stringify(p);
+  for (const bad of ["outputFolder", "overlayFolder", "pexelsApiKey", "px-SECRET", "1.2.3.4", "h264_nvenc", "useGPU", "Users"]) assert.ok(!text.includes(bad), bad + " lọt vào dữ liệu gửi mẻ");
+});
+
+test("renderToBatchPatch: số ngoài khoảng bị kẹp, số rác thì bỏ qua (không gửi giá trị bịa)", () => {
+  const p = renderToBatchPatch({ day: "9999", videos: "0", cycleDays: "abc", renderMode: "crop" });
+  assert.equal(p.totalDays, 365); assert.equal(p.videosPerDay, 1); assert.ok(!("cycleDays" in p));
+  assert.deepEqual(renderToBatchPatch(null), { render: {} });
+});
+
+test("batchToRenderShared: ba thông số của mẻ đè lên, phần render dùng chung được áp, khóa riêng máy bị bỏ", () => {
+  const out = batchToRenderShared({ totalDays: 19, videosPerDay: 3, cycleDays: 10, render: { renderMode: "crop", opacity: "0.4", outputFolder: "E:\\x", day: "99" } });
+  assert.equal(out.day, "19", "thông số của mẻ thắng giá trị day nằm trong render"); assert.equal(out.videos, "3"); assert.equal(out.cycleDays, "10");
+  assert.equal(out.renderMode, "crop"); assert.equal(out.opacity, "0.4");
+  assert.ok(!("outputFolder" in out));
+});
+
+test("batchToRenderShared: mẻ rác hoặc thiếu trường trả rỗng, không ném lỗi", () => {
+  for (const bad of [null, undefined, "x", 5]) assert.deepEqual(batchToRenderShared(bad), {});
+  assert.deepEqual(batchToRenderShared({ render: null }), {});
+});
+
+test("vòng đi vòng lại: đẩy lên mẻ rồi kéo xuống máy khác giữ nguyên thông số dùng chung, không đụng phần riêng máy", () => {
+  const patch = renderToBatchPatch(FULL);
+  const batch = { ...patch };
+  const machine2 = { outputFolder: "F:\may2", useGPU: false, opacity: "0.1", renderMode: "topTransparent", day: "1" };
+  const merged = mergeRenderSettings(machine2, batchToRenderShared(batch));
+  assert.equal(merged.renderMode, "chromaKey"); assert.equal(merged.opacity, "0.7"); assert.equal(merged.day, "3");
+  assert.equal(merged.outputFolder, "F:\may2"); assert.equal(merged.useGPU, false);
+});
+
+import { BATCH_RENDER_MODES, BATCH_MODE_FIELDS, BATCH_COMMON_FIELDS, buildBatchRender } from "../sheet/render-share.js";
+
+test("mẻ: có đủ 6 kiểu render như tab Render, mỗi kiểu có trường riêng", () => {
+  assert.deepEqual(BATCH_RENDER_MODES.map((m) => m.id), ["topTransparent", "chromaKey", "crop", "keepColor", "blurFrame", "dualFrame"]);
+  for (const m of BATCH_RENDER_MODES) assert.ok(BATCH_MODE_FIELDS[m.id].length > 0, m.id);
+});
+
+test("mẻ: MỌI trường đều nằm trong danh sách dùng chung, không trường nào là đường dẫn/khóa, mặc định nằm trong khoảng", () => {
+  const all = [...BATCH_COMMON_FIELDS, ...Object.values(BATCH_MODE_FIELDS).flat()];
+  for (const f of all) {
+    assert.ok(SHARED_RENDER_KEYS.includes(f.key), f.key + " thiếu trong SHARED_RENDER_KEYS");
+    assert.ok(!isSecretLooking(f.def), f.key + " mặc định trông như bí mật");
+    if (f.type === "num" || f.type === "int") assert.ok(f.min <= Number(f.def) && Number(f.def) <= f.max, f.key + " mặc định ngoài khoảng");
+    if (f.type === "select") assert.ok(f.options.includes(f.def), f.key + " mặc định không thuộc lựa chọn");
+  }
+  const keys = all.map((f) => f.key); assert.equal(new Set(keys).size, keys.length, "trùng khóa giữa các kiểu");
+});
+
+test("buildBatchRender: chỉ giữ thông số của kiểu đang chọn + tốc độ; không lẫn thông số kiểu khác", () => {
+  const r = buildBatchRender("chromaKey", { chromaKeyColor: "ff00aa", chromaKeySimilarity: "0.5", opacity: "0.9", bgBlur: "30", videoSpeed: "0.9" });
+  assert.deepEqual(Object.keys(r).sort(), ["chromaKeyColor", "chromaKeySimilarity", "renderMode", "videoSpeed"]);
+  assert.equal(r.renderMode, "chromaKey"); assert.equal(r.chromaKeyColor, "ff00aa"); assert.equal(r.chromaKeySimilarity, "0.5"); assert.equal(r.videoSpeed, "0.9");
+});
+
+test("buildBatchRender: giá trị rác/thiếu về mặc định, số bị kẹp trong khoảng, bool nhận nhiều dạng", () => {
+  const r = buildBatchRender("blurFrame", { bgBlur: "999", mainScale: "abc", bgBlurEnabled: "true", frameEnabled: "no", effectBlend: "hack", videoSpeed: "5" });
+  assert.equal(r.bgBlur, "50"); assert.equal(r.mainScale, "0.85"); assert.equal(r.bgBlurEnabled, true); assert.equal(r.frameEnabled, false);
+  assert.equal(r.effectBlend, "normal"); assert.equal(r.videoSpeed, "1");
+  assert.equal(buildBatchRender("crop", { height: "12.7" }).height, "13", "số nguyên được làm tròn");
+  assert.equal(buildBatchRender("crop", { y_offset: "-5" }).y_offset, "0");
+});
+
+test("buildBatchRender: kiểu lạ/đầu vào rác về topTransparent với mặc định; không ném lỗi", () => {
+  for (const [m, v] of [["khong-co", null], [undefined, undefined], [null, "x"], ["__proto__", {}], ["constructor", []]]) {
+    const r = buildBatchRender(m, v); assert.equal(r.renderMode, "topTransparent"); assert.equal(r.opacity, "0.7"); assert.equal(r.videoSpeed, "0.95");
+  }
+});
+
+test("buildBatchRender: màu hex chứa đường dẫn/URL bị loại; kết quả luôn qua được bộ lọc dùng chung", () => {
+  assert.equal(buildBatchRender("chromaKey", { chromaKeyColor: "C:" + String.fromCharCode(92) + "x" + String.fromCharCode(92) + "y" }).chromaKeyColor, "D4F9D7");
+  assert.equal(buildBatchRender("chromaKey", { chromaKeyColor: "http://u:p@h" }).chromaKeyColor, "D4F9D7");
+  for (const m of BATCH_RENDER_MODES) {
+    const r = buildBatchRender(m.id, {});
+    const { shared } = splitRenderSettings(r);
+    assert.deepEqual(Object.keys(shared).sort(), Object.keys(r).sort(), m.id + ": có khóa bị bộ lọc dùng chung loại");
+  }
+});
+
+import { mergeBatchRender, batchBodyWithRender, batchRenderSchema } from "../sheet/render-share.js";
+
+test("mergeBatchRender: giữ thông số kiểu khác đã lưu, đè kiểu đang sửa", () => {
+  const existing = { renderMode: "crop", opacity: "0.4", bgBlur: "30", height: "300", chromaKeyColor: "AABBCC" };
+  const out = mergeBatchRender(existing, "chromaKey", { chromaKeyColor: "112233", chromaKeySimilarity: "0.5" });
+  assert.equal(out.renderMode, "chromaKey"); assert.equal(out.chromaKeyColor, "112233"); assert.equal(out.chromaKeySimilarity, "0.5");
+  assert.equal(out.bgBlur, "30", "thông số của kiểu khác còn nguyên"); assert.equal(out.height, "300"); assert.equal(out.opacity, "0.4");
+});
+
+test("mergeBatchRender: phần đã lưu có đường dẫn/khóa thì bị loại (không lọt lại lên server)", () => {
+  const out = mergeBatchRender({ outputFolder: "D:/x", pexelsApiKey: "k", opacity: "0.4" }, "topTransparent", {});
+  assert.ok(!("outputFolder" in out) && !("pexelsApiKey" in out)); assert.equal(out.renderMode, "topTransparent");
+  assert.deepEqual(Object.keys(mergeBatchRender(null, "crop", null)).includes("renderMode"), true);
+});
+
+test("batchBodyWithRender: có renderMode thì ghép render; không có thì không đụng tới render; dọn các khóa tạm", () => {
+  const withMode = batchBodyWithRender({ name: "M", totalDays: 5, renderMode: "crop", renderValues: { height: "250" }, renderBase: { bgBlur: "25" } });
+  assert.equal(withMode.name, "M"); assert.equal(withMode.render.renderMode, "crop"); assert.equal(withMode.render.height, "250"); assert.equal(withMode.render.bgBlur, "25");
+  for (const k of ["renderMode", "renderValues", "renderBase"]) assert.ok(!(k in withMode), k);
+  const noMode = batchBodyWithRender({ name: "M", warnDays: 3 });
+  assert.ok(!("render" in noMode), "không gửi render thì server giữ nguyên"); assert.equal(noMode.warnDays, 3);
+  for (const bad of [null, undefined, "x", 5, []]) assert.deepEqual(batchBodyWithRender(bad), {});
+});
+
+test("batchRenderSchema: đủ kiểu + trường; bản sao nên sửa đổi không làm hỏng dữ liệu gốc", () => {
+  const s = batchRenderSchema();
+  assert.equal(s.modes.length, 6); assert.ok(s.common.length >= 1); for (const m of s.modes) assert.ok(s.byMode[m.id].length > 0);
+  s.byMode.crop[0].def = "HACK"; assert.notEqual(batchRenderSchema().byMode.crop[0].def, "HACK");
+  assert.doesNotThrow(() => JSON.stringify(s));
+});

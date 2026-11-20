@@ -20,6 +20,7 @@ import { runLogin, runChangeThumb, runSchedule, stopAutomation, resetCancel, for
 import { runDistribute, buildPlan, listVideos } from "./sheet/distribute.js";
 import { runProxyCheck, maskProxy, checkProxy, toGpmProxy } from "./sheet/proxy-tools.js";
 import { createMonitorAgent, createProxyHealth, buildSnapshot, proxyIdentity, toHttpBase, DEFAULT_SERVER_URL } from "./sheet/monitor-agent.js";
+import { renderToBatchPatch, batchToRenderShared, mergeRenderSettings, batchBodyWithRender, batchRenderSchema } from "./sheet/render-share.js";
 import { createTaskTracker, channelResultEvent, isTrackedTask, lastMeaningfulLine, batchesOfProfiles, batchTaskLabel, taskLabel } from "./sheet/task-monitor.js";
 import { readLoginAccounts, readChannelPlans, attachProfileData, countNames } from "./sheet/excel-import.js";
 import { resolveThumbRun, resolveScheduleRun } from "./sheet/run-options.js";
@@ -938,6 +939,45 @@ ipcMain.handle("set-project-starred", async (event, projectName, starred) => {
     console.error("Error set-project-starred:", error);
     return { success: false, error: error.message };
   }
+});
+
+// ----- Cấu hình render DÙNG CHUNG theo mẻ (server giữ; đường dẫn/GPU/khóa API/proxy ở lại máy) -----
+// Lưu: lấy phần dùng chung của cấu hình render đang mở trong tab Render, gửi lên mẻ. Phần riêng của máy KHÔNG đi đâu cả.
+ipcMain.handle("batches:save-render", async (e, { id, render } = {}) => {
+  try {
+    if (!webConfigured()) return { ok: false, error: "Chưa đăng nhập." };
+    const patch = renderToBatchPatch(render);
+    const batch = await webStore().updateBatch(Number(id), patch);
+    return { ok: true, batch, sent: Object.keys(patch.render || {}).length };
+  } catch (err) { return { ok: false, status: err?.status || 0, offline: !!err?.offline, error: String(err?.message || err) }; }
+});
+// Lấy: ghi phần dùng chung của mẻ vào file dự án đang mở (đúng chỗ tab Render đọc), giữ nguyên mọi khóa riêng của máy.
+// Renderer sau đó gọi lại loadSettings() để điền form bằng đường code sẵn có.
+ipcMain.handle("batches:apply-render", async (e, { id, projectName } = {}) => {
+  try {
+    if (!webConfigured()) return { ok: false, error: "Chưa đăng nhập." };
+    const list = await webStore().listBatches();
+    const b = (list.batches || []).find((x) => x.id === Number(id));
+    if (!b) return { ok: false, error: "Không thấy mẻ này (có thể đã bị xóa)." };
+    const name = projectName && String(projectName).trim() ? String(projectName).trim() : getCurrentProjectName();
+    const projectPath = getProjectConfigPath(name);
+    let data = { projectName: name, settings: {} };
+    if (fs.existsSync(projectPath)) { try { data = JSON.parse(fs.readFileSync(projectPath, "utf-8")); } catch { /* file hỏng: dựng lại từ đầu */ } }
+    if (!data.settings || typeof data.settings !== "object") data.settings = {};
+    const shared = batchToRenderShared(b);
+    data.settings.render = mergeRenderSettings(data.settings.render || {}, shared);
+    data.updatedAt = new Date().toISOString();
+    fs.writeFileSync(projectPath, JSON.stringify(data, null, 2));
+    return { ok: true, applied: Object.keys(shared).length, offline: !!list.offline, batchName: b.name };
+  } catch (err) { return { ok: false, offline: !!err?.offline, error: String(err?.message || err) }; }
+});
+// Đánh dấu mẻ đã render xong (hạn render vòng tiếp = lần này + chu kỳ). Không có mẻ nào chọn thì bỏ qua.
+ipcMain.handle("batches:mark-rendered", async (e, { id } = {}) => {
+  try {
+    if (!webConfigured() || !Number.isInteger(Number(id))) return { ok: false };
+    await webStore().markBatchRendered(Number(id));
+    return { ok: true };
+  } catch (err) { return { ok: false, offline: !!err?.offline, error: String(err?.message || err) }; }
 });
 
 // IPC handler: cập nhật thời điểm render cuối (sau khi chạy render xong)
@@ -1986,8 +2026,9 @@ ipcMain.handle("channels:import-pick", async () => {
 });
 ipcMain.handle("channels:import", cfgCall(async ({ rows, apply, removeMissing }) => ({ plan: await webStore().importChannelConfigs(rows, { apply: !!apply, removeMissing: !!removeMissing }) })));
 ipcMain.handle("batches:list", async () => { try { if (!webConfigured()) return { ok: false, error: "Chưa đăng nhập." }; return await webStore().listBatches(); } catch (err) { return cfgFail(err); } });
-ipcMain.handle("batches:create", cfgCall(async ({ body }) => ({ batch: await webStore().createBatch(body) })));
-ipcMain.handle("batches:update", cfgCall(async ({ id, body }) => ({ batch: await webStore().updateBatch(Number(id), body) })));
+ipcMain.handle("batches:create", cfgCall(async ({ body }) => ({ batch: await webStore().createBatch(batchBodyWithRender(body)) })));
+ipcMain.handle("batches:schema", () => ({ ok: true, schema: batchRenderSchema() }));
+ipcMain.handle("batches:update", cfgCall(async ({ id, body }) => ({ batch: await webStore().updateBatch(Number(id), batchBodyWithRender(body)) })));
 ipcMain.handle("batches:delete", cfgCall(async ({ id }) => { await webStore().deleteBatch(Number(id)); return {}; }));
 ipcMain.handle("batches:add-channel", cfgCall(async ({ id, gpmProfileId, name }) => ({ batch: await webStore().addBatchChannel(Number(id), { gpmProfileId, name }) })));
 ipcMain.handle("batches:remove-channel", cfgCall(async ({ id, gpmProfileId }) => ({ batch: await webStore().removeBatchChannel(Number(id), gpmProfileId) })));

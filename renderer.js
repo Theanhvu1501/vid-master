@@ -1402,136 +1402,16 @@ async function loadSettings() {
 
 // Project management
 let currentProjectName = null;
-// Khi xóa từ dashboard, lưu tên dự án cần xóa (confirmDeleteProject sẽ dùng)
-let deleteTargetProjectName = null;
-
-// Load danh sách projects và project hiện tại
+// Dự án đang mở: nơi lưu cấu hình render của máy này (file projects/<tên>.json). Không còn ô chọn/thêm/xóa dự án:
+// việc theo mẻ làm ở menu "Mẻ". Chưa có dự án nào thì dùng "default".
 async function loadProjects() {
   if (!checkElectronAPI()) return;
-
   try {
-    // Load project hiện tại
     const currentResult = await window.electronAPI.getCurrentProject();
-    if (currentResult.success) {
-      currentProjectName = currentResult.projectName;
-    }
-
-    // Load danh sách projects
-    const projectsResult = await window.electronAPI.getProjects();
-    const projectSelect = document.getElementById("project-select");
-
-    if (!projectSelect) return;
-
-    if (projectsResult.success) {
-      projectSelect.innerHTML = "";
-
-      // Đảm bảo project "default" luôn có trong danh sách
-      let projects = [...projectsResult.projects];
-      if (!projects.includes("default")) {
-        projects.unshift("default"); // Thêm "default" vào đầu danh sách
-      }
-
-      // Cập nhật badge số lượng (không tính "default")
-      const projectCountBadge = document.getElementById("project-count");
-      if (projectCountBadge) {
-        const actualProjects = projects.filter(p => p !== "default");
-        if (actualProjects.length > 0) {
-          projectCountBadge.textContent = actualProjects.length;
-          projectCountBadge.style.display = "inline-block";
-        } else {
-          projectCountBadge.style.display = "none";
-        }
-      }
-
-      // Thêm các projects (đã bao gồm "default")
-      projects.forEach((project) => {
-        const option = document.createElement("option");
-        option.value = project;
-        // Hiển thị "Mặc định" thay vì "default" cho project default
-        option.textContent = project === "default" ? "Mặc định" : project;
-        if (project === currentProjectName || (!currentProjectName && project === "default")) {
-          option.selected = true;
-          // Cập nhật currentProjectName nếu chưa có
-          if (!currentProjectName) {
-            currentProjectName = "default";
-          }
-        }
-        projectSelect.appendChild(option);
-      });
-
-      // Cập nhật trạng thái nút xóa trong menu
-      const deleteMenuItem = document.getElementById(
-        "delete-project-menu-item",
-      );
-      if (deleteMenuItem) {
-        if (!currentProjectName || currentProjectName === "") {
-          deleteMenuItem.classList.add("disabled");
-          deleteMenuItem.disabled = true;
-        } else {
-          deleteMenuItem.classList.remove("disabled");
-          deleteMenuItem.disabled = false;
-        }
-      }
-    } else {
-      projectSelect.innerHTML =
-        '<option value="">Lỗi khi tải danh sách</option>';
-    }
+    if (currentResult.success && currentResult.projectName) currentProjectName = currentResult.projectName;
+    if (!currentProjectName) currentProjectName = "default";
   } catch (error) {
-    console.error("Error loading projects:", error);
-  }
-}
-
-// Chuyển đổi project
-async function switchProject() {
-  if (!checkElectronAPI()) return;
-
-  const projectSelect = document.getElementById("project-select");
-  if (!projectSelect) return;
-
-  const selectedProject = projectSelect.value;
-
-  // Nếu chọn cùng project, không làm gì
-  if (selectedProject === currentProjectName) {
-    return;
-  }
-
-  // Lưu settings hiện tại trước khi chuyển
-  if (currentProjectName) {
-    await saveCurrentProjectSettings();
-  }
-
-  // Set project mới (nếu rỗng hoặc null, dùng "default")
-  currentProjectName = selectedProject && selectedProject.trim() !== "" 
-    ? selectedProject.trim() 
-    : "default";
-  await window.electronAPI.setCurrentProject(currentProjectName);
-
-  // Cập nhật trạng thái nút xóa trong menu
-  const deleteMenuItem = document.getElementById("delete-project-menu-item");
-  if (deleteMenuItem) {
-    if (!currentProjectName || currentProjectName === "") {
-      deleteMenuItem.classList.add("disabled");
-      deleteMenuItem.disabled = true;
-    } else {
-      deleteMenuItem.classList.remove("disabled");
-      deleteMenuItem.disabled = false;
-    }
-  }
-
-  // Load settings của project mới
-  await loadSettings();
-
-  // Không còn cần sync config files nữa - scripts đọc trực tiếp từ project JSON
-  // thông qua environment variable PROJECT_NAME
-
-  // Hiển thị thông báo ngắn
-  if (currentProjectName && currentProjectName !== "default") {
-    showProjectNotification(
-      `Đã chuyển sang dự án: ${currentProjectName}`,
-      "success",
-    );
-  } else {
-    showProjectNotification("Đã chuyển sang chế độ mặc định", "info");
+    console.error("Error loading current project:", error);
   }
 }
 
@@ -1581,206 +1461,6 @@ function showProjectNotification(message, type = "info") {
     notification.style.opacity = "0";
     notification.style.transform = "translateX(100px)";
   }, 3000);
-}
-
-// Mở dialog thêm project
-function openAddProjectDialog() {
-  const modal = document.getElementById("addProjectModal");
-  const nameInput = document.getElementById("new-project-name");
-  const statusDiv = document.getElementById("add-project-status");
-
-  if (!modal || !nameInput) return;
-
-  nameInput.value = "";
-  statusDiv.style.display = "none";
-  statusDiv.textContent = "";
-  modal.classList.add("active");
-  nameInput.focus();
-}
-
-// Đóng dialog thêm project
-function closeAddProjectDialog() {
-  const modal = document.getElementById("addProjectModal");
-  if (modal) {
-    modal.classList.remove("active");
-  }
-}
-
-// Tạo project mới
-async function createNewProject() {
-  if (!checkElectronAPI()) return;
-
-  const nameInput = document.getElementById("new-project-name");
-  const statusDiv = document.getElementById("add-project-status");
-
-  if (!nameInput || !statusDiv) return;
-
-  const projectName = nameInput.value.trim();
-
-  if (!projectName) {
-    statusDiv.style.display = "block";
-    statusDiv.style.background = "#ffebee";
-    statusDiv.style.color = "#c62828";
-    statusDiv.style.border = "1px solid #f44336";
-    statusDiv.innerHTML = "❌ <strong>Vui lòng nhập tên dự án</strong>";
-    nameInput.focus();
-    return;
-  }
-
-  // Validate tên dự án (ít nhất 2 ký tự)
-  if (projectName.length < 2) {
-    statusDiv.style.display = "block";
-    statusDiv.style.background = "#ffebee";
-    statusDiv.style.color = "#c62828";
-    statusDiv.style.border = "1px solid #f44336";
-    statusDiv.innerHTML =
-      "❌ <strong>Tên dự án phải có ít nhất 2 ký tự</strong>";
-    nameInput.focus();
-    return;
-  }
-
-  try {
-    statusDiv.style.display = "block";
-    statusDiv.style.background = "#e3f2fd";
-    statusDiv.style.color = "#1565c0";
-    statusDiv.style.border = "1px solid #2196f3";
-    statusDiv.innerHTML = "⏳ <strong>Đang tạo dự án...</strong>";
-
-    const result = await window.electronAPI.createProject(projectName);
-
-    if (result.success) {
-      statusDiv.style.background = "#e8f5e9";
-      statusDiv.style.color = "#2e7d32";
-      statusDiv.style.border = "1px solid #4caf50";
-      statusDiv.innerHTML = `✅ <strong>Đã tạo dự án "${result.projectName}" thành công!</strong><br><small>Đang chuyển sang dự án mới...</small>`;
-
-      await loadProjects();
-      const projectSelect = document.getElementById("project-select");
-      if (projectSelect) {
-        projectSelect.value = result.projectName;
-        await switchProject();
-      }
-      setTimeout(() => {
-        closeAddProjectDialog();
-        showProjectNotification(
-          `Dự án "${result.projectName}" đã được tạo và kích hoạt!`,
-          "success",
-        );
-      }, 2000);
-    } else {
-      statusDiv.style.background = "#ffebee";
-      statusDiv.style.color = "#c62828";
-      statusDiv.style.border = "1px solid #f44336";
-      statusDiv.innerHTML = `❌ <strong>Lỗi:</strong> ${
-        result.error || "Không thể tạo dự án"
-      }`;
-      nameInput.focus();
-    }
-  } catch (error) {
-    statusDiv.style.background = "#ffebee";
-    statusDiv.style.color = "#c62828";
-    statusDiv.style.border = "1px solid #f44336";
-    statusDiv.innerHTML = `❌ <strong>Lỗi:</strong> ${getErrorMessage(error)}`;
-    nameInput.focus();
-  }
-}
-
-// Hiển thị dialog xác nhận xóa dự án (từ work view hoặc từ dashboard với projectName)
-function showDeleteProjectDialog(projectNameFromDashboard) {
-  if (!checkElectronAPI()) return;
-
-  const projectToDelete = projectNameFromDashboard != null
-    ? projectNameFromDashboard
-    : (document.getElementById("project-select") && document.getElementById("project-select").value);
-
-  if (!projectToDelete) {
-    showProjectNotification("Vui lòng chọn dự án cần xóa", "error");
-    return;
-  }
-
-  if (projectNameFromDashboard != null) {
-    deleteTargetProjectName = projectNameFromDashboard;
-  } else {
-    deleteTargetProjectName = null;
-  }
-
-  // Hiển thị tên dự án trong dialog
-  const nameDisplay = document.getElementById("delete-project-name-display");
-  if (nameDisplay) {
-    nameDisplay.textContent = `Dự án "${projectToDelete}" sẽ bị xóa.`;
-  }
-
-  // Hiển thị dialog
-  const dialog = document.getElementById("deleteProjectDialog");
-  if (dialog) {
-    dialog.classList.add("active");
-  }
-}
-
-// Đóng dialog xác nhận xóa
-function closeDeleteProjectDialog() {
-  const dialog = document.getElementById("deleteProjectDialog");
-  if (dialog) {
-    dialog.classList.remove("active");
-  }
-}
-
-// Xác nhận xóa dự án
-async function confirmDeleteProject() {
-  if (!checkElectronAPI()) return;
-
-  const projectToDelete = deleteTargetProjectName != null
-    ? deleteTargetProjectName
-    : (document.getElementById("project-select") && document.getElementById("project-select").value);
-
-  if (!projectToDelete) {
-    closeDeleteProjectDialog();
-    showProjectNotification("Vui lòng chọn dự án cần xóa", "error");
-    return;
-  }
-
-  const fromDashboard = deleteTargetProjectName != null;
-
-  try {
-    const result = await window.electronAPI.deleteProject(projectToDelete);
-
-    if (result.success) {
-      closeDeleteProjectDialog();
-      deleteTargetProjectName = null;
-
-      if (fromDashboard) {
-        showProjectNotification(
-          `Đã xóa dự án "${projectToDelete}" thành công!`,
-          "success",
-        );
-      } else {
-        await loadProjects();
-        currentProjectName = null;
-        await window.electronAPI.setCurrentProject(null);
-        await loadSettings();
-        showProjectNotification(
-          `Đã xóa dự án "${projectToDelete}" thành công!`,
-          "success",
-        );
-      }
-    } else {
-      closeDeleteProjectDialog();
-      deleteTargetProjectName = null;
-      showProjectNotification(
-        `Lỗi: ${result.error || "Không thể xóa dự án"}`,
-        "error",
-      );
-    }
-  } catch (error) {
-    closeDeleteProjectDialog();
-    deleteTargetProjectName = null;
-    showProjectNotification(`Lỗi: ${getErrorMessage(error)}`, "error");
-  }
-}
-
-// Xóa project hiện tại (giữ lại để tương thích)
-async function deleteCurrentProject() {
-  showDeleteProjectDialog();
 }
 
 // ========== Dashboard (màn hình mặc định) ==========
@@ -2950,6 +2630,7 @@ async function runRender() {
     await window.electronAPI.runScript("render.js", [day, videos], options);
     showOutput("render", "\n\n✅ Hoàn thành!");
     const proj = currentProjectName || "default";
+    try { await markSelectedBatchRendered(); } catch { /* không để việc báo mẻ làm hỏng render */ }
     if (window.electronAPI.setProjectLastRender) {
       await window.electronAPI.setProjectLastRender(proj);
     }
@@ -2957,6 +2638,61 @@ async function runRender() {
     showOutput("render", `\n\n❌ Lỗi: ${getErrorMessage(error)}\n`);
   }
 }
+
+// ============ Mẻ ở tab Render ============
+// Mẻ gắn với cấu hình render: lấy/lưu phần DÙNG CHUNG (kiểu render, độ mờ, tốc độ, số ngày...). Đường dẫn, GPU, khóa API, proxy
+// luôn ở lại máy này. Chọn mẻ được nhớ theo từng dự án của app (localStorage), không lưu lên server.
+const RB_KEY = "render_batch_by_project";
+const rbProject = () => currentProjectName || "default";
+function rbRemembered() { try { return JSON.parse(localStorage.getItem(RB_KEY) || "{}")[rbProject()] || ""; } catch { return ""; } }
+function rbRemember(id) { try { const m = JSON.parse(localStorage.getItem(RB_KEY) || "{}"); if (id) m[rbProject()] = String(id); else delete m[rbProject()]; localStorage.setItem(RB_KEY, JSON.stringify(m)); } catch { /* không quan trọng */ } }
+const rbSelectedId = () => { const v = document.getElementById("render-batch-select")?.value; return v ? Number(v) : null; };
+function rbHint(text, kind) { const h = document.getElementById("render-batch-hint"); if (!h) return; h.textContent = text; h.className = "rb-hint" + (kind ? " " + kind : ""); }
+function rbSyncButtons() { const on = !!rbSelectedId(); for (const id of ["render-batch-load", "render-batch-save"]) { const b = document.getElementById(id); if (b) b.disabled = !on; } }
+
+async function loadRenderBatches() {
+  const sel = document.getElementById("render-batch-select"); if (!sel) return;
+  const api = window.electronAPI?.sheet; if (!api?.batchesList) return;
+  const r = await api.batchesList().catch((e) => ({ ok: false, error: e.message }));
+  const keep = rbRemembered();
+  sel.replaceChildren(new Option("— Không gắn mẻ —", ""));
+  if (r && r.ok) for (const b of r.batches || []) sel.append(new Option(b.name, String(b.id)));
+  else rbHint((r && r.error) || "Chưa tải được danh sách mẻ.", "err");
+  sel.value = [...sel.options].some((o) => o.value === keep) ? keep : "";
+  rbSyncButtons();
+}
+async function markSelectedBatchRendered() {
+  const id = rbSelectedId(); if (!id) return;
+  await window.electronAPI.sheet.batchesMarkRendered(id);
+}
+function bindRenderBatch() {
+  const sel = document.getElementById("render-batch-select"); if (!sel || sel.dataset.bound) return; sel.dataset.bound = "1";
+  sel.addEventListener("change", () => { rbRemember(sel.value); rbSyncButtons(); rbHint(sel.value ? "Đã gắn mẻ. Render xong, web sẽ ghi nhận mẻ này vừa render." : "Không gắn mẻ.", ""); });
+  document.getElementById("render-batch-load")?.addEventListener("click", async (ev) => {
+    const id = rbSelectedId(); if (!id) return; const btn = ev.currentTarget; btn.disabled = true;
+    try {
+      await saveSettings(); // giữ nguyên những gì đang nhập trước khi ghi đè phần dùng chung
+      const r = await window.electronAPI.sheet.batchesApplyRender(id, rbProject());
+      if (!r || !r.ok) { rbHint((r && r.error) || "Không lấy được cấu hình mẻ.", "err"); return; }
+      await loadSettings();
+      rbHint("Đã áp " + r.applied + " thông số dùng chung từ mẻ “" + r.batchName + "”" + (r.offline ? " (bản đã lưu, đang mất mạng)" : "") + ". Đường dẫn thư mục của máy này được giữ nguyên.", "ok");
+    } catch (e) { rbHint("Lỗi: " + (e.message || e), "err"); } finally { rbSyncButtons(); }
+  });
+  document.getElementById("render-batch-save")?.addEventListener("click", async (ev) => {
+    const id = rbSelectedId(); if (!id) return; const btn = ev.currentTarget; btn.disabled = true;
+    try {
+      await saveSettings();
+      const cfg = await window.electronAPI.loadProjectConfig(rbProject());
+      const render = cfg && cfg.success && cfg.config && cfg.config.render;
+      if (!render) { rbHint("Chưa có cấu hình render để lưu.", "err"); return; }
+      const r = await window.electronAPI.sheet.batchesSaveRender(id, render);
+      if (!r || !r.ok) { rbHint((r && r.error) || "Không lưu được lên mẻ.", "err"); return; }
+      rbHint("Đã lưu " + r.sent + " thông số dùng chung lên mẻ. Máy khác bấm “Lấy cấu hình từ mẻ” là dùng được.", "ok");
+    } catch (e) { rbHint("Lỗi: " + (e.message || e), "err"); } finally { rbSyncButtons(); }
+  });
+}
+document.addEventListener("DOMContentLoaded", () => { bindRenderBatch(); setTimeout(loadRenderBatches, 1500); });
+document.querySelector('.tab-button[data-tab="render"]')?.addEventListener("click", () => loadRenderBatches());
 
 // ============ Test Render ============
 let selectedTestRenderOutputFolder = null;

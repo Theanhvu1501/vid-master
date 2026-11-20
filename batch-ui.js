@@ -1,7 +1,9 @@
 /* Menu "Mẻ": làm theo mẻ (render nhiều ngày một lượt, upload tay, thay thumb, lên lịch). Quản lý riêng của máy này.
  *
- * - Mỗi mẻ có nhiều kênh, chọn từ danh sách GPM (theo Profile ID). Một profile chỉ ở MỘT mẻ hoặc là một kênh Auto.
- * - Cấu hình lưu ở server (app > server > web). Web chỉ xem: mẻ nào đang render/thay thumb/lên lịch, kênh nào còn mấy ngày phải đăng.
+ * - Bố cục hai cột như màn Kênh: danh sách mẻ bên trái; bấm một mẻ thì chi tiết hiện bên phải, sửa và lưu ngay tại đó (không mở hộp thoại).
+ * - Mỗi mẻ có cấu hình render RIÊNG (kiểu render + thông số như tab Render) và nhiều kênh chọn từ GPM theo Profile ID.
+ *   Một profile chỉ ở MỘT mẻ hoặc là một kênh Auto.
+ * - Cấu hình lưu ở server (app > server > web). Web chỉ xem: mẻ nào đang render/thay thumb/lên lịch, kênh nào sắp hết lịch.
  * - Hết vòng thì xóa video và làm vòng mới ngay trong mẻ đó: "Lịch tới" của kênh tự dịch lên khi chạy Auto lên lịch.
  * - Giao diện chỉ dùng textContent/value (không nội suy HTML) vì mọi chuỗi đến từ server hoặc GPM.
  * Dùng như script thường: window.BatchUI.mount(root) / .reload().
@@ -64,11 +66,20 @@
   }
 
   // ---------------------------------------------------------------- màn hình
-  function mount(root) {
-    const st = { batches: [], offline: false, loading: false, err: "", open: new Set(), gpm: null };
-    try { for (const k of JSON.parse(localStorage.getItem("batch_open") || "[]")) st.open.add(Number(k)); } catch { /* không quan trọng */ }
-    const saveOpen = () => { try { localStorage.setItem("batch_open", JSON.stringify([...st.open])); } catch { /* ignore */ } };
+  const ago = (iso) => { const m = Math.round((Date.now() - Date.parse(iso)) / 60000); return !Number.isFinite(m) ? "" : m < 1 ? "vừa xong" : m < 60 ? m + " phút trước" : m < 1440 ? Math.round(m / 60) + " giờ trước" : Math.round(m / 1440) + " ngày trước"; };
+  const field = (label, input, help) => el("div", { class: "bt-group" }, el("label", { text: label }), input, help ? el("div", { class: "bt-help", text: help }) : null);
+  const numInput = (v, min, max, step) => el("input", { type: "number", min, max, step: step || "1", value: v });
 
+  function mount(root) {
+    const st = { batches: [], offline: false, loading: false, err: "", sel: null /* id | "new" | null */, schema: null, dirty: false };
+    const byId = (id) => st.batches.find((x) => x.id === id);
+
+    async function loadSchema() {
+      if (st.schema) return st.schema;
+      const r = await api()?.batchesSchema?.().catch(() => null);
+      if (r && r.ok) st.schema = r.schema;
+      return st.schema;
+    }
     async function load(manual) {
       if (st.loading) return;
       st.loading = true; st.err = ""; paint();
@@ -76,107 +87,165 @@
       st.loading = false;
       if (r && r.ok) { st.batches = r.batches || []; st.offline = !!r.offline; if (manual) toast("Đã làm mới"); }
       else st.err = (r && r.error) || "Không tải được danh sách mẻ";
+      if (typeof st.sel === "number" && !byId(st.sel)) st.sel = null;     // mẻ đang xem đã bị xóa (vd ở máy khác)
       paint();
+    }
+    async function confirmLeave() {
+      if (!st.dirty) return true;
+      return window.appConfirm({ title: "Bỏ thay đổi?", message: "Mẻ đang sửa có thay đổi chưa lưu.", detail: "Chuyển sang mục khác sẽ mất những chỗ bạn vừa sửa.", confirmText: "Bỏ thay đổi", icon: "✏️" });
+    }
+    async function select(id) {
+      if (st.sel === id) return;
+      if (!(await confirmLeave())) return;
+      st.sel = id; st.dirty = false; paint();
     }
 
     function paint() {
       const head = el("div", { class: "bt-head" },
-        el("div", {}, el("h2", { text: "Mẻ" }), el("p", { class: "bt-sub", text: "Mỗi mẻ gồm nhiều kênh làm chung một đợt: render, thay thumb, lên lịch. Web theo dõi mẻ nào đang chạy và kênh nào sắp hết lịch." })),
+        el("div", {}, el("h2", { text: "Mẻ" }), el("p", { class: "bt-sub", text: "Mỗi mẻ gồm nhiều kênh làm chung một đợt: render, thay thumb, lên lịch. Bấm một mẻ để xem và sửa bên phải. Web theo dõi mẻ nào đang chạy và kênh nào sắp hết lịch." })),
         el("div", { class: "bt-actions" },
           el("button", { class: "btn btn-secondary bt-add", type: "button", text: "⟳ Làm mới", onclick: () => load(true) }),
-          el("button", { class: "btn btn-primary bt-add", type: "button", text: "＋ Thêm mẻ", disabled: st.offline, onclick: () => batchForm(null) })));
+          el("button", { class: "btn btn-primary bt-add", type: "button", text: "＋ Thêm mẻ", disabled: st.offline, onclick: () => select("new") })));
       const kids = [head];
       if (st.offline) kids.push(el("div", { class: "bt-note warn", text: "Mất kết nối tới máy chủ: đang xem bản đã lưu, chưa thêm hoặc sửa được." }));
       if (st.err) kids.push(el("div", { class: "bt-note err", text: st.err }));
-      if (st.loading && !st.batches.length) kids.push(el("div", { class: "bt-empty", text: "Đang tải…" }));
-      else if (!st.batches.length && !st.err) kids.push(el("div", { class: "bt-empty" }, el("strong", { text: "Chưa có mẻ nào" }), el("span", { text: "Bấm “＋ Thêm mẻ”, rồi thêm kênh từ danh sách GPM vào mẻ." })));
-      for (const b of st.batches) kids.push(card(b));
+      const list = el("div", { class: "bt-list" });
+      if (st.loading && !st.batches.length) list.append(el("div", { class: "bt-empty", text: "Đang tải…" }));
+      else if (!st.batches.length && !st.err) list.append(el("div", { class: "bt-empty" }, el("strong", { text: "Chưa có mẻ nào" }), el("span", { text: "Bấm “＋ Thêm mẻ” để tạo mẻ đầu tiên." })));
+      for (const b of st.batches) list.append(item(b));
+      const side = el("aside", { class: "bt-side", "aria-label": "Chi tiết mẻ" });
+      kids.push(el("div", { class: "bt-layout" }, list, side));
       root.replaceChildren(...kids);
+      renderSide(side);
     }
 
-    function card(b) {
-      const open = st.open.has(b.id), rows = sortChannels(b.channels, b.warnDays), due = renderDue(b.lastRenderAt, b.cycleDays);
+    // một dòng trong danh sách: tên + thẻ tóm tắt; bấm để mở bên phải
+    function item(b) {
+      const rows = sortChannels(b.channels, b.warnDays), due = renderDue(b.lastRenderAt, b.cycleDays);
       const out = rows.filter((r) => r.s.key === "out").length, soon = rows.filter((r) => r.s.key === "soon").length;
-      const chips = el("div", { class: "bt-chips" },
-        el("span", { class: "bt-chip brand", text: b.totalDays + " ngày × " + b.videosPerDay + " video/ngày" }),
-        el("span", { class: "bt-chip amber", text: "báo khi còn ≤ " + b.warnDays + " ngày" }),
-        due ? el("span", { class: "bt-chip " + (due.overdue ? "err" : due.daysLeft <= 1 ? "warn" : "blue"), text: due.overdue ? "đã tới hạn render vòng mới" : "render vòng mới sau " + due.daysLeft + " ngày" }) : el("span", { class: "bt-chip", text: "chưa render lần nào" }),
-        out ? el("span", { class: "bt-chip err", text: out + " kênh hết lịch" }) : null, soon ? el("span", { class: "bt-chip warn", text: soon + " kênh sắp hết" }) : null);
-      const top = el("div", { class: "bt-card-head" },
-        el("button", { class: "bt-toggle", type: "button", "aria-expanded": open, "aria-label": (open ? "Thu gọn " : "Mở ") + b.name, text: open ? "▾" : "▸", onclick: () => { open ? st.open.delete(b.id) : st.open.add(b.id); saveOpen(); paint(); } }),
-        el("div", { class: "bt-title" }, el("strong", { text: b.name }), el("span", { class: "bt-count", text: (b.channels || []).length + " kênh" }), b.description ? el("div", { class: "bt-desc", text: b.description }) : null, chips),
-        el("div", { class: "bt-card-actions" },
-          el("button", { class: "btn btn-primary bt-add", type: "button", text: "＋ Thêm kênh", disabled: st.offline, onclick: () => pickChannels(b) }),
-          iconBtn("edit", "Sửa mẻ", "warn", () => batchForm(b), st.offline),
-          iconBtn("trash", "Xóa mẻ", "danger", () => removeBatch(b), st.offline)));
-      const body = !open ? null : rows.length
-        ? el("table", { class: "cv-table bt-table" }, el("thead", {}, el("tr", {}, ["Kênh", "GPM Profile", "Lịch tới", "Tác vụ gần nhất", ""].map((h) => el("th", { text: h })))),
+      const cur = st.sel === b.id;
+      return el("button", { type: "button", class: "bt-item" + (cur ? " cur" : ""), "aria-current": cur ? "true" : null, onclick: () => select(b.id) },
+        el("div", { class: "bt-item-top" }, el("strong", { text: b.name }), el("span", { class: "bt-count", text: (b.channels || []).length + " kênh" })),
+        el("div", { class: "bt-chips" },
+          el("span", { class: "bt-chip brand", text: b.totalDays + " ngày × " + b.videosPerDay + " video/ngày" }),
+          due ? el("span", { class: "bt-chip " + (due.overdue ? "err" : due.daysLeft <= 1 ? "warn" : "blue"), text: due.overdue ? "tới hạn render vòng mới" : "render sau " + due.daysLeft + " ngày" }) : el("span", { class: "bt-chip", text: "chưa render" }),
+          out ? el("span", { class: "bt-chip err", text: out + " hết lịch" }) : null, soon ? el("span", { class: "bt-chip warn", text: soon + " sắp hết" }) : null));
+    }
+
+    // ---- khung bên phải: form sửa tại chỗ
+    async function renderSide(side) {
+      if (st.sel === null) { side.replaceChildren(el("div", { class: "bt-empty" }, el("strong", { text: "Chưa chọn mẻ" }), el("span", { text: "Bấm một mẻ ở bên trái để xem và sửa, hoặc “＋ Thêm mẻ”." }))); return; }
+      const isNew = st.sel === "new", b = isNew ? null : byId(st.sel);
+      if (!isNew && !b) { side.replaceChildren(); return; }
+      const schema = await loadSchema();
+      if (!schema) { side.replaceChildren(el("div", { class: "bt-note err", text: "Không tải được định nghĩa cấu hình render (app cũ?). Hãy cập nhật app." })); return; }
+      if (st.sel !== (isNew ? "new" : b.id)) return; // người dùng đã bấm mục khác trong lúc chờ
+
+      const rd = (b && b.render) || {};
+      const name = el("input", { type: "text", maxlength: "100", value: b ? b.name : "", placeholder: "vd: Lofi đợt 1" });
+      const days = numInput(b ? b.totalDays : 19, 1, 365), per = numInput(b ? b.videosPerDay : 3, 1, 100), cyc = numInput(b ? b.cycleDays : 19, 1, 365), warn = numInput(b ? b.warnDays : 1, 0, 30);
+      const desc = el("textarea", { rows: "2", maxlength: "500", text: b ? b.description : "" });
+      const mode = el("select", {}, schema.modes.map((m) => el("option", { value: m.id, text: m.label })));
+      mode.value = schema.byMode[rd.renderMode] ? rd.renderMode : "topTransparent";
+
+      // thông số render: dựng lại khi đổi kiểu; giữ giá trị đang nhập của từng kiểu trong bộ nhớ để đổi qua lại không mất
+      const typed = {};
+      const renderBox = el("div", { class: "bt-render" });
+      const control = (f) => {
+        const val = typed[f.key] ?? (rd[f.key] !== undefined ? rd[f.key] : f.def);
+        let c;
+        if (f.type === "bool") { c = el("input", { type: "checkbox", checked: val === true || val === "true" }); c.addEventListener("change", () => { typed[f.key] = c.checked; st.dirty = true; }); return el("label", { class: "bt-check" }, c, el("span", { text: f.label })); }
+        if (f.type === "select") { c = el("select", {}, f.options.map((o) => el("option", { value: o, text: o }))); c.value = f.options.includes(String(val)) ? String(val) : f.def; }
+        else if (f.type === "text") c = el("input", { type: "text", maxlength: "80", value: String(val), placeholder: f.def });
+        else c = numInput(String(val), f.min, f.max, f.step);
+        c.addEventListener("input", () => { typed[f.key] = c.value; st.dirty = true; });
+        return field(f.label, c, f.help);
+      };
+      const drawRender = () => {
+        const fs = [...schema.common, ...(schema.byMode[mode.value] || [])];
+        renderBox.replaceChildren(el("div", { class: "bt-grid" }, fs.map(control)));
+      };
+      mode.addEventListener("change", () => { st.dirty = true; drawRender(); });
+      drawRender();
+
+      const msg = el("div", { class: "bt-msg", role: "alert" });
+      const save = el("button", { class: "btn btn-primary", type: "button", text: isNew ? "Tạo mẻ" : "Lưu thay đổi", disabled: st.offline });
+      const form = el("div", { class: "bt-form" },
+        field("Tên mẻ *", name),
+        el("div", { class: "bt-row" }, field("Số ngày mỗi vòng", days), field("Video mỗi ngày / kênh", per)),
+        el("div", { class: "bt-row" }, field("Chu kỳ render (ngày)", cyc, "Sau bấy nhiêu ngày kể từ lần render cuối thì tới hạn render vòng mới."), field("Báo khi lịch còn ≤ (ngày)", warn, "Kênh còn ít ngày hơn mức này thì cảnh báo, kể cả trên web.")),
+        field("Ghi chú", desc),
+        el("div", { class: "bt-sep", text: "Cách render" }),
+        field("Kiểu render", mode, "Giống mục Render. Đường dẫn thư mục, GPU, khóa API ở lại máy này, không lưu theo mẻ."),
+        renderBox, msg);
+      for (const x of [name, days, per, cyc, warn, desc]) x.addEventListener("input", () => { st.dirty = true; });
+
+      save.addEventListener("click", async () => {
+        const body = { name: name.value.trim(), description: desc.value, totalDays: Number(days.value), videosPerDay: Number(per.value), cycleDays: Number(cyc.value), warnDays: Number(warn.value),
+          renderMode: mode.value, renderValues: Object.fromEntries([...schema.common, ...(schema.byMode[mode.value] || [])].map((f) => [f.key, typed[f.key] ?? (rd[f.key] !== undefined ? rd[f.key] : f.def)])), renderBase: rd };
+        if (!body.name) { msg.className = "bt-msg err"; msg.textContent = "Tên mẻ không được để trống"; name.focus(); return; }
+        save.disabled = true; const old = save.textContent; save.textContent = "Đang lưu…"; msg.textContent = "";
+        const r = await (isNew ? api().batchesCreate(body) : api().batchesUpdate(b.id, body)).catch((e) => ({ ok: false, error: e.message }));
+        if (!r || r.ok === false) { save.disabled = false; save.textContent = old; msg.className = "bt-msg err"; msg.textContent = (r && r.error) || "Không lưu được"; return; }
+        st.dirty = false; if (isNew && r.batch) st.sel = r.batch.id;
+        await load(); toast(isNew ? "Đã tạo mẻ" : "Đã lưu mẻ");
+      });
+
+      // phần kênh của mẻ (chỉ khi mẻ đã tồn tại)
+      const kids = [el("div", { class: "bt-side-head" }, el("h3", { text: isNew ? "Thêm mẻ" : b.name }),
+        isNew ? null : el("div", { class: "bt-side-actions" }, iconBtn("trash", "Xóa mẻ", "danger", () => removeBatch(b), st.offline))), form,
+        el("div", { class: "bt-foot-row" }, isNew ? el("button", { class: "btn btn-secondary", type: "button", text: "Hủy", onclick: async () => { if (await confirmLeave()) { st.sel = null; st.dirty = false; paint(); } } }) : null, save)];
+      if (!isNew) kids.push(channelsBlock(b));
+      side.replaceChildren(...kids);
+    }
+
+    function channelsBlock(b) {
+      const rows = sortChannels(b.channels, b.warnDays);
+      const head = el("div", { class: "bt-ch-head" }, el("div", { class: "bt-sep", text: "Kênh trong mẻ (" + rows.length + ")" }),
+        el("button", { class: "btn btn-primary bt-add", type: "button", text: "＋ Thêm kênh", disabled: st.offline, onclick: () => pickChannels(b) }));
+      const body = rows.length
+        ? el("table", { class: "cv-table bt-table" }, el("thead", {}, el("tr", {}, ["Kênh", "Lịch tới", "Tác vụ gần nhất", ""].map((h) => el("th", { text: h })))),
           el("tbody", {}, rows.map(({ c, s }) => el("tr", {},
-            el("td", {}, el("strong", { text: c.name || c.gpmProfileId })),
-            el("td", { class: "bt-mono", text: c.gpmProfileId }),
+            el("td", {}, el("strong", { text: c.name || c.gpmProfileId }), el("div", { class: "bt-mono", text: c.gpmProfileId })),
             el("td", {}, el("span", { class: "bt-st " + s.key, text: s.label })),
             el("td", { class: "bt-muted", text: c.lastTask ? c.lastTask + (c.lastTaskAt ? " · " + ago(c.lastTaskAt) : "") : "—" }),
             el("td", { class: "actions" }, iconBtn("unlink", "Bỏ kênh khỏi mẻ (không xóa profile trong GPM)", "danger", () => removeChannel(b, c), st.offline))))))
         : el("div", { class: "bt-empty small" }, el("span", { text: "Mẻ chưa có kênh. Bấm “＋ Thêm kênh” để chọn từ GPM." }));
-      return el("section", { class: "bt-card" }, top, body);
-    }
-
-    const ago = (iso) => { const m = Math.round((Date.now() - Date.parse(iso)) / 60000); return !Number.isFinite(m) ? "" : m < 1 ? "vừa xong" : m < 60 ? m + " phút trước" : m < 1440 ? Math.round(m / 60) + " giờ trước" : Math.round(m / 1440) + " ngày trước"; };
-
-    // ---- hộp thoại dùng chung (dựng bằng DOM, không nội suy HTML)
-    function dialog(title, bodyNode, { ok = "Lưu", onOk }) {
-      const msg = el("div", { class: "bt-msg", role: "alert" });
-      const yes = el("button", { class: "btn btn-primary", type: "button", text: ok });
-      const wrap = el("div", { class: "modal active bt-modal" });
-      const close = () => wrap.remove();
-      const card = el("div", { class: "modal-content" },
-        el("div", { class: "modal-header" }, el("h3", { text: title }), el("button", { class: "modal-close", type: "button", "aria-label": "Đóng", text: "×", onclick: close })),
-        el("div", { class: "modal-body" }, bodyNode, msg),
-        el("div", { class: "bt-foot" }, el("button", { class: "btn btn-secondary", type: "button", text: "Hủy", onclick: close }), yes));
-      wrap.append(card); wrap.addEventListener("click", (e) => { if (e.target === wrap) close(); });
-      wrap.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
-      yes.addEventListener("click", async () => {
-        yes.disabled = true; const old = yes.textContent; yes.textContent = "Đang lưu…"; msg.textContent = "";
-        const r = await onOk().catch((e) => ({ ok: false, error: e.message }));
-        if (r && r.ok === false) { yes.disabled = false; yes.textContent = old; msg.className = "bt-msg err"; msg.textContent = r.error || "Không lưu được"; return; }
-        close(); await load();
-      });
-      document.body.append(wrap);
-      setTimeout(() => wrap.querySelector("input,select,textarea")?.focus(), 30);
-    }
-    const field = (label, input, help) => el("div", { class: "bt-group" }, el("label", { text: label }), input, help ? el("div", { class: "bt-help", text: help }) : null);
-    const num = (v, min, max) => el("input", { type: "number", min, max, value: v });
-
-    function batchForm(b) {
-      const name = el("input", { type: "text", maxlength: "100", value: b ? b.name : "", placeholder: "vd: Lofi đợt 1" });
-      const days = num(b ? b.totalDays : 19, 1, 365), per = num(b ? b.videosPerDay : 3, 1, 100), cyc = num(b ? b.cycleDays : 19, 1, 365), warn = num(b ? b.warnDays : 1, 0, 30);
-      const desc = el("textarea", { rows: "2", maxlength: "500", text: b ? b.description : "" });
-      dialog(b ? "Sửa mẻ" : "Thêm mẻ", el("div", {},
-        field("Tên mẻ *", name),
-        el("div", { class: "bt-row" }, field("Số ngày mỗi vòng", days), field("Video mỗi ngày / kênh", per)),
-        el("div", { class: "bt-row" }, field("Chu kỳ render (ngày)", cyc, "Sau bấy nhiêu ngày kể từ lần render cuối thì tới hạn render vòng mới."), field("Báo khi lịch còn ≤ (ngày)", warn, "Kênh còn ít ngày hơn mức này thì cảnh báo, kể cả trên web.")),
-        field("Ghi chú", desc)), {
-        ok: b ? "Lưu" : "Tạo mẻ",
-        onOk: async () => {
-          const body = { name: name.value.trim(), description: desc.value, totalDays: Number(days.value), videosPerDay: Number(per.value), cycleDays: Number(cyc.value), warnDays: Number(warn.value) };
-          if (!body.name) return { ok: false, error: "Tên mẻ không được để trống" };
-          return b ? api().batchesUpdate(b.id, body) : api().batchesCreate(body);
-        },
-      });
+      return el("div", { class: "bt-channels" }, head, body);
     }
 
     async function removeBatch(b) {
       if (!(await window.appConfirm({ title: "Xóa mẻ?", message: "Xóa mẻ “" + b.name + "” và " + (b.channels || []).length + " kênh trong mẻ?", detail: "Chỉ xóa khỏi danh sách theo dõi, không đụng tới profile GPM.", confirmText: "Xóa mẻ" }))) return;
       const r = await api().batchesDelete(b.id).catch((e) => ({ ok: false, error: e.message }));
-      if (r && r.ok) { toast("Đã xóa mẻ"); load(); } else toast((r && r.error) || "Không xóa được", "error");
+      if (r && r.ok) { st.sel = null; st.dirty = false; toast("Đã xóa mẻ"); load(); } else toast((r && r.error) || "Không xóa được", "error");
     }
     async function removeChannel(b, c) {
       if (!(await window.appConfirm({ title: "Bỏ kênh khỏi mẻ?", message: "Bỏ kênh “" + (c.name || c.gpmProfileId) + "” khỏi mẻ “" + b.name + "”?", detail: "Chỉ bỏ khỏi mẻ, không xóa profile trong GPM.", confirmText: "Bỏ khỏi mẻ", icon: "🔗" }))) return;
       const r = await api().batchesRemoveChannel(b.id, c.gpmProfileId).catch((e) => ({ ok: false, error: e.message }));
-      if (r && r.ok) { toast("Đã bỏ kênh khỏi mẻ"); load(); } else toast((r && r.error) || "Không bỏ được", "error");
+      if (r && r.ok) { toast("Đã bỏ kênh khỏi mẻ"); st.dirty = false; load(); } else toast((r && r.error) || "Không bỏ được", "error");
     }
 
-    // Chọn kênh từ danh sách GPM (nhiều kênh một lượt). Profile đang ở mẻ khác hoặc là kênh Auto bị khóa, ghi rõ lý do.
+    // Chọn kênh từ danh sách GPM (nhiều kênh một lượt). Hộp thoại nhỏ vì đây là thao tác chọn, không phải sửa thông tin mẻ.
+    function modal(title, bodyNode, { ok, onOk }) {
+      const msg = el("div", { class: "bt-msg", role: "alert" });
+      const yes = el("button", { class: "btn btn-primary", type: "button", text: ok });
+      const wrap = el("div", { class: "modal active bt-modal" });
+      const close = () => wrap.remove();
+      wrap.append(el("div", { class: "modal-content" },
+        el("div", { class: "modal-header" }, el("h3", { text: title }), el("button", { class: "modal-close", type: "button", "aria-label": "Đóng", text: "×", onclick: close })),
+        el("div", { class: "modal-body" }, bodyNode, msg),
+        el("div", { class: "bt-foot" }, el("button", { class: "btn btn-secondary", type: "button", text: "Hủy", onclick: close }), yes)));
+      wrap.addEventListener("click", (e) => { if (e.target === wrap) close(); });
+      wrap.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
+      yes.addEventListener("click", async () => {
+        yes.disabled = true; const old = yes.textContent; yes.textContent = "Đang thêm…"; msg.textContent = "";
+        const r = await onOk().catch((e) => ({ ok: false, error: e.message }));
+        if (r && r.ok === false) { yes.disabled = false; yes.textContent = old; msg.className = "bt-msg err"; msg.textContent = r.error || "Không thêm được"; return; }
+        close(); await load();
+      });
+      document.body.append(wrap);
+      setTimeout(() => wrap.querySelector("input")?.focus(), 30);
+    }
     async function pickChannels(b) {
       const list = el("div", { class: "bt-pick-list", text: "Đang lấy danh sách GPM…" });
       const search = el("input", { type: "text", placeholder: "Tìm theo tên hoặc group…", autocomplete: "off" });
@@ -205,7 +274,7 @@
         if (!r || !r.ok) { list.textContent = "Không lấy được danh sách GPM: " + ((r && r.error) || "GPM chưa chạy?"); return; }
         profiles = r.profiles || []; groups = Object.fromEntries((r.groups || []).map((g) => [g.id, g.name])); draw();
       })();
-      dialog("Thêm kênh vào “" + b.name + "”", el("div", {}, field("Chọn kênh từ GPM", search, "Mỗi profile chỉ ở một mẻ hoặc một kênh Auto."), list, count), {
+      modal("Thêm kênh vào “" + b.name + "”", el("div", {}, field("Chọn kênh từ GPM", search, "Mỗi profile chỉ ở một mẻ hoặc một kênh Auto."), list, count), {
         ok: "Thêm vào mẻ",
         onOk: async () => {
           if (!chosen.size) return { ok: false, error: "Chưa chọn kênh nào" };
@@ -222,7 +291,7 @@
     }
 
     paint(); load();
-    return { reload: () => { if (root.offsetParent !== null) load(); } };
+    return { reload: () => { if (root.offsetParent !== null && !st.dirty) load(); } };
   }
 
   window.BatchUI = { mount, scheduleStatus, renderDue, sortChannels };
