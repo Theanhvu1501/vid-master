@@ -549,7 +549,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     icon: path.join(__dirname, "assets/icon.ico"),
     width: 1400,
-    height: 800,
+    height: 900,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -558,6 +558,9 @@ function createWindow() {
   });
 
   mainWindow.loadFile("renderer.html");
+  mainWindow.maximize(); // mở full màn hình
+  // Thu giao diện còn 85% cho vừa nhiều thông tin hơn (đặt lại sau mỗi lần nạp trang)
+  mainWindow.webContents.on("did-finish-load", () => { try { mainWindow.webContents.setZoomFactor(0.85); } catch { /* ignore */ } });
 
   // Auto-run sheet-watch khi mở app nếu người dùng đã bật "Tự chạy khi mở app"
   // Delay 4 s để renderer kịp gắn listener 'sheet:event' trước khi runner bắt đầu emit

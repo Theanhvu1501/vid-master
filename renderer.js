@@ -4932,8 +4932,10 @@ async function runConcat() {
   if (!api) return;
   const $ = (id) => document.getElementById(id);
   const logEl = $("sw-log");
-  const grid = $("sw-cards");
+  const tbody = $("sw-tbody");
+  const sideEl = $("sw-side");
   const nf = new Intl.NumberFormat("vi-VN");
+  let selectedName = null; // kênh đang chọn để hiện chi tiết bên phải
 
   // Một Map duy nhất cho cả tab: mỗi kênh gom số liệu, trạng thái GPM và video của nó.
   // sheetName -> { name, profileId, videosPerDay, countToday, enabled, stats, gpm, videos, el, open }
@@ -4977,7 +4979,33 @@ async function runConcat() {
     return v;
   }
 
-  // ===== Card =====
+  // ===== Card (giữ lại cho sự kiện video) + Row (layout bảng mới) =====
+
+  // Dòng bảng của một kênh (cùng kiểu với web: tên + kiểu render, bật, hạn proxy, hôm nay, lỗi, tổng)
+  function buildRow(c) {
+    const tr = document.createElement("tr");
+    tr.className = "cv-row"; tr.tabIndex = 0; tr.dataset.name = c.name; tr.title = "Bấm để xem và sửa kênh";
+    const tdName = document.createElement("td");
+    const nm = document.createElement("div"); nm.className = "cv-name";
+    const strong = document.createElement("strong"); strong.textContent = c.name;
+    const warn = document.createElement("span"); warn.className = "cv-warn"; warn.style.display = "none";
+    nm.append(strong, warn);
+    const sub = document.createElement("div"); sub.className = "cv-sub";
+    tdName.append(nm, sub);
+    const tdOn = document.createElement("td");
+    const sw = document.createElement("button"); sw.type = "button"; sw.className = "cv-switch"; sw.setAttribute("role", "switch");
+    sw.appendChild(document.createElement("i")); tdOn.append(sw);
+    const tdPx = document.createElement("td"); tdPx.className = "cv-pxcell";
+    const tdToday = document.createElement("td"); tdToday.className = "num cv-today";
+    const tdErr = document.createElement("td"); tdErr.className = "num cv-errs";
+    const tdTot = document.createElement("td"); tdTot.className = "num cv-posted";
+    tr.append(tdName, tdOn, tdPx, tdToday, tdErr, tdTot);
+    tr.addEventListener("click", (e) => { if (e.target.closest(".cv-switch")) return; selectChannel(c.name); });
+    tr.addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && !e.target.closest(".cv-switch")) { e.preventDefault(); selectChannel(c.name); } });
+    sw.addEventListener("click", (e) => { e.stopPropagation(); toggleEnabled(c); });
+    c.row = { tr, strong, warn, sub, sw, tdPx, tdToday, tdErr, tdTot };
+    return tr;
+  }
 
   function buildCard(c) {
     const card = document.createElement("div");
@@ -5048,7 +5076,8 @@ async function runConcat() {
         confirmUntil: new Map(), // url -> mốc hết hạn của lần bấm xác nhận đầu (dòng ⏳)
       };
       channels.set(sheetName, c);
-      grid.appendChild(buildCard(c));
+      tbody.appendChild(buildRow(c));
+      buildCard(c); // thẻ chỉ để giữ danh sách video đang chạy (hiện ở tab "Chạy" của khung bên phải), không gắn vào trang
       renderCard(c);
     }
     return c;
@@ -5316,6 +5345,44 @@ async function runConcat() {
     }
   }
 
+  function proxyPill(wc, short) {
+    const span = document.createElement("span");
+    const d = wc.proxyDaysLeft, s2 = wc.proxyExpiryState;
+    if (d === null || d === undefined) {
+      span.className = "cv-px none";
+      span.textContent = s2 === "searching" ? (short ? "…" : "Đang tra hạn…") : (short ? "?" : "Chưa rõ hạn");
+      span.title = s2 === "searching" ? "Đang hỏi nhà cung cấp proxy…" : s2 === "notfound" ? "Không nhà cung cấp nào có IP này" : "Chưa tra được hạn";
+    } else {
+      span.className = "cv-px " + (d <= 3 ? "bad" : d <= 7 ? "warn" : "ok");
+      span.textContent = d <= 0 ? "Hết hạn" : short ? d + " ngày" : "Còn " + d + " ngày";
+      span.title = "Hết hạn " + (wc.proxyExpiresAt ? new Date(wc.proxyExpiresAt).toLocaleDateString("vi-VN") : "") + (wc.proxyExpiryProvider ? " · " + wc.proxyExpiryProvider : "");
+    }
+    return span;
+  }
+
+  function renderRow(c) {
+    if (!c.row) return;
+    const { tr, warn, sub, sw, tdPx, tdToday, tdErr, tdTot } = c.row;
+    const wc = window.ChannelConfigUI?.get(c.name);
+    const vs = wc?.videoStats || {};
+    tr.classList.toggle("cv-current", selectedName === c.name);
+    if (selectedName === c.name) tr.setAttribute("aria-current", "true"); else tr.removeAttribute("aria-current");
+    const act = activityText(c);
+    sub.textContent = (wc?.renderMode ? (wc.renderMode + " · ") : "") + (act.busy || act.err ? act.text : (wc?.uploadEnabled === false ? "chỉ render" : "tự upload"));
+    sub.style.color = act.err ? "var(--accent-danger)" : "";
+    const nw = wc?.warnings?.length || 0;
+    warn.style.display = nw ? "" : "none"; warn.textContent = nw ? "⚠ " + nw : "";
+    warn.title = nw ? wc.warnings.map((x) => x.message).join(String.fromCharCode(10)) : "";
+    sw.setAttribute("aria-checked", String(!!c.enabled)); sw.setAttribute("aria-label", "Bật kênh " + c.name);
+    tdPx.replaceChildren(wc && wc.proxy ? proxyPill(wc, true) : Object.assign(document.createElement("span"), { textContent: "—", className: "muted" }));
+    const perDay = vs.perDay ?? c.videosPerDay ?? 0, today = vs.today ?? 0;
+    tdToday.replaceChildren(Object.assign(document.createElement("b"), { textContent: String(today) }), Object.assign(document.createElement("span"), { textContent: "/" + perDay }));
+    tdToday.classList.toggle("full", perDay > 0 && today >= perDay);
+    tdErr.textContent = String(vs.errors || 0); tdErr.classList.toggle("has", (vs.errors || 0) > 0);
+    tdTot.replaceChildren(Object.assign(document.createElement("b"), { textContent: String(vs.posted || 0) }), Object.assign(document.createElement("span"), { textContent: "/" + (vs.total || 0) }));
+    tdTot.title = "Đã đăng " + (vs.posted || 0) + " trên tổng " + (vs.total || 0) + " video";
+  }
+
   function renderCard(c) {
     if (!c.el) return;
     const { card, dot, pill, plug, quota, stats, updated, activity } = c.el;
@@ -5379,9 +5446,73 @@ async function runConcat() {
     activity.title = act.text;
 
     renderVideos(c);
+    renderRow(c); // cập nhật dòng bảng
   }
 
   function renderAll() { for (const c of channels.values()) renderCard(c); }
+
+  // ===== Khung chi tiết bên phải (giống web: đầu khung, tab Cấu hình / Chạy) =====
+  let sideTab = "cfg";
+  function selectChannel(name, tab) {
+    const prev = channels.get(selectedName);
+    if (prev) prev.open = false;
+    selectedName = name; if (tab) sideTab = tab;
+    const c = channels.get(name);
+    if (c) { c.open = true; refreshPending(c, true); }
+    for (const x of channels.values()) renderRow(x);
+    renderSide(true);
+  }
+  function renderSide(full) {
+    if (!sideEl) return;
+    const c = channels.get(selectedName);
+    if (!c) { sideEl.replaceChildren(Object.assign(document.createElement("div"), { className: "cv-empty", textContent: "Chọn một kênh ở danh sách để xem và sửa cấu hình" })); return; }
+    const wc = window.ChannelConfigUI?.get(c.name), vs = wc?.videoStats || {};
+    const head = document.createElement("div"); head.className = "cv-phead";
+    const tt = document.createElement("div"); tt.className = "cv-ptitle";
+    const st1 = document.createElement("strong"); st1.textContent = c.name;
+    const st2 = document.createElement("span");
+    st2.textContent = [wc?.proxy ? (wc.proxyDaysLeft == null ? "Proxy chưa rõ hạn" : wc.proxyDaysLeft <= 0 ? "Proxy hết hạn" : "Proxy còn " + wc.proxyDaysLeft + " ngày") : "", "hôm nay " + (vs.today || 0) + "/" + (vs.perDay ?? c.videosPerDay ?? 0), vs.errors ? vs.errors + " lỗi" : "", "đã đăng " + (vs.posted || 0) + "/" + (vs.total || 0) + " video"].filter(Boolean).join(" · ");
+    tt.append(st1, st2);
+    const btns = document.createElement("div"); btns.className = "cv-pbtns";
+    const plug = document.createElement("button"); plug.type = "button"; plug.className = "sw-icon-btn"; plug.textContent = "🔌";
+    plug.disabled = !c.profileId || c.gpm.state === "busy"; plug.title = c.profileId ? "Mở YouTube Studio bằng profile GPM" : "Kênh chưa có GPM Profile ID";
+    plug.addEventListener("click", () => connectOne(c));
+    const x = document.createElement("button"); x.type = "button"; x.className = "sw-icon-btn"; x.textContent = "✕"; x.title = "Đóng khung";
+    x.addEventListener("click", () => { const p = channels.get(selectedName); if (p) p.open = false; selectedName = null; for (const y of channels.values()) renderRow(y); renderSide(true); });
+    btns.append(plug, x); head.append(tt, btns);
+
+    const tabs = document.createElement("div"); tabs.className = "cv-ptabs"; tabs.setAttribute("role", "tablist");
+    for (const [id, label] of [["cfg", "Cấu hình"], ["run", "Đang chạy"]]) {
+      const b = document.createElement("button"); b.type = "button"; b.textContent = label; b.setAttribute("role", "tab");
+      b.className = sideTab === id ? "active" : ""; b.setAttribute("aria-selected", String(sideTab === id));
+      b.addEventListener("click", () => { sideTab = id; renderSide(true); });
+      tabs.append(b);
+    }
+    const body = document.createElement("div"); body.className = "cv-pbody";
+    sideEl.replaceChildren(head, tabs, body);
+    if (sideTab === "cfg") {
+      window.ChannelConfigUI?.mount(body, c.name, { refresh: false }).then(() => {});
+    } else {
+      c.open = true; renderVideos(c);
+      const act = activityText(c);
+      const s = document.createElement("div"); s.className = "cv-note" + (act.err ? " warn" : ""); s.textContent = act.text;
+      body.append(s, c.el.body); c.el.body.style.display = "";
+    }
+  }
+  async function toggleEnabled(c) {
+    const wc = window.ChannelConfigUI?.get(c.name);
+    if (!wc || !window.electronAPI?.sheet?.channelsUpdate) { setBanner("Chưa tải được cấu hình kênh từ web, thử lại sau ít giây.", "warn"); return; }
+    if (window.ChannelConfigUI.isOffline()) { setBanner("Đang mất kết nối tới máy chủ: chưa bật/tắt được kênh.", "warn"); return; }
+    const want = !c.enabled;
+    c.enabled = want; renderRow(c); // phản hồi ngay, sai thì trả lại
+    const r = await window.electronAPI.sheet.channelsUpdate(wc.id, { enabled: want, version: wc.version }).catch((e) => ({ ok: false, error: e.message }));
+    if (!r || !r.ok) {
+      c.enabled = !want; renderRow(c);
+      setBanner(r && r.status === 409 ? "Kênh vừa được sửa ở nơi khác, đã nạp lại. Hãy bấm lại." : "Không đổi được: " + ((r && r.error) || "lỗi"), "warn");
+      await window.ChannelConfigUI.load(); renderAll(); return;
+    }
+    await window.ChannelConfigUI.load(); renderAll();
+  }
 
   // ===== Nạp danh sách kênh (một lần khi mở tab) =====
   let loaded = false;
@@ -5401,12 +5532,11 @@ async function runConcat() {
   // Chỗ giữ chỗ khi lưới chưa có card nào. Không bao giờ được xoá card thật:
   // sự kiện runner có thể đã dựng card trước khi người dùng mở tab.
   function setEmpty(text) {
-    grid.querySelector(".sw-empty")?.remove();
-    if (grid.querySelector(".sw-card")) return;
-    const d = document.createElement("div");
-    d.className = "sw-empty";
-    d.textContent = text;
-    grid.appendChild(d);
+    tbody.querySelector(".sw-empty")?.parentElement?.remove();
+    if (tbody.querySelector("tr[data-name]")) return;
+    const tr = document.createElement("tr");
+    const td = document.createElement("td"); td.colSpan = 6; td.className = "sw-empty"; td.textContent = text;
+    tr.append(td); tbody.appendChild(tr);
   }
 
   async function loadChannelsOnce() {
@@ -5419,7 +5549,7 @@ async function runConcat() {
       if (!r.channels.length) { setEmpty("Chưa có kênh nào được gán cho máy này. Vào trang web để thêm kênh và gán máy."); loaded = true; return; }
       // Gộp, KHÔNG xoá: runner có thể đã chạy (autoRunOnOpen) và tạo card từ sự kiện
       // trước khi người dùng mở tab. Xoá sạch ở đây sẽ nuốt mất video đang chạy.
-      grid.querySelector(".sw-empty")?.remove();
+      tbody.querySelector(".sw-empty")?.parentElement?.remove();
       for (const ch of r.channels) {
         const c = ensureChannel(ch.sheetName);
         // Trim: ô Sheet hay dính khoảng trắng, mà probeGpm so id bằng khớp chuỗi tuyệt đối.
@@ -5430,9 +5560,12 @@ async function runConcat() {
         c.countToday = Math.max(ch.countToday || 0, c.countToday);
         c.countDate = todayKey();
         c.enabled = ch.enabled !== false;
-        grid.appendChild(c.el.card); // xếp lại theo thứ tự trong ⚙config (appendChild là move)
+        tbody.appendChild(c.row.tr); // xếp lại theo thứ tự
         renderCard(c);
       }
+      // Chọn kênh đầu tiên
+      if (r.channels.length && !selectedName) selectChannel(r.channels[0].sheetName);
+      else renderSide(true);
       loaded = true;
       setBanner("", null);
       // Tên kênh + @handle nguồn: đọc thẳng từ Sheet, KHÔNG gọi YouTube API (không tốn quota).
