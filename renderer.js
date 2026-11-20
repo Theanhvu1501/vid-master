@@ -7,6 +7,20 @@ function checkElectronAPI() {
   return true;
 }
 
+// Icons SVG (giống web)
+const ICONS = {
+  settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
+  film: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M3 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 3v18"/><path d="M17 7.5h4"/><path d="M17 16.5h4"/>',
+  x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  copy: '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+  trash: '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+  plug: '<path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/>',
+  alert: '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+};
+function icon(name, cls = "") {
+  return `<svg class="ico ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ""}</svg>`;
+}
+
 // Settings Menu Functions
 function toggleSettingsMenu() {
   const dropdown = document.getElementById("settings-dropdown");
@@ -141,15 +155,60 @@ async function openNewWindow() {
 async function loadAccountMenu() {
   try {
     const a = await window.electronAPI?.sheet?.accountGet?.();
-    const el = document.getElementById("account-menu-name");
-    if (el && a?.loggedIn) el.textContent = a.displayName || a.username || "Tài khoản";
-    const out = document.getElementById("logout-menu-item");
-    if (out && a && !a.loggedIn) out.style.display = "none";
+    const nameEl = document.getElementById("user-name");
+    const avatarEl = document.getElementById("user-avatar");
+    const dropdownName = document.getElementById("user-dropdown-name");
+    const dropdownRole = document.getElementById("user-dropdown-role");
+    const logoutBtn = document.getElementById("logout-menu-item");
+    if (a?.loggedIn) {
+      const name = a.displayName || a.username || "Tài khoản";
+      if (nameEl) nameEl.textContent = name;
+      if (avatarEl) avatarEl.textContent = name.charAt(0).toUpperCase();
+      if (dropdownName) dropdownName.textContent = name;
+      if (dropdownRole) dropdownRole.textContent = a.role || "";
+      if (logoutBtn) logoutBtn.style.display = "";
+    } else {
+      if (nameEl) nameEl.textContent = "Chưa đăng nhập";
+      if (avatarEl) avatarEl.textContent = "?";
+      if (dropdownName) dropdownName.textContent = "Chưa đăng nhập";
+      if (dropdownRole) dropdownRole.textContent = "";
+      if (logoutBtn) logoutBtn.style.display = "none";
+    }
   } catch { /* không quan trọng */ }
 }
-async function logoutAccount() {
+
+function toggleUserMenu() {
+  const dropdown = document.getElementById("user-dropdown");
+  const settingsDropdown = document.getElementById("settings-dropdown");
+  if (settingsDropdown) settingsDropdown.classList.remove("active");
+  if (dropdown) dropdown.classList.toggle("active");
+}
+function closeUserMenu() {
+  const dropdown = document.getElementById("user-dropdown");
+  if (dropdown) dropdown.classList.remove("active");
+}
+
+function showLogoutDialog() {
+  const dialog = document.getElementById("logoutDialog");
+  if (dialog) dialog.classList.add("active");
+}
+function closeLogoutDialog() {
+  const dialog = document.getElementById("logoutDialog");
+  if (dialog) dialog.classList.remove("active");
+}
+async function confirmLogout() {
+  closeLogoutDialog();
   try { await window.electronAPI?.sheet?.accountLogout?.(); } catch { /* ignore */ }
 }
+
+// Close user menu when clicking outside
+document.addEventListener("click", (e) => {
+  const userWrapper = document.querySelector(".user-menu-wrapper");
+  if (userWrapper && !userWrapper.contains(e.target)) {
+    closeUserMenu();
+  }
+});
+
 window.addEventListener("DOMContentLoaded", loadAccountMenu);
 
 async function checkForAppUpdate() {
@@ -5467,29 +5526,43 @@ async function runConcat() {
     const c = channels.get(selectedName);
     if (!c) { sideEl.replaceChildren(Object.assign(document.createElement("div"), { className: "cv-empty", textContent: "Chọn một kênh ở danh sách để xem và sửa cấu hình" })); return; }
     const wc = window.ChannelConfigUI?.get(c.name), vs = wc?.videoStats || {};
-    const head = document.createElement("div"); head.className = "cv-phead";
-    const tt = document.createElement("div"); tt.className = "cv-ptitle";
-    const st1 = document.createElement("strong"); st1.textContent = c.name;
-    const st2 = document.createElement("span");
-    st2.textContent = [wc?.proxy ? (wc.proxyDaysLeft == null ? "Proxy chưa rõ hạn" : wc.proxyDaysLeft <= 0 ? "Proxy hết hạn" : "Proxy còn " + wc.proxyDaysLeft + " ngày") : "", "hôm nay " + (vs.today || 0) + "/" + (vs.perDay ?? c.videosPerDay ?? 0), vs.errors ? vs.errors + " lỗi" : "", "đã đăng " + (vs.posted || 0) + "/" + (vs.total || 0) + " video"].filter(Boolean).join(" · ");
-    tt.append(st1, st2);
-    const btns = document.createElement("div"); btns.className = "cv-pbtns";
-    const plug = document.createElement("button"); plug.type = "button"; plug.className = "sw-icon-btn"; plug.textContent = "🔌";
-    plug.disabled = !c.profileId || c.gpm.state === "busy"; plug.title = c.profileId ? "Mở YouTube Studio bằng profile GPM" : "Kênh chưa có GPM Profile ID";
-    plug.addEventListener("click", () => connectOne(c));
-    const x = document.createElement("button"); x.type = "button"; x.className = "sw-icon-btn"; x.textContent = "✕"; x.title = "Đóng khung";
-    x.addEventListener("click", () => { const p = channels.get(selectedName); if (p) p.open = false; selectedName = null; for (const y of channels.values()) renderRow(y); renderSide(true); });
-    btns.append(plug, x); head.append(tt, btns);
+    // Sub text giống web: owner · máy · hôm nay x/y · z lỗi · đã đăng a/b video
+    const subParts = [
+      wc?.proxy ? (wc.proxyDaysLeft == null ? "Proxy chưa rõ hạn" : wc.proxyDaysLeft <= 0 ? "Proxy hết hạn" : "Proxy còn " + wc.proxyDaysLeft + " ngày") : "",
+      "hôm nay " + (vs.today || 0) + "/" + (vs.perDay ?? c.videosPerDay ?? 0),
+      vs.errors ? vs.errors + " lỗi" : "",
+      "đã đăng " + (vs.posted || 0) + "/" + (vs.total || 0) + " video"
+    ].filter(Boolean).join(" · ");
 
-    const tabs = document.createElement("div"); tabs.className = "cv-ptabs"; tabs.setAttribute("role", "tablist");
-    for (const [id, label] of [["cfg", "Cấu hình"], ["run", "Đang chạy"]]) {
-      const b = document.createElement("button"); b.type = "button"; b.textContent = label; b.setAttribute("role", "tab");
-      b.className = sideTab === id ? "active" : ""; b.setAttribute("aria-selected", String(sideTab === id));
-      b.addEventListener("click", () => { sideTab = id; renderSide(true); });
-      tabs.append(b);
-    }
-    const body = document.createElement("div"); body.className = "cv-pbody";
-    sideEl.replaceChildren(head, tabs, body);
+    // Head với icon buttons giống web
+    const headHtml = `
+      <div class="cv-ptitle"><strong>${escHtml(c.name)}</strong><span>${escHtml(subParts)}</span></div>
+      <div class="cv-pbtns">
+        <button type="button" class="btn-icon ok" data-act="plug" title="${c.profileId ? 'Mở YouTube Studio bằng profile GPM' : 'Kênh chưa có GPM Profile ID'}" ${!c.profileId || c.gpm.state === "busy" ? "disabled" : ""}>${icon("plug")}</button>
+        <button type="button" class="btn-icon" data-act="close" title="Đóng (Esc)">${icon("x")}</button>
+      </div>`;
+
+    // Tabs với icon giống web
+    const tabsHtml = [["cfg", "Cấu hình", "settings"], ["run", "Video", "film"]].map(([id, label, ic]) =>
+      `<button type="button" role="tab" aria-selected="${sideTab === id}" data-ptab="${id}" class="${sideTab === id ? "active" : ""}">${icon(ic)}${label}</button>`
+    ).join("");
+
+    sideEl.innerHTML = `<div class="cv-phead" id="cv-phead">${headHtml}</div><div class="cv-ptabs seg" id="cv-ptabs" role="tablist">${tabsHtml}</div><div class="cv-pbody" id="cv-pbody"></div>`;
+
+    // Event listeners cho head buttons
+    sideEl.querySelector('[data-act="plug"]')?.addEventListener("click", () => connectOne(c));
+    sideEl.querySelector('[data-act="close"]')?.addEventListener("click", () => {
+      const p = channels.get(selectedName); if (p) p.open = false;
+      selectedName = null;
+      for (const y of channels.values()) renderRow(y);
+      renderSide(true);
+    });
+    // Event listeners cho tabs
+    sideEl.querySelectorAll('[data-ptab]').forEach(btn => {
+      btn.addEventListener("click", () => { sideTab = btn.dataset.ptab; renderSide(true); });
+    });
+
+    const body = sideEl.querySelector("#cv-pbody");
     if (sideTab === "cfg") {
       window.ChannelConfigUI?.mount(body, c.name, { refresh: false }).then(() => {});
     } else {
@@ -5499,6 +5572,8 @@ async function runConcat() {
       body.append(s, c.el.body); c.el.body.style.display = "";
     }
   }
+  // Helper escape HTML
+  function escHtml(v) { return String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
   async function toggleEnabled(c) {
     const wc = window.ChannelConfigUI?.get(c.name);
     if (!wc || !window.electronAPI?.sheet?.channelsUpdate) { setBanner("Chưa tải được cấu hình kênh từ web, thử lại sau ít giây.", "warn"); return; }
@@ -5574,7 +5649,7 @@ async function runConcat() {
       // Chạy nền: 13 tab Sheet, mỗi tab một lượt đọc. Không chặn việc hiện card.
       refreshAllPending();
       // Cấu hình đầy đủ từ web (hạn proxy, số video đã đăng, cảnh báo) để hiện trên thẻ; sửa xong thì thẻ tự cập nhật.
-      window.ChannelConfigUI?.load().then(() => renderAll()).catch(() => {});
+      pushProxyAddr(true).finally(() => window.ChannelConfigUI?.load().then(() => renderAll()).catch(() => {}));
       if (!window.__ccuHooked && window.ChannelConfigUI) {
         window.__ccuHooked = true;
         window.ChannelConfigUI.onChange(() => { window.ChannelConfigUI.load().then(() => { renderAll(); loaded = false; loadChannelsOnce(); }).catch(() => {}); });
@@ -5595,15 +5670,46 @@ async function runConcat() {
     try {
       const r = await api.gpmListChannels();
       if (!r?.ok) return;
+      // Web thêm/xóa/chuyển kênh: danh sách đổi thì nạp lại cả bảng
+      const names = r.channels.map((x) => x.sheetName).sort().join("|");
+      const have = [...channels.keys()].sort().join("|");
+      if (loaded && names !== have) { loaded = false; loadChannelsOnce(); return; }
       for (const ch of r.channels) {
         const c = ensureChannel(ch.sheetName);
         c.countToday = ch.countToday || 0;
         c.countDate = todayKey();
         c.videosPerDay = ch.videosPerDay || 0;
+        c.enabled = ch.enabled !== false; // bật/tắt ở web phải ăn theo
+        c.profileId = (ch.gpmProfileId || "").trim();
         renderCard(c);
       }
     } catch { /* im lặng: chỉ là đối chiếu số liệu, không phải việc chính */ }
   }
+
+  // Tự đồng bộ với web: định kỳ và khi quay lại cửa sổ app. Không dựng lại khung chi tiết
+  // (tránh mất chữ đang gõ dở); chỉ cập nhật bảng và số liệu.
+  let webSyncing = false;
+  async function syncFromWeb() {
+    if (!loaded || loading || webSyncing || document.hidden) return;
+    webSyncing = true;
+    try {
+      await pushProxyAddr();
+      await window.ChannelConfigUI?.load();
+      await syncQuota();
+      renderAll();
+    } catch { /* lần sau thử lại */ } finally { webSyncing = false; }
+  }
+  // Gửi địa chỉ proxy (chỉ ip:port, không user/mật khẩu) của GPM profile lên web để tra hạn. GPM tắt thì bỏ qua.
+  // Chạy tối đa 1 lần/2 phút: GPM không đổi proxy thường xuyên và mỗi lần phải hỏi GPM liệt kê profile.
+  let lastProxyPush = 0;
+  async function pushProxyAddr(force = false) {
+    if (!window.electronAPI?.sheet?.syncProxy) return;
+    if (!force && Date.now() - lastProxyPush < 120000) return;
+    lastProxyPush = Date.now();
+    try { await window.electronAPI.sheet.syncProxy(); } catch { /* GPM không chạy: bỏ qua */ }
+  }
+  setInterval(syncFromWeb, 30000);
+  window.addEventListener("focus", syncFromWeb);
 
   const MISSING_LABEL = {
     subscribers: "Sub", totalViews: "Tổng view",
@@ -5798,43 +5904,6 @@ async function runConcat() {
     };
   }
 
-  // ----- Mật khẩu proxy (lưu ở máy này, mã hóa) -----
-  async function renderProxyAuth() {
-    const box = $("sw-proxy-list"), st = $("sw-proxy-status");
-    if (!box) return;
-    const r = await api.proxyAuthStatus().catch((e) => ({ ok: false, error: e.message }));
-    if (!r?.ok) { box.innerHTML = ""; if (st) { st.textContent = r?.error || "Không lấy được danh sách"; st.style.color = "#c00"; } return; }
-    const need = r.rows.filter((x) => !x.hasAuth).length;
-    if (st) { st.textContent = r.rows.length ? (need ? `${need}/${r.rows.length} kênh còn thiếu mật khẩu proxy` : `✅ Đủ mật khẩu cho ${r.rows.length} kênh`) : "Chưa có kênh nào dùng proxy"; st.style.color = need ? "#b7791f" : "#1a7f37"; }
-    box.innerHTML = r.rows.map((x) => `<div class="sw-proxy-row" data-n="${escapeHtml(x.name)}"><span class="nm" title="${escapeHtml(x.name)}">${escapeHtml(x.name)}</span><span class="hp">${escapeHtml(x.hostPort)}</span>
-      <span class="${x.hasAuth ? "ok" : "no"}">${x.fromWeb ? "✓ lấy từ web" : x.hasAuth ? "✓ " + escapeHtml(x.user) : x.changed ? "proxy đã đổi, nhập lại" : "chưa nhập"}</span>
-      ${x.fromWeb ? "<span></span>" : `<button class="btn btn-secondary" data-edit="${escapeHtml(x.name)}">${x.hasAuth ? "Sửa" : "Nhập"}</button>`}</div>`).join("");
-  }
-  $("sw-proxy-refresh")?.addEventListener("click", renderProxyAuth);
-  $("sw-proxy-list")?.addEventListener("click", (e) => {
-    const b = e.target.closest("[data-edit]"); if (!b) return;
-    const row = b.closest(".sw-proxy-row"); if (row.nextElementSibling?.classList.contains("sw-proxy-edit")) return;
-    const name = b.dataset.edit;
-    row.insertAdjacentHTML("afterend", `<div class="sw-proxy-edit"><input type="text" placeholder="User proxy" autocomplete="off" spellcheck="false" aria-label="User proxy" /><input type="password" placeholder="Mật khẩu proxy" autocomplete="new-password" aria-label="Mật khẩu proxy" /><button class="btn btn-primary" data-save>Lưu</button><button class="btn btn-secondary" data-cancel>Hủy</button></div>`);
-    const ed = row.nextElementSibling, [u, p] = ed.querySelectorAll("input"); u.focus();
-    ed.querySelector("[data-cancel]").onclick = () => ed.remove();
-    ed.querySelector("[data-save]").onclick = async () => {
-      const r = await api.proxyAuthSet(name, u.value, p.value).catch((er) => ({ ok: false, error: er.message }));
-      if (!r?.ok) return appToast(r?.error || "Không lưu được", { kind: "error" });
-      p.value = ""; appToast("Đã lưu mật khẩu proxy (chỉ trên máy này)", { kind: "success" }); renderProxyAuth();
-    };
-  });
-  $("sw-proxy-import")?.addEventListener("click", async () => {
-    const r = await api.proxyAuthImport().catch((er) => ({ ok: false, error: er.message }));
-    if (r?.canceled) return;
-    if (!r?.ok) return appToast(r?.error || "Không nhập được", { kind: "error" });
-    const miss = (r.skipped || []).filter((x) => !/proxy không có user/.test(x.why));
-    appToast(`Đã nhập mật khẩu proxy cho ${r.imported} kênh${miss.length ? `, bỏ qua ${miss.length}` : ""}`, { kind: r.imported ? "success" : "error" });
-    if (miss.length) log("ℹ️ Bỏ qua: " + miss.slice(0, 12).map((x) => `${x.name} (${x.why})`).join("; "));
-    renderProxyAuth();
-  });
-  $("sw-config-modal") && new MutationObserver(() => { if ($("sw-config-modal").classList.contains("active") || $("sw-config-modal").style.display === "flex") renderProxyAuth(); }).observe($("sw-config-modal"), { attributes: true, attributeFilter: ["class", "style"] });
-
   // Tự động lưu cấu hình mỗi khi thay đổi (không có nút "Lưu").
   let saveTimer = null;
   async function saveNow() { await api.saveSettings(currentSettings()); }
@@ -5863,30 +5932,6 @@ async function runConcat() {
   });
   $("sw-pick-root")?.addEventListener("click", async () => {
     const p = await api.selectRoot(); if (p) { $("sw-root").value = p; await saveNow(); }
-  });
-  $("sw-test")?.addEventListener("click", async () => {
-    const btn = $("sw-test");
-    const statusEl = $("sw-test-status");
-    if (btn) btn.disabled = true;
-    if (statusEl) { statusEl.textContent = "⏳ đang kiểm tra…"; statusEl.style.color = "#666"; }
-    log("🔌 Đang kiểm tra kết nối tới Sheet…");
-    try {
-      await saveNow();
-      const r = await api.testConnection(currentSettings());
-      if (r?.success) {
-        log(`✅ Kết nối OK — ${r.channelCount} kênh trên web cho máy này (${r.enabledCount} đang bật).`);
-        if (!r.channelCount) log("ℹ️ Chưa có kênh nào được gán cho máy này. Vào trang web → Kênh để thêm/nhập và gán máy.");
-        if (statusEl) { statusEl.textContent = `✅ OK — ${r.channelCount} kênh`; statusEl.style.color = "#1a7f37"; }
-      } else {
-        log(`❌ Kết nối thất bại: ${r?.error || "lỗi không rõ"}`);
-        if (statusEl) { statusEl.textContent = "❌ Thất bại"; statusEl.style.color = "#c00"; }
-      }
-    } catch (e) {
-      log(`❌ Kết nối thất bại: ${e?.message || e}`);
-      if (statusEl) { statusEl.textContent = "❌ Thất bại"; statusEl.style.color = "#c00"; }
-    } finally {
-      if (btn) btn.disabled = false;
-    }
   });
   $("sw-gpm-test")?.addEventListener("click", async () => {
     const statusEl = $("sw-gpm-test-status");

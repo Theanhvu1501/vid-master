@@ -7,10 +7,10 @@
 //    (xác thực bằng ETag nên không đổi thì không tải lại).
 //  - Ghi trạng thái video: ghi vào bộ nhớ NGAY (runner luôn thấy trạng thái mới nhất) rồi gửi lên web theo lô. Chưa gửi được
 //    thì giữ trong hàng đợi trên đĩa và gửi bù lần sau. Mỗi mục có mốc thời gian để web biết bản nào mới hơn.
-//  - Bí mật không bao giờ lên web: web chỉ có scheme://host:port của proxy. User/mật khẩu proxy nằm trong kho cục bộ
-//    (getProxyAuth) và chỉ được ghép vào lúc runner cần dùng.
+//  - Bí mật không bao giờ lên web: web chỉ có scheme://host:port của proxy. Proxy đầy đủ (user/mật khẩu) nằm trong GPM
+//    profile của kênh trên máy này; getProfileProxy lấy từ đó vào lúc runner cần dùng.
 //
-// File này không đụng Electron: fetch, đồng hồ, kho lưu và kho mật khẩu đều được truyền vào để test được.
+// File này không đụng Electron: fetch, đồng hồ, kho lưu và nguồn proxy của profile đều được truyền vào để test được.
 
 const REQ_TIMEOUT = 20_000;
 const MAX_BATCH = 1500;
@@ -26,12 +26,12 @@ export class WebStoreError extends Error {
  * @param {() => string|null} o.getBase        địa chỉ http(s) của server
  * @param {() => string} o.getToken            token đăng nhập của app
  * @param {{ read(name:string):any, write(name:string, data:any):void }} o.disk   kho JSON cục bộ (cache + hàng đợi)
- * @param {(name:string) => ({user:string, pass:string}|null)} [o.getProxyAuth]  user/mật khẩu proxy theo TÊN KÊNH
+ * @param {(profileId:string) => Promise<string|null>} [o.getProfileProxy]  proxy đầy đủ (kể cả user/mật khẩu) của GPM profile, null nếu không có/không đọc được
  * @param {() => number} [o.now]
  * @param {(e:Error)=>void} [o.onAuthLost]     server báo phiên không còn hợp lệ (gỡ máy, khóa tài khoản...)
  * @param {(m:string)=>void} [o.log]
  */
-export function createWebStore({ fetchImpl = fetch, getBase, getToken, disk, getProxyAuth = () => null, now = () => Date.now(), onAuthLost = () => {}, log = () => {} }) {
+export function createWebStore({ fetchImpl = fetch, getBase, getToken, disk, getProfileProxy = async () => null, now = () => Date.now(), onAuthLost = () => {}, log = () => {} }) {
   const mem = {
     channels: null, revision: "", webIds: new Map(),   // tên kênh -> id trên web
     rows: new Map(),                                   // tên kênh -> { rev, rows: [{rowIndex,url,status,uploadStatus}] }
@@ -114,17 +114,14 @@ export function createWebStore({ fetchImpl = fetch, getBase, getToken, disk, get
   const scheduleFlush = () => { if (timer) return; timer = setTimeout(() => { timer = null; flush().catch(() => {}); }, 1500); timer.unref?.(); };
 
   // ---------------------------------------------------------------- cấu hình kênh
-  function withProxyAuth(ch) {
+  // Web chỉ giữ scheme://host:port. Proxy ĐẦY ĐỦ (có user/mật khẩu) nằm trong GPM profile của kênh trên máy này:
+  // lấy từ đó khi runner cần dùng. GPM không chạy hoặc profile chưa có proxy thì giữ nguyên bản của web.
+  async function withProfileProxy(ch) {
     const out = { ...ch, cfg: { ...(ch.cfg || {}) }, slotOverrides: { ...(ch.slotOverrides || {}) } };
-    const raw = String(out.proxy || "").trim();
-    if (!raw) return out;
-    // scheme://host:port  ->  scheme://user:pass@host:port
-    const m = raw.match(/^([a-z][a-z0-9+.-]*):\/\/([^@/]+)$/i);
-    if (!m) return out;
-    // Truyền cả host:port hiện tại trên web: mật khẩu của proxy CŨ không được ghép nhầm sang proxy mới
-    const auth = getProxyAuth(ch.sheetName, m[2]);
-    if (!auth || !auth.user) return out;
-    out.proxy = `${m[1]}://${encodeURIComponent(auth.user)}:${encodeURIComponent(auth.pass || "")}@${m[2]}`;
+    if (!out.gpmProfileId || out.videoSource === "local") return out;
+    let raw = "";
+    try { raw = String((await getProfileProxy(out.gpmProfileId)) || "").trim(); } catch { /* GPM không trả lời: dùng bản của web */ }
+    if (raw) out.proxy = raw;
     return out;
   }
 
@@ -141,7 +138,7 @@ export function createWebStore({ fetchImpl = fetch, getBase, getToken, disk, get
       if (e.offline && mem.channels) log("Mất kết nối máy chủ: dùng cấu hình kênh đã lưu trên máy");
       else throw e;
     }
-    return (mem.channels || []).map(withProxyAuth);
+    return Promise.all((mem.channels || []).map(withProfileProxy));
   }
 
   function webIdOf(name) {

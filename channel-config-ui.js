@@ -148,17 +148,140 @@
     const row = (...fs) => el("div", { class: "ccu-row" }, fs.map((f) => group(core(f), false)));
     form.append(
       row("enabled", "uploadEnabled"), row("videosPerDay", "videoSource"), group(core("sourceHandle"), false), group(core("postTimes"), false),
-      row("gpmProfileId", "monetized"), group(core("channelUrl"), false),
     );
-    // proxy: MỘT ô như Sheet cũ (ip:port:user:pass); hạn tự tra từ nhà cung cấp
-    const pxHelp = c.proxyPassSet ? `Đang lưu user ${c.proxyUser || ""}. Dán proxy mới: ip:port:user:pass` : "Dán như trong Sheet cũ: ip:port:user:pass";
-    form.append(el("div", { class: "ccu-group" }, el("label", { for: "ccu-proxy", text: "Proxy tải" }), el("input", { id: "ccu-proxy", "data-k": "proxy", type: "text", autocomplete: "off", spellcheck: "false", class: "ccu-mono", value: raw.proxy || "", placeholder: "ip:port:user:pass" }), el("div", { class: "ccu-help", text: pxHelp })));
-    if (c.proxyPassSet) form.append(el("label", { class: "ccu-chk" }, el("input", { type: "checkbox", id: "ccu-clearpx" }), el("span", { text: "Xóa user/mật khẩu proxy đã lưu" })));
+
+    // GPM Profile: custom dropdown với tìm kiếm, hiện "Tên (Group)"
+    const gpmGroup = el("div", { class: "ccu-group" });
+    const gpmLabel = el("label", { for: "ccu-gpmProfileId-input", text: "GPM Profile" });
+    const gpmHidden = el("input", { type: "hidden", id: "ccu-gpmProfileId", "data-k": "gpmProfileId", value: raw.gpmProfileId || "" });
+    const gpmWrap = el("div", { class: "ccu-gpm-wrap" });
+    const gpmInput = el("input", { type: "text", id: "ccu-gpmProfileId-input", class: "ccu-gpm-input", autocomplete: "off", placeholder: "Tìm hoặc chọn profile..." });
+    const gpmClear = el("button", { type: "button", class: "ccu-gpm-clear", title: "Xóa", text: "×" });
+    const gpmDropdown = el("div", { class: "ccu-gpm-dropdown" });
+    gpmWrap.append(gpmInput, gpmClear, gpmDropdown);
+    const gpmHelp = el("div", { class: "ccu-help", text: "Profile GPM để chạy kênh này. Gõ để tìm, click để chọn." });
+    gpmGroup.append(gpmLabel, gpmHidden, gpmWrap, gpmHelp);
+    form.append(el("div", { class: "ccu-row" }, gpmGroup, group(core("monetized"), false)));
+    form.append(group(core("channelUrl"), false));
+
+    // GPM Profile dropdown logic
+    let gpmProfiles = [], gpmGroups = {}, gpmSelected = null;
+    let proxyAutoFilled = null; // giá trị ô Proxy do app tự điền từ profile (khác giá trị người dùng tự gõ)
+    const setGpmDisplay = (p) => {
+      gpmSelected = p;
+      if (p) {
+        gpmHidden.value = p.id;
+        gpmInput.value = `${p.name} (${gpmGroups[p.groupId] || "Chung"})`;
+        gpmClear.style.display = "block";
+      } else {
+        gpmHidden.value = "";
+        gpmInput.value = "";
+        gpmClear.style.display = "none";
+      }
+    };
+    const renderGpmDropdown = (filter = "") => {
+      const q = filter.toLowerCase().trim();
+      const filtered = gpmProfiles.filter(p => {
+        const grp = gpmGroups[p.groupId] || "Chung";
+        return p.name.toLowerCase().includes(q) || p.id.toLowerCase().includes(q) || grp.toLowerCase().includes(q);
+      });
+      gpmDropdown.innerHTML = "";
+      if (!filtered.length) {
+        gpmDropdown.append(el("div", { class: "ccu-gpm-empty", text: q ? "Không tìm thấy profile" : "Không có profile GPM" }));
+        return;
+      }
+      // Group by group_id, sort groups alphabetically
+      const byGroup = new Map();
+      for (const p of filtered) {
+        const gid = p.groupId || "__none";
+        if (!byGroup.has(gid)) byGroup.set(gid, []);
+        byGroup.get(gid).push(p);
+      }
+      const sortedGroups = [...byGroup.entries()].sort((a, b) => {
+        const na = gpmGroups[a[0]] || "Chung", nb = gpmGroups[b[0]] || "Chung";
+        return na.localeCompare(nb);
+      });
+      for (const [gid, ps] of sortedGroups) {
+        const grpName = gpmGroups[gid] || "Chung";
+        gpmDropdown.append(el("div", { class: "ccu-gpm-grp", text: grpName }));
+        for (const p of ps) {
+          const item = el("div", { class: "ccu-gpm-item" + (p.id === gpmHidden.value ? " active" : ""), "data-id": p.id });
+          item.append(el("span", { class: "ccu-gpm-name", text: p.name }), el("span", { class: "ccu-gpm-id", text: p.id }));
+          item.addEventListener("click", () => {
+            setGpmDisplay(p);
+            // Tự động điền địa chỉ proxy của profile (proxyMasked chỉ có scheme://host:port, không có user/mật khẩu).
+            // Profile không dùng proxy thì để trống: kênh không có hạn proxy.
+            proxyAutoFilled = p.hasProxy ? (p.proxyMasked || "") : "";
+            proxyInput.value = proxyAutoFilled;
+            proxyInput.dispatchEvent(new Event("input", { bubbles: true }));
+            // Báo rõ kết quả: profile không có proxy thì ô để trống là đúng, không phải lỗi
+            proxyHelpEl.textContent = p.hasProxy
+              ? `Đã điền proxy của profile "${p.name}". Bấm Lưu để gửi địa chỉ lên web (user/mật khẩu ở lại trong GPM).`
+              : `Profile "${p.name}" không dùng proxy trong GPM nên ô này để trống (kênh sẽ không có hạn proxy).`;
+            gpmDropdown.classList.remove("open");
+          });
+          gpmDropdown.append(item);
+        }
+      }
+    };
+    // Focus: mở dropdown, nếu đã có giá trị thì xóa để tìm
+    gpmInput.addEventListener("focus", () => {
+      gpmDropdown.classList.add("open");
+      if (gpmSelected) {
+        gpmInput.value = "";  // Clear để tìm kiếm
+        gpmInput.placeholder = `Đang chọn: ${gpmSelected.name}. Gõ để tìm...`;
+      }
+      renderGpmDropdown("");
+    });
+    gpmInput.addEventListener("input", () => renderGpmDropdown(gpmInput.value));
+    gpmInput.addEventListener("blur", () => {
+      setTimeout(() => {
+        gpmDropdown.classList.remove("open");
+        // Restore display nếu không chọn gì mới
+        if (gpmSelected) {
+          gpmInput.value = `${gpmSelected.name} (${gpmGroups[gpmSelected.groupId] || "Chung"})`;
+          gpmInput.placeholder = "Tìm hoặc chọn profile...";
+        }
+      }, 180);
+    });
+    gpmInput.addEventListener("keydown", (e) => { if (e.key === "Escape") { gpmDropdown.classList.remove("open"); gpmInput.blur(); } });
+    gpmClear.addEventListener("click", (e) => { e.preventDefault(); setGpmDisplay(null); gpmInput.focus(); });
+    gpmClear.style.display = raw.gpmProfileId ? "block" : "none";
+
+    // Async load GPM profiles
+    (async () => {
+      try {
+        const gpmApi = window.electronAPI?.sheet?.gpmListProfilesFull;
+        if (!gpmApi) { gpmHelp.textContent = "Phiên bản app không hỗ trợ lấy danh sách GPM Profile."; return; }
+        const r = await gpmApi();
+        if (!r || !r.ok) { gpmHelp.textContent = "Không lấy được danh sách GPM Profile: " + (r?.error || "lỗi"); return; }
+        gpmProfiles = r.profiles || [];
+        gpmGroups = Object.fromEntries((r.groups || []).map(g => [g.id, g.name]));
+        // Set display value
+        const cur = gpmProfiles.find(p => p.id === raw.gpmProfileId);
+        if (cur) {
+          setGpmDisplay(cur);
+        } else if (raw.gpmProfileId) {
+          gpmInput.value = `${raw.gpmProfileId} (không tìm thấy)`;
+          gpmClear.style.display = "block";
+        }
+        gpmHelp.textContent = `${gpmProfiles.length} profile GPM. Click vào ô để tìm và chọn.`;
+        renderGpmDropdown();
+      } catch (e) { gpmHelp.textContent = "Lỗi khi lấy danh sách GPM: " + e.message; }
+    })();
+
+    // Proxy: web chỉ giữ địa chỉ (để tra hạn). Chọn GPM Profile thì tự điền địa chỉ proxy của profile đó.
+    // Muốn đổi proxy: nhập đủ ip:port:user:pass, app ghi vào GPM profile (user/mật khẩu không lên web).
+    const pxHelp = "Tự điền khi chọn GPM Profile. Muốn đổi proxy: nhập ip:port:user:pass, app lưu vào GPM trên máy này, web chỉ nhận địa chỉ ip:port để tra hạn.";
+    const proxyInput = el("input", { id: "ccu-proxy", "data-k": "proxy", type: "text", autocomplete: "off", spellcheck: "false", class: "ccu-mono", value: raw.proxy || "", placeholder: "Chọn GPM Profile để tự điền, hoặc ip:port:user:pass" });
+    const proxyHelpEl = el("div", { class: "ccu-help", text: pxHelp });
+    form.append(el("div", { class: "ccu-group" }, el("label", { for: "ccu-proxy", text: "Proxy tải" }), proxyInput, proxyHelpEl));
     if (c.proxy) {
       const st2 = c.proxyExpiryState || "unknown";
       if (c.proxyExpiresAt) form.append(el("div", { class: "ccu-auto" }, `Hết hạn ${new Date(c.proxyExpiresAt).toLocaleDateString("vi-VN")} · còn ${c.proxyDaysLeft} ngày${c.proxyExpiryProvider ? " · theo " + c.proxyExpiryProvider : ""}`));
       else form.append(el("div", { class: "ccu-expwait" }, st2 === "searching" ? "Đang hỏi lần lượt các nhà cung cấp proxy…" : st2 === "notfound" ? "Không nhà cung cấp nào đã kết nối có IP này." : "Chưa tra được hạn proxy."));
     }
+
     // cách render: đổi kiểu thì dựng lại phần thông số
     form.append(el("div", { class: "ccu-sep", text: "Cách render" }));
     const modeBox = el("div", { class: "ccu-modebox" });
@@ -173,7 +296,7 @@
     };
     form.append(group(core("renderMode"), false), modeBox);
     drawMode();
-    form.append(el("div", { class: "ccu-note", text: "Tên kênh, máy chạy và việc tạo hoặc xóa kênh làm ở trang web. Tài khoản Gmail, mật khẩu và 2FA chỉ nhập ở tab Tự động hóa của app." }));
+    form.append(el("div", { class: "ccu-note", text: "Tên kênh, máy chạy và việc tạo hoặc xóa kênh làm ở trang web. Telegram đã cấu hình trên web." }));
 
     const msg = el("div", { class: "ccu-msg", role: "alert", "aria-live": "polite" });
     const save = el("button", { class: "btn btn-primary", type: "submit", form: "ccu-form", id: "ccu-save", text: "Lưu thay đổi" });
@@ -194,11 +317,24 @@
       const keep = new Set([...schema.coreKeys, ...schema.fields.filter((f) => f.section === "mode" && f.modes.includes(mode())).map((f) => f.key)]);
       for (const k of Object.keys(out)) if (!keep.has(k)) delete out[k];
       delete out.name; if (mode() !== "composer") delete out.presetName;
-      // Không đổi proxy thì không gửi lại (tránh xóa user/mật khẩu đã lưu)
-      { const cur = c.proxy || ""; const typed = String(out.proxy || "").trim(); if (typed === cur) delete out.proxy; }
-      if ($("ccu-clearpx") && $("ccu-clearpx").checked) out.clearProxyAuth = true;
+      // Proxy: web chỉ nhận địa chỉ (scheme://host:port). Nếu người dùng gõ proxy đầy đủ có user/mật khẩu thì ghi vào
+      // GPM profile trên máy này (main process), phần gửi lên web đã bị cắt user/mật khẩu.
+      const typedProxy = String(out.proxy || "").trim();
+      let gpmWrite = null;
+      if (typedProxy === (c.proxy || "") || (proxyAutoFilled !== null && typedProxy === proxyAutoFilled)) delete out.proxy; // không đổi / app tự điền: không gửi lại
+      else if (typedProxy) {
+        const hasAuth = /@|^[^/]+:\d+:[^:]+:/.test(typedProxy.replace(/^[a-z0-9]+:\/\//i, ""));
+        if (hasAuth) gpmWrite = typedProxy;
+      }
       out.version = c.version;
       save.disabled = true; save.textContent = "Đang lưu…"; msg.textContent = ""; msg.className = "ccu-msg";
+      if (gpmWrite) {
+        const pid = String(out.gpmProfileId || raw.gpmProfileId || "").trim();
+        if (!pid) { save.disabled = false; save.textContent = "Lưu thay đổi"; msg.className = "ccu-msg err"; msg.textContent = "Chọn GPM Profile trước khi nhập proxy có user/mật khẩu (proxy được lưu vào profile)."; return; }
+        const w = await api().gpmSetProfileProxy(pid, gpmWrite).catch((er) => ({ ok: false, error: er.message }));
+        if (!w || !w.ok) { save.disabled = false; save.textContent = "Lưu thay đổi"; msg.className = "ccu-msg err"; msg.textContent = "Không ghi được proxy vào GPM: " + ((w && w.error) || "lỗi"); return; }
+        out.proxy = w.addr; // chỉ scheme://host:port
+      }
       const r = await api().channelsUpdate(c.id, out).catch((er) => ({ ok: false, error: er.message }));
       if (r && r.ok) {
         msg.textContent = "Đã lưu"; msg.className = "ccu-msg ok";

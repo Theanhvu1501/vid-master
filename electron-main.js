@@ -13,13 +13,13 @@ import pLimit from "p-limit";
 import sharp from "sharp";
 import { createSheetRunner } from "./sheet/sheet-runner.js";
 import { createWebStore, createDiskStore } from "./sheet/web-store.js";
-import { extractProxyAuth, cleanAuthInput, mergeAuth, lookupAuth } from "./sheet/proxy-auth.js";
+import { planProxySync, addrOfProxy } from "./sheet/proxy-sync.js";
 import { createYoutubeClient, fetchChannelStats, fetchSourceVideos, pickNewUrls, DEFAULT_YT_API_KEY } from "./sheet/youtube-api.js";
 import { parseScheduledISO, formatStamp } from "./sheet/schedule-slots.js";
 import { testGpmConnection, connectAndOpenStudio, connectProfile, getGpmApiVersion, listGpmGroups, listGpmProfilesFull, createGpmProfile, updateGpmProfileProxy } from "./sheet/gpm-client.js";
 import { runLogin, runChangeThumb, runSchedule, stopAutomation, resetCancel, forEachProfile, loginOne, checkCancelled, isCancelled } from "./sheet/youtube-automation.js";
 import { runDistribute, buildPlan, listVideos } from "./sheet/distribute.js";
-import { runProxyCheck, maskProxy, checkProxy } from "./sheet/proxy-tools.js";
+import { runProxyCheck, maskProxy, checkProxy, toGpmProxy } from "./sheet/proxy-tools.js";
 import { createMonitorAgent, createProxyHealth, buildSnapshot, proxyIdentity, toHttpBase, DEFAULT_SERVER_URL } from "./sheet/monitor-agent.js";
 import { createTaskTracker, channelResultEvent, isTrackedTask, lastMeaningfulLine } from "./sheet/task-monitor.js";
 import { readLoginAccounts, readChannelPlans, attachProfileData, countNames } from "./sheet/excel-import.js";
@@ -1447,20 +1447,7 @@ const proxyHealth = createProxyHealth({ checkFn: (raw) => checkProxy(raw) });
 
 // ===== Dữ liệu kênh và video lấy từ WEB (thay cho Google Sheet) =====
 // Cấu hình kênh + danh sách video + trạng thái nằm trên web; máy giữ bản sao để chạy khi mất mạng. User/mật khẩu proxy chỉ nằm
-// ở máy này (mã hóa bằng kho của hệ điều hành), không bao giờ lên web.
-const proxyAuthPath = () => path.join(getConfigDir(), ".proxy-auth.bin");
-function loadProxyAuth() {
-  try {
-    if (!safeStorage.isEncryptionAvailable()) return {};
-    return JSON.parse(safeStorage.decryptString(fs.readFileSync(proxyAuthPath())));
-  } catch { return {}; }
-}
-function saveProxyAuth(obj) {
-  if (!safeStorage.isEncryptionAvailable()) throw new Error("Máy này không có kho mã hóa của hệ điều hành nên không lưu được mật khẩu proxy an toàn.");
-  fs.writeFileSync(proxyAuthPath(), safeStorage.encryptString(JSON.stringify(obj)), { mode: 0o600 });
-}
-let proxyAuthCache = null;
-const getProxyAuthFor = (name, hostPort) => lookupAuth((proxyAuthCache ||= loadProxyAuth()), name, hostPort);
+// trong GPM profile của kênh trên máy này, không bao giờ lên web (xem gpmProxyMap bên dưới).
 
 // Mỗi tài khoản + máy có bộ nhớ đệm riêng: đổi tài khoản trên cùng máy không đọc nhầm dữ liệu của người khác.
 function webStoreDir() {
@@ -1475,7 +1462,7 @@ function webStore() {
   webStoreInst = createWebStore({
     getBase: appServerBase, getToken: () => sessionMgr.getToken(),
     disk: createDiskStore({ dir: webStoreDir(), fs, path }),
-    getProxyAuth: getProxyAuthFor,
+    getProfileProxy,
     // Server báo phiên không còn hợp lệ (gỡ máy, khóa tài khoản, đổi mật khẩu): không dùng tiếp dữ liệu trên web
     onAuthLost: (err) => { if (err?.reason && err.reason !== "token") console.log("[web] phiên không còn hợp lệ:", err.reason); },
     log: (m) => console.log(`[web] ${m}`),
@@ -1955,70 +1942,48 @@ ipcMain.handle("channels:update", async (e, { id, body } = {}) => {
   }
 });
 
-// ===== User/mật khẩu proxy của từng kênh: chỉ lưu trên máy này (mã hóa), không bao giờ lên web =====
-// "socks5://user:pass@1.2.3.4:80" -> "1.2.3.4:80"
-function hostPortOf(raw) {
-  const t = String(raw ?? "").trim();
-  const i = t.indexOf("://");
-  const rest = i >= 0 ? t.slice(i + 3) : t;
-  return rest.slice(rest.lastIndexOf("@") + 1);
+// ===== Proxy của kênh lấy từ GPM profile =====
+// Web chỉ giữ scheme://host:port (để tra hạn proxy). User/mật khẩu nằm trong GPM trên máy này và không bao giờ lên web.
+// Danh sách profile (kèm proxy) được nhớ 30 giây để mỗi lượt đọc cấu hình không phải hỏi GPM từng kênh.
+let gpmProxyCache = { at: 0, host: "", map: null };
+async function gpmProxyMap() {
+  const host = gpmHostOf(loadSheetSettings().gpmHost);
+  const c = gpmProxyCache;
+  if (c.map && c.host === host && Date.now() - c.at < 30_000) return c.map;
+  const map = new Map((await listGpmProfilesFull(host)).map((p) => [p.id, p.rawProxy || ""]));
+  gpmProxyCache = { at: Date.now(), host, map };
+  return map;
 }
-// Trạng thái từng kênh: có proxy trên web không, đã có user/mật khẩu trên máy chưa (KHÔNG trả mật khẩu về giao diện).
-ipcMain.handle("proxy-auth:status", async () => {
+const getProfileProxy = async (profileId) => (await gpmProxyMap()).get(String(profileId || "").trim()) || null;
+
+// Gửi địa chỉ proxy của GPM profile lên web cho các kênh của máy này. GPM không chạy thì bỏ qua, không báo lỗi.
+async function syncProxyAddrToWeb() {
   try {
-    const channels = await webChannels();
-    const store = (proxyAuthCache ||= loadProxyAuth());
-    return {
-      ok: true,
-      rows: channels.filter((c) => String(c.proxy || "").trim()).map((c) => {
-        const hp = hostPortOf(c.proxy);
-        const a = lookupAuth(store, c.sheetName);
-        // Web đã giao sẵn user/mật khẩu (proxy có dạng user:pass@host:port): không cần nhập thêm trên máy
-        const afterScheme = String(c.proxy || "").split("://").pop();
-        const fromWeb = afterScheme.includes("@");
-        return { name: c.sheetName, hostPort: hp, fromWeb, hasAuth: fromWeb || !!lookupAuth(store, c.sheetName, hp), changed: !!(a && a.hostPort && a.hostPort !== hp), user: a?.user ? a.user.slice(0, 2) + "***" : "" };
-      }),
-    };
-  } catch (err) { return { ok: false, error: String(err?.message || err) }; }
-});
-ipcMain.handle("proxy-auth:set", async (e, { name, user, pass } = {}) => {
-  try {
-    const c = cleanAuthInput(user, pass);
-    if (c.error) return { ok: false, error: c.error };
-    const channels = await webChannels();
-    const ch = channels.find((x) => x.sheetName === String(name || ""));
-    if (!ch || !String(ch.proxy || "").trim()) return { ok: false, error: "Kênh này chưa có proxy trên web." };
-    const hp = hostPortOf(ch.proxy);
-    const next = mergeAuth(proxyAuthCache ||= loadProxyAuth(), [{ name: ch.sheetName, user: c.user, pass: c.pass, hostPort: hp }]);
-    saveProxyAuth(next); proxyAuthCache = next;
-    return { ok: true };
-  } catch (err) { return { ok: false, error: String(err?.message || err) }; }
-});
-// Nhập hàng loạt từ file Excel cũ (cột Tên kênh + Proxy tải có user/mật khẩu). Đọc trên máy này, không gửi đi đâu.
-ipcMain.handle("proxy-auth:import", async (e) => {
-  try {
-    const win = BrowserWindow.fromWebContents(e.sender);
-    const r = await dialog.showOpenDialog(win, { title: "Chọn file Excel cấu hình cũ", properties: ["openFile"], filters: [{ name: "Excel", extensions: ["xlsx", "xls", "csv"] }] });
-    if (r.canceled || !r.filePaths[0]) return { ok: true, canceled: true };
-    const wb = XLSX.readFile(r.filePaths[0]);
-    const tab = wb.SheetNames.find((n) => /config/i.test(n)) || wb.SheetNames[0];
-    const rows = XLSX.utils.sheet_to_json(wb.Sheets[tab], { header: 1, defval: "", raw: false });
-    const x = extractProxyAuth(rows);
-    if (x.error) return { ok: false, error: x.error };
-    // Chỉ nhận kênh đang có proxy trên web và khớp host:port (tránh gán nhầm mật khẩu cho proxy khác)
-    const channels = await webChannels();
-    const byName = new Map(channels.map((c) => [c.sheetName.toLowerCase(), c]));
-    const accepted = [], skipped = [...x.skipped];
-    for (const en of x.entries) {
-      const ch = byName.get(en.name.toLowerCase());
-      if (!ch) { skipped.push({ name: en.name, why: "kênh không có trên web (hoặc không gán cho máy này)" }); continue; }
-      const hp = hostPortOf(ch.proxy || "");
-      if (!hp) { skipped.push({ name: en.name, why: "kênh chưa có proxy trên web" }); continue; }
-      if (hp !== en.hostPort) { skipped.push({ name: en.name, why: `proxy trên web (${hp}) khác trong file (${en.hostPort})` }); continue; }
-      accepted.push({ ...en, name: ch.sheetName });
+    if (!webConfigured()) return { ok: false, error: "Chưa đăng nhập." };
+    const map = await gpmProxyMap();
+    const list = await webStore().listChannelConfigs();
+    if (list.offline) return { ok: true, changed: 0, offline: true };
+    const plan = planProxySync(list.channels, map);
+    let changed = 0;
+    for (const p of plan) {
+      try { await webStore().updateChannelConfig(p.id, { proxy: p.proxy, version: p.version }); changed++; }
+      catch (e) { if (e?.status !== 409) throw e; /* kênh vừa được sửa chỗ khác: lần đồng bộ sau sẽ làm lại */ }
     }
-    if (accepted.length) { const next = mergeAuth(proxyAuthCache ||= loadProxyAuth(), accepted); saveProxyAuth(next); proxyAuthCache = next; }
-    return { ok: true, imported: accepted.length, skipped, tab };
+    return { ok: true, changed };
+  } catch (err) { return { ok: false, error: String(err?.message || err) }; }
+}
+ipcMain.handle("channels:sync-proxy", () => syncProxyAddrToWeb());
+
+// Ghi proxy đầy đủ (có user/mật khẩu) vào GPM profile của máy này; trả lại CHỈ địa chỉ scheme://host:port để gửi lên web.
+ipcMain.handle("gpm:set-profile-proxy", async (e, { profileId, rawProxy } = {}) => {
+  try {
+    const pid = String(profileId || "").trim();
+    if (!pid) return { ok: false, error: "Thiếu GPM Profile" };
+    const addr = addrOfProxy(rawProxy);
+    if (!addr) return { ok: false, error: "Proxy không đọc được (dạng ip:port:user:pass)" };
+    await updateGpmProfileProxy(gpmHostOf(loadSheetSettings().gpmHost), pid, toGpmProxy(rawProxy));
+    gpmProxyCache = { at: 0, host: "", map: null }; // lần đọc sau lấy bản mới
+    return { ok: true, addr };
   } catch (err) { return { ok: false, error: String(err?.message || err) }; }
 });
 

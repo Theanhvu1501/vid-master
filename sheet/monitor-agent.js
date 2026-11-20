@@ -65,7 +65,7 @@ export function buildChannelEntry(ch, rows, { state, resume, today, fileExists =
     todayDone: cs && cs.lastRunDate === today ? cs.countToday || 0 : 0,
     proxyKey: px?.key || null,
     proxyHostPort: px?.hostPort || "",
-    proxyUser: px?.user || "",
+    proxyUser: "", // chỉ gửi địa chỉ ip:port lên web, không gửi cả tên user proxy
     subscribers: stats?.hidden ? null : stats?.subscribers ?? null,
     totalViews: stats?.views ?? null,
     videoCount: stats?.videoCount ?? null,

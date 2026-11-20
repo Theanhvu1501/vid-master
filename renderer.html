@@ -78,6 +78,20 @@
   box-sizing: border-box;
 }
 
+/* Icons SVG giống web */
+svg.ico { width: 18px; height: 18px; flex-shrink: 0; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.btn-icon {
+  width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: 1px solid transparent; border-radius: var(--radius-md);
+  color: var(--text-secondary); cursor: pointer; transition: var(--transition-smooth);
+}
+.btn-icon:hover { background: var(--bg-hover); color: var(--text-primary); }
+.btn-icon.warn:hover { background: rgba(252, 196, 25, .12); color: var(--accent-warning); }
+.btn-icon.ok:hover { background: rgba(81, 207, 102, .12); color: var(--accent-success); }
+.btn-icon.danger:hover { background: rgba(255, 107, 107, .12); color: var(--accent-danger); }
+.btn-icon:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-icon:disabled:hover { background: transparent; color: var(--text-secondary); }
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   font-size: 14px;
@@ -139,9 +153,35 @@ body {
 .header-actions {
   display: flex;
   align-items: center;
-  gap: var(--space-sm);
+  gap: var(--space-md);
   -webkit-app-region: no-drag;
 }
+
+/* User menu (avatar + tên) */
+.user-menu-wrapper { position: relative; }
+.user-menu-btn {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 10px 4px 4px;
+  background: var(--bg-tertiary); border: 1px solid var(--border-default); border-radius: 20px;
+  cursor: pointer; transition: var(--transition-fast);
+}
+.user-menu-btn:hover { background: var(--bg-hover); border-color: var(--text-muted); }
+.user-avatar {
+  width: 26px; height: 26px; border-radius: 50%;
+  background: var(--accent-primary); color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 600; text-transform: uppercase;
+}
+.user-name { font-size: 12px; color: var(--text-primary); max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.user-dropdown {
+  position: fixed; top: 52px; right: var(--space-lg);
+  background: var(--bg-elevated); border: 1px solid var(--border-default); border-radius: var(--radius-lg);
+  padding: var(--space-xs); min-width: 180px; box-shadow: var(--shadow-lg); z-index: 10001; display: none;
+}
+.user-dropdown.active { display: block; animation: dropdown-in 0.15s ease; }
+.user-dropdown-header { padding: 10px 12px; border-bottom: 1px solid var(--border-default); margin-bottom: 4px; }
+.user-dropdown-header strong { display: block; font-size: 13px; color: var(--text-primary); }
+.user-dropdown-header span { font-size: 11px; color: var(--text-muted); }
 
 /* Project Selector */
 .project-manager {
@@ -1211,6 +1251,21 @@ small {
 .ccu-host .ccu-chk { display: flex; align-items: center; gap: 8px; font-size: 12px; margin: 0 0 12px; cursor: pointer; }
 .ccu-host .ccu-err { color: var(--accent-danger); }
 .ccu-host .ccu-muted { color: var(--text-muted); font-size: 12px; }
+/* GPM Profile dropdown with search */
+.ccu-gpm-wrap { position: relative; }
+.ccu-gpm-input { width: 100%; padding: 8px 32px 8px 10px; background: var(--bg-tertiary); border: 1px solid var(--border-default); border-radius: var(--radius-md); color: var(--text-primary); font-size: 13px; }
+.ccu-gpm-input:focus { outline: none; border-color: var(--accent-primary); box-shadow: 0 0 0 3px var(--border-focus); }
+.ccu-gpm-clear { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); width: 20px; height: 20px; display: none; align-items: center; justify-content: center; background: var(--bg-hover); border: none; border-radius: 50%; color: var(--text-muted); font-size: 14px; cursor: pointer; line-height: 1; }
+.ccu-gpm-clear:hover { background: var(--accent-danger); color: #fff; }
+.ccu-gpm-dropdown { display: none; position: absolute; top: 100%; left: 0; right: 0; max-height: 280px; overflow-y: auto; background: var(--bg-elevated); border: 1px solid var(--border-default); border-radius: var(--radius-md); box-shadow: var(--shadow-lg); z-index: 100; margin-top: 4px; }
+.ccu-gpm-dropdown.open { display: block; }
+.ccu-gpm-grp { padding: 8px 12px 4px; font-size: 11px; font-weight: 700; color: var(--accent-primary); text-transform: uppercase; letter-spacing: .4px; background: var(--bg-primary); position: sticky; top: 0; border-bottom: 1px solid var(--border-default); }
+.ccu-gpm-item { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; cursor: pointer; }
+.ccu-gpm-item:hover { background: var(--bg-hover); }
+.ccu-gpm-item.active { background: rgba(var(--accent-rgb), .15); border-left: 3px solid var(--accent-primary); }
+.ccu-gpm-name { font-size: 13px; color: var(--text-primary); font-weight: 500; }
+.ccu-gpm-id { font-size: 11px; color: var(--text-muted); font-family: monospace; }
+.ccu-gpm-empty { padding: 16px; text-align: center; color: var(--text-muted); font-size: 12px; }
 @media (max-width: 640px) { .ccu-host .ccu-row { grid-template-columns: 1fr; } }
 .sw-xinfo { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
 .sw-xinfo .px-ok { color: var(--accent-success); } .sw-xinfo .px-warn { color: var(--accent-warning); } .sw-xinfo .px-bad { color: var(--accent-danger); }
@@ -1298,7 +1353,7 @@ tr.cv-current td + td { box-shadow: none; }
 .cv-side .ccu-grid { grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
 .cv-side .btn { font-size: 14px; padding: 9px 18px; }
 .ccu-inline .ccu-body { padding: 0 0 8px; overflow: visible; }
-.ccu-inline .ccu-foot { position: sticky; bottom: 0; margin: 0 -16px -16px; border-radius: 0; }
+.ccu-inline .ccu-foot { position: sticky; bottom: calc(-1 * var(--space-lg)); display: flex; justify-content: flex-end; gap: 8px; padding: 12px 0 2px; margin-top: var(--space-md); background: linear-gradient(to top, var(--bg-secondary) 70%, transparent); border-top: none; border-radius: 0; }
 .ccu-inline .ccu-row { grid-template-columns: 1fr 1fr; }
 /* Hạn proxy */
 .cv-px { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; background: var(--bg-tertiary); border: 1px solid var(--border-default); }
@@ -1317,20 +1372,23 @@ tr.cv-current td + td { box-shadow: none; }
 .cv-errs { color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .cv-errs.has { color: var(--accent-danger); font-weight: 700; }
 
-/* Khung chi tiết bên phải - giống web */
+/* Khung chi tiết bên phải - giống 100% web */
 .cv-side { display: flex; flex-direction: column; position: sticky; top: 0; max-height: 100%; background: var(--bg-secondary); border: 1px solid var(--border-default); border-radius: var(--radius-lg); overflow: hidden; }
-.cv-phead { display: flex; align-items: center; gap: var(--space-sm); padding: 14px var(--space-md); border-bottom: 1px solid var(--border-default); background: var(--bg-primary); }
+.cv-phead { display: flex; align-items: center; gap: var(--space-sm); padding: 12px var(--space-md); border-bottom: 1px solid var(--border-default); background: var(--bg-primary); }
 .cv-ptitle { flex: 1; min-width: 0; }
 .cv-ptitle strong { display: block; font-size: 15px; overflow-wrap: anywhere; }
 .cv-ptitle span { display: block; font-size: 12px; color: var(--text-muted); margin-top: 2px; }
 .cv-pbtns { display: flex; gap: 4px; flex: none; }
-.cv-ptabs { display: flex; gap: 4px; margin: 10px var(--space-md) 0; }
-.cv-ptabs button { padding: 6px 12px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--bg-tertiary); color: var(--text-secondary); font-size: 12px; cursor: pointer; }
+.cv-ptabs { margin: 10px var(--space-md) 0; display: flex; gap: 4px; }
+.cv-ptabs button { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--bg-tertiary); color: var(--text-secondary); font-size: 12px; cursor: pointer; }
+.cv-ptabs button .ico { width: 14px; height: 14px; }
 .cv-ptabs button:hover { background: var(--bg-hover); color: var(--text-primary); }
 .cv-ptabs button.active { background: var(--accent-primary); border-color: var(--accent-primary); color: #fff; }
-.cv-pbody { flex: 1; min-height: 0; overflow-y: auto; padding: var(--space-md); }
-.cv-pfoot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px var(--space-md); border-top: 1px solid var(--border-default); background: var(--bg-primary); }
+.cv-ptabs button.active .ico { color: #fff; }
+.cv-pbody { flex: 1; min-height: 0; overflow-y: auto; padding: var(--space-lg); overscroll-behavior: contain; }
+.cv-pfoot { position: sticky; bottom: calc(-1 * var(--space-lg)); display: flex; justify-content: flex-end; gap: 8px; padding: 12px 0 2px; margin-top: var(--space-md); background: linear-gradient(to top, var(--bg-secondary) 70%, transparent); }
 .cv-empty { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-muted); font-size: 13px; padding: var(--space-lg); text-align: center; }
+.cv-side .form-row { grid-template-columns: 1fr 1fr; }
 
 /* Form trong khung chi tiết */
 .cv-sep { margin: 18px 0 10px; padding-top: 14px; border-top: 1px solid var(--border-default); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; color: var(--text-secondary); }
@@ -1370,6 +1428,11 @@ input.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
 
 /* Giữ CSS cũ cho thẻ card (dùng ở nơi khác) */
 .sw-grid-legacy {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: var(--space-lg);
+  margin-top: var(--space-xl);
+}
 
 .sw-empty {
   grid-column: 1 / -1;
@@ -1635,8 +1698,8 @@ input.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
 .sw-auto-chip { display: inline-block; margin: 0 10px 0 0; white-space: nowrap; font-size: 12px; }
 
 /* Modal cấu hình Theo dõi Sheet: mỗi mục một màu, cùng bảng màu với dải nhóm trong Sheet mẫu */
-.sw-cfg-group { display: flex; align-items: center; gap: 8px; border-left: 4px solid var(--grp, var(--border-default)); padding-left: 10px; border-bottom-color: var(--border-default); }
-.sw-cfg-group::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--grp, var(--text-muted)); flex-shrink: 0; }
+.sw-cfg-group { display: flex; align-items: center; gap: 10px; border-left: 4px solid var(--grp, var(--border-default)); padding-left: 12px; margin: 20px 0 12px; font-size: 15px; }
+.sw-cfg-group::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--grp, var(--text-muted)); flex-shrink: 0; }
 .sw-cfg-group[data-g="sheet"] { --grp: #8FA3B8; }
 .sw-proxy-list { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 8px; max-height: 260px; overflow: auto; }
 .sw-proxy-row { display: grid; grid-template-columns: minmax(110px, 1.2fr) minmax(120px, 1.2fr) auto auto; gap: 8px; align-items: center; padding: 8px 10px; border: 1px solid var(--border-default, #2d3748); border-radius: 8px; background: var(--bg-tertiary, #1c2430); font-size: 12px; }
@@ -1660,9 +1723,36 @@ input.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
 .thumb-own-empty { padding: 12px; color: var(--text-muted); font-size: 12px; border: 1px dashed var(--border-default); border-radius: var(--radius-md); }
 
 .sw-cfg-hint {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
+  line-height: 1.5;
+  margin-bottom: 12px;
 }
+
+/* Config modal form styling */
+#sw-config-modal .modal-content { max-width: 720px; width: 95%; }
+#sw-config-modal .modal-body { padding: 20px 28px 28px; }
+#sw-config-modal .form-group { margin-bottom: 18px; }
+#sw-config-modal .form-group label { font-size: 13px; margin-bottom: 6px; color: var(--text-secondary); }
+#sw-config-modal input[type="text"], #sw-config-modal input[type="number"] { font-size: 14px; padding: 10px 12px; }
+#sw-config-modal .btn { font-size: 13px; padding: 9px 16px; }
+#sw-config-modal .folder-select { gap: 12px; }
+#sw-config-modal .folder-input-wrap input { font-size: 13px; }
+
+/* Config modal grid layout */
+.sw-cfg-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+.sw-cfg-row > div { display: flex; flex-direction: column; }
+.sw-cfg-row label { font-size: 13px; color: var(--text-secondary); margin-bottom: 6px; }
+.sw-cfg-row input { width: 100%; }
+.sw-cfg-checks { display: flex; flex-wrap: wrap; gap: 20px; margin-bottom: 16px; }
+.sw-cfg-check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-primary); cursor: pointer; }
+.sw-cfg-check input { width: 16px; height: 16px; accent-color: var(--accent-primary); cursor: pointer; }
+.sw-cfg-inline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+.sw-cfg-inline label { font-size: 13px; color: var(--text-secondary); white-space: nowrap; }
+.sw-cfg-inline input[type="number"] { width: 80px; }
+.sw-cfg-inline input[type="text"] { flex: 1; min-width: 150px; }
+.sw-cfg-inline .hint { font-size: 12px; color: var(--text-muted); }
+@media (max-width: 600px) { .sw-cfg-row { grid-template-columns: 1fr; } }
 
 /* ============================================
    DASHBOARD
@@ -2331,58 +2421,36 @@ label.with-icon::before {
             </select>
           </div>
         </div>
-        <div class="settings-menu-wrapper">
-          <button
-            class="btn-settings"
-            id="settings-btn"
-            onclick="toggleSettingsMenu()"
-            title="Cài đặt"
-          >
-            ⚙️
+        <div class="user-menu-wrapper">
+          <button class="user-menu-btn" id="user-menu-btn" onclick="toggleUserMenu()">
+            <span class="user-avatar" id="user-avatar">?</span>
+            <span class="user-name" id="user-name">Tài khoản</span>
           </button>
-          <div class="settings-dropdown" id="settings-dropdown">
-            <button
-              class="settings-menu-item"
-              onclick="openNewWindow(); closeSettingsMenu();"
-            >
+          <div class="user-dropdown" id="user-dropdown">
+            <div class="user-dropdown-header">
+              <strong id="user-dropdown-name">Tài khoản</strong>
+              <span id="user-dropdown-role"></span>
+            </div>
+            <button class="settings-menu-item" onclick="openNewWindow(); closeUserMenu();">
               <span class="icon">🖥️</span>
               <span>Mở cửa sổ mới</span>
             </button>
             <div class="settings-divider"></div>
-            <button
-              class="settings-menu-item"
-              onclick="openAddProjectDialog(); closeSettingsMenu();"
-            >
+            <button class="settings-menu-item" onclick="openAddProjectDialog(); closeUserMenu();">
               <span class="icon">➕</span>
               <span>Thêm dự án mới</span>
             </button>
-            <button
-              class="settings-menu-item delete"
-              id="delete-project-menu-item"
-              onclick="showDeleteProjectDialog(); closeSettingsMenu();"
-            >
+            <button class="settings-menu-item delete" id="delete-project-menu-item" onclick="showDeleteProjectDialog(); closeUserMenu();">
               <span class="icon">🗑️</span>
               <span>Xóa dự án hiện tại</span>
             </button>
             <div class="settings-divider"></div>
-            <button
-              class="settings-menu-item"
-              id="check-update-menu-item"
-              onclick="checkForAppUpdate(); closeSettingsMenu();"
-            >
+            <button class="settings-menu-item" id="check-update-menu-item" onclick="checkForAppUpdate(); closeUserMenu();">
               <span class="icon">🔄</span>
               <span>Kiểm tra cập nhật</span>
             </button>
             <div class="settings-divider"></div>
-            <div class="settings-menu-item" id="account-menu-info" style="cursor:default;opacity:.8" aria-live="polite">
-              <span class="icon">👤</span>
-              <span id="account-menu-name">Tài khoản</span>
-            </div>
-            <button
-              class="settings-menu-item delete"
-              id="logout-menu-item"
-              onclick="logoutAccount(); closeSettingsMenu();"
-            >
+            <button class="settings-menu-item delete" id="logout-menu-item" onclick="showLogoutDialog(); closeUserMenu();">
               <span class="icon">🚪</span>
               <span>Đăng xuất</span>
             </button>
@@ -4706,19 +4774,6 @@ label.with-icon::before {
               <button class="btn btn-secondary" id="sw-pick-root">Chọn folder…</button>
             </div>
           </div>
-          <div class="form-group" style="display:flex;align-items:center;gap:10px;">
-            <button class="btn btn-secondary" id="sw-test" title="Kiểm tra kết nối tới web và lấy danh sách kênh của máy này">🔌 Kiểm tra kết nối</button>
-            <span id="sw-test-status" style="font-size:13px;"></span>
-          </div>
-
-          <h4 class="sw-cfg-group" data-g="sheet">Mật khẩu proxy</h4>
-          <p class="sw-cfg-hint">Web chỉ lưu địa chỉ proxy (host:port). User và mật khẩu proxy chỉ lưu <b>trên máy này</b>, được mã hóa, không bao giờ gửi lên web.</p>
-          <div class="form-group" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-            <button class="btn btn-secondary" id="sw-proxy-import" title="Đọc user/mật khẩu proxy từ file Excel cấu hình cũ (chỉ đọc trên máy này)">📥 Nhập từ file Excel cũ</button>
-            <button class="btn btn-secondary" id="sw-proxy-refresh">🔄 Làm mới</button>
-            <span id="sw-proxy-status" style="font-size:13px;"></span>
-          </div>
-          <div id="sw-proxy-list" class="sw-proxy-list"></div>
 
           <h4 class="sw-cfg-group" data-g="download">Tải video</h4>
           <div class="form-group">
@@ -4738,89 +4793,92 @@ label.with-icon::before {
           </p>
 
           <h4 class="sw-cfg-group" data-g="render">Render</h4>
-          <div class="form-group" style="display:flex;gap:24px;flex-wrap:wrap;align-items:flex-end;">
+          <div class="sw-cfg-row">
             <div>
-              <label>Poll (giây)</label>
-              <input id="sw-poll" type="number" value="300" style="width:100px">
+              <label for="sw-poll">Poll (giây)</label>
+              <input id="sw-poll" type="number" value="300">
             </div>
             <div>
-              <label>Tốc độ video</label>
-              <input id="sw-video-speed" type="number" step="0.01" min="0.1" value="0.95" style="width:100px">
+              <label for="sw-video-speed">Tốc độ video</label>
+              <input id="sw-video-speed" type="number" step="0.01" min="0.1" value="0.95">
             </div>
           </div>
-          <div class="form-group" style="display:flex;gap:24px;flex-wrap:wrap;">
-            <label style="display:flex;align-items:center;gap:8px;font-weight:normal;margin:0;">
-              <input id="sw-use-gpu" type="checkbox"> Dùng GPU (NVENC)
+          <div class="sw-cfg-checks">
+            <label class="sw-cfg-check"><input id="sw-use-gpu" type="checkbox"> Dùng GPU (NVENC)</label>
+            <label class="sw-cfg-check"><input id="sw-auto-open" type="checkbox"> Tự chạy khi mở app</label>
+          </div>
+          <div class="sw-cfg-inline">
+            <label class="sw-cfg-check" title="Mỗi lượt chạy sẽ xoá video cũ trong output/ và file rác trong overlays/ của từng kênh.">
+              <input id="sw-cleanup" type="checkbox"> Tự xoá video cũ
             </label>
-            <label style="display:flex;align-items:center;gap:8px;font-weight:normal;margin:0;">
-              <input id="sw-auto-open" type="checkbox"> Tự chạy khi mở app
-            </label>
+            <span class="hint">giữ lại</span>
+            <input id="sw-cleanup-days" type="number" min="0" value="1">
+            <span class="hint">ngày gần nhất</span>
           </div>
-          <div class="form-group" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-            <label style="display:flex;align-items:center;gap:8px;font-weight:normal;margin:0;"
-                   title="Mỗi lượt chạy sẽ xoá video cũ trong output/ và file rác trong overlays/ của từng kênh.">
-              <input id="sw-cleanup" type="checkbox"> Tự xoá video cũ cho đỡ đầy ổ
-            </label>
-            <label style="margin:0;">giữ lại</label>
-            <input id="sw-cleanup-days" type="number" min="0" value="1" style="width:70px">
-            <label style="margin:0;">ngày gần nhất</label>
+          <div id="sw-cleanup-hint" class="sw-cfg-hint" style="display:none;">
+            Video đang chờ upload hoặc upload lỗi luôn được giữ lại. <b>Lần chạy đầu sau khi bật sẽ dọn sạch mọi video cũ</b>. Đặt 0 = xoá ngay khi video đã lên lịch xong.
           </div>
-          <div id="sw-cleanup-hint" class="form-group" style="display:none;font-size:12px;color:#718096;margin-top:-6px;">
-            Video đang chờ upload hoặc upload lỗi luôn được giữ lại, không bao giờ bị xoá.
-            <b>Lần chạy đầu sau khi bật sẽ dọn sạch mọi video cũ đang tồn</b> — đó chính là lúc giải phóng được nhiều ổ nhất.
-            Đặt 0 = xoá ngay khi video đã lên lịch xong trên YouTube.
-          </div>
-          <div class="form-group">
-            <label>YouTube API key (để trống = dùng key mặc định)</label>
-            <input id="sw-yt-api-key" type="text" placeholder="AIza…" style="width:100%">
-          </div>
+          <!-- API key YouTube đã cấu hình dùng chung trên web: ẩn ở app, giữ ô để renderer.js đọc/ghi không lỗi -->
+          <input id="sw-yt-api-key" type="hidden">
 
           <h4 class="sw-cfg-group" data-g="gpm">GPM &amp; thông báo</h4>
-          <div class="form-group">
-            <label style="display:flex;align-items:center;gap:8px;font-weight:600;">
-              <input id="sw-gpm-enabled" type="checkbox"> Bật tự động GPM (đăng bằng trình duyệt GPM)
-            </label>
+          <div class="sw-cfg-checks" style="margin-bottom:12px;">
+            <label class="sw-cfg-check" style="font-weight:600;"><input id="sw-gpm-enabled" type="checkbox"> Bật tự động GPM (đăng bằng trình duyệt GPM)</label>
           </div>
           <div id="sw-gpm-panel" style="display:none;">
-            <div class="form-group" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-              <label style="margin:0;">GPM host</label>
-              <input id="sw-gpm-host" type="text" value="127.0.0.1:19995" style="width:200px">
-              <button id="sw-gpm-test" title="Kiểm tra kết nối GPM" class="sw-icon-btn">🔌</button>
-              <span id="sw-gpm-test-status" style="font-size:13px;"></span>
+            <div class="sw-cfg-row">
+              <div>
+                <label for="sw-gpm-host">GPM host</label>
+                <div style="display:flex;gap:8px;">
+                  <input id="sw-gpm-host" type="text" value="127.0.0.1:19995" style="flex:1;">
+                  <button id="sw-gpm-test" title="Kiểm tra kết nối GPM" class="btn btn-secondary">🔌</button>
+                </div>
+                <span id="sw-gpm-test-status" style="font-size:12px;margin-top:4px;display:block;"></span>
+              </div>
+              <div>
+                <label for="sw-gpm-idle-close">Đóng trình duyệt sau (phút rảnh)</label>
+                <div style="display:flex;gap:8px;align-items:center;">
+                  <input id="sw-gpm-idle-close" type="number" min="0" value="10" style="width:100px;">
+                  <span class="hint">0 = luôn giữ mở</span>
+                </div>
+              </div>
             </div>
-            <div class="form-group" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-              <label style="margin:0;">Đóng trình duyệt sau (phút rảnh)</label>
-              <input id="sw-gpm-idle-close" type="number" min="0" value="10" style="width:80px">
-              <span style="font-size:12px;color:#718096;">0 = luôn giữ mở</span>
+            <!-- Telegram cấu hình trên web: ẩn ở app nhưng giữ các ô để renderer.js đọc/ghi không lỗi -->
+            <div hidden>
+            <div class="sw-cfg-checks">
+              <label class="sw-cfg-check"><input id="sw-gpm-tg-enabled" type="checkbox"> Bật thông báo Telegram</label>
             </div>
-            <div class="form-group">
-              <label style="display:flex;align-items:center;gap:8px;font-weight:normal;">
-                <input id="sw-gpm-tg-enabled" type="checkbox"> Bật thông báo Telegram
-              </label>
+            <div id="sw-gpm-tg-fields" style="display:none;">
+              <div class="sw-cfg-row">
+                <div>
+                  <label for="sw-gpm-tg-token">Bot token</label>
+                  <input id="sw-gpm-tg-token" type="text" placeholder="Bot token">
+                </div>
+                <div>
+                  <label for="sw-gpm-tg-chat">Chat ID</label>
+                  <input id="sw-gpm-tg-chat" type="text" placeholder="Chat ID">
+                </div>
+              </div>
+              <div class="sw-cfg-inline">
+                <label for="sw-gpm-tg-topic">Topic ID</label>
+                <input id="sw-gpm-tg-topic" type="text" placeholder="Trống = General" title="Group có bật Topics: chuột phải topic → Copy Link rồi dán vào đây.">
+                <button class="btn btn-secondary" id="sw-gpm-tg-test">Gửi thử</button>
+                <span id="sw-gpm-tg-status" style="font-size:12px;"></span>
+              </div>
+              <div class="sw-cfg-checks">
+                <label class="sw-cfg-check"><input id="sw-gpm-tg-photo" type="checkbox"> Mỗi kênh xong: gửi tin có ảnh trang Nội dung</label>
+              </div>
             </div>
-            <div id="sw-gpm-tg-fields" class="form-group" style="display:none;align-items:center;gap:10px;flex-wrap:wrap;">
-              <label style="margin:0;">Telegram</label>
-              <input id="sw-gpm-tg-token" type="text" placeholder="Bot token" style="width:260px">
-              <input id="sw-gpm-tg-chat" type="text" placeholder="Chat ID" style="width:140px">
-              <input id="sw-gpm-tg-topic" type="text" placeholder="Topic ID (trống = General)" style="width:180px"
-                     title="Group có bật Topics: chuột phải topic → Copy Link rồi dán vào đây. Bỏ trống thì gửi vào General như thường.">
-              <button class="btn btn-secondary" id="sw-gpm-tg-test">Gửi thử</button>
-              <span id="sw-gpm-tg-status" style="font-size:13px;"></span>
-              <label style="display:flex;align-items:center;gap:8px;font-weight:normal;margin:0;width:100%;">
-                <input id="sw-gpm-tg-photo" type="checkbox"> Mỗi kênh xong: gửi 1 tin có ảnh trang Nội dung + kết quả của kênh đó
-              </label>
             </div>
           </div>
 
           <h4 class="sw-cfg-group" data-g="gpm">Giám sát trên web</h4>
-          <div class="form-group">
-            <label style="display:flex;align-items:center;gap:8px;font-weight:600;">
-              <input id="sw-monitor-enabled" type="checkbox"> Gửi trạng thái kênh lên web để theo dõi
-            </label>
-            <small class="sw-cfg-hint">Chỉ gửi lên, web không điều khiển được máy này. Mật khẩu proxy và tài khoản Gmail/2FA không bao giờ được gửi.</small>
-            <span id="sw-monitor-status" style="display:block;margin-top:6px;font-size:13px;"></span>
-            <small class="sw-cfg-hint" id="sw-monitor-machine"></small>
+          <div class="sw-cfg-checks" style="margin-bottom:8px;">
+            <label class="sw-cfg-check" style="font-weight:600;"><input id="sw-monitor-enabled" type="checkbox"> Gửi trạng thái kênh lên web để theo dõi</label>
           </div>
+          <p class="sw-cfg-hint">Chỉ gửi lên, web không điều khiển được máy này. Mật khẩu proxy và tài khoản Gmail/2FA không bao giờ được gửi.</p>
+          <span id="sw-monitor-status" style="display:block;font-size:13px;margin-bottom:4px;"></span>
+          <small class="sw-cfg-hint" id="sw-monitor-machine"></small>
         </div>
       </div>
     </div>
@@ -4865,6 +4923,25 @@ label.with-icon::before {
             >
               Xóa dự án
             </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Logout Dialog -->
+    <div id="logoutDialog" class="delete-confirm-dialog">
+      <div class="delete-confirm-content">
+        <div class="delete-confirm-header">
+          <span class="icon">🚪</span>
+          <h3>Xác nhận đăng xuất</h3>
+        </div>
+        <div class="delete-confirm-body">
+          <div class="delete-confirm-message">
+            <strong>Bạn có chắc chắn muốn đăng xuất?</strong>
+          </div>
+          <div class="delete-confirm-actions">
+            <button class="delete-confirm-btn cancel" onclick="closeLogoutDialog()">Hủy</button>
+            <button class="delete-confirm-btn confirm" onclick="confirmLogout()">Đăng xuất</button>
           </div>
         </div>
       </div>

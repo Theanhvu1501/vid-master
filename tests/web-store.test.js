@@ -49,7 +49,7 @@ function disk() {
 function mk(over = {}) {
   const f = fake(over), d = over.disk || disk();
   let t = 1000;
-  const store = createWebStore({ fetchImpl: f.fetchImpl, getBase: () => "http://srv", getToken: () => over.token ?? "APPTOK", disk: d, now: () => (t += 10), getProxyAuth: over.getProxyAuth, onAuthLost: over.onAuthLost });
+  const store = createWebStore({ fetchImpl: f.fetchImpl, getBase: () => "http://srv", getToken: () => over.token ?? "APPTOK", disk: d, now: () => (t += 10), getProfileProxy: over.getProfileProxy, onAuthLost: over.onAuthLost });
   return { store, f, d };
 }
 
@@ -99,20 +99,32 @@ test("chưa đăng nhập (không có token): lỗi 401, không gọi mạng", a
   assert.equal(f.st.calls.length, 0);
 });
 
-// ---------------- mật khẩu proxy ----------------
-test("proxy: truyền host:port hiện tại cho kho mật khẩu; kho từ chối (proxy đã đổi) thì giữ nguyên scheme://host:port", async () => {
+// ---------------- proxy lấy từ GPM profile ----------------
+test("proxy: kênh có GPM profile -> dùng proxy đầy đủ của profile (có user/mật khẩu); web không bao giờ nhận lại mật khẩu", async () => {
   const seen = [];
-  const { store } = mk({ channels: [CH("K1", 11, { proxy: "socks5://5.5.5.5:99" })], getProxyAuth: (n, hp) => { seen.push([n, hp]); return hp === "1.1.1.1:80" ? { user: "u", pass: "p" } : null; } });
+  const { store, f } = mk({ channels: [CH("K1", 11, { proxy: "socks5://1.2.3.4:80", gpmProfileId: "P1" })], getProfileProxy: async (pid) => { seen.push(pid); return "socks5://1.2.3.4:80:bob:p@ss"; } });
   const [c] = await store.readConfigSheet();
-  assert.deepEqual(seen[0], ["K1", "5.5.5.5:99"]);
-  assert.equal(c.proxy, "socks5://5.5.5.5:99");
+  assert.deepEqual(seen, ["P1"]);
+  assert.equal(c.proxy, "socks5://1.2.3.4:80:bob:p@ss");
+  assert.ok(!JSON.stringify(f.st.calls).includes("p@ss"), "mật khẩu không được đi qua mạng");
 });
 
-test("proxy: ghép user/mật khẩu cục bộ vào scheme://host:port; web không bao giờ nhận lại mật khẩu", async () => {
-  const { store, f } = mk({ channels: [CH("K1", 11, { proxy: "socks5://1.2.3.4:80" })], getProxyAuth: (n) => (n === "K1" ? { user: "bob", pass: "p@ss:w/rd" } : null) });
+test("proxy: GPM không trả lời (ném lỗi) -> giữ proxy scheme://host:port của web, không làm hỏng việc đọc cấu hình", async () => {
+  const { store } = mk({ channels: [CH("K1", 11, { proxy: "socks5://1.2.3.4:80", gpmProfileId: "P1" })], getProfileProxy: async () => { throw new Error("ECONNREFUSED"); } });
   const [c] = await store.readConfigSheet();
-  assert.equal(c.proxy, "socks5://bob:p%40ss%3Aw%2Frd@1.2.3.4:80");
-  assert.ok(!JSON.stringify(f.st.calls).includes("p@ss"), "mật khẩu không được đi qua mạng");
+  assert.equal(c.proxy, "socks5://1.2.3.4:80");
+});
+
+test("proxy: profile không có proxy, hoặc kênh chưa gắn profile, hoặc nguồn local -> không hỏi GPM, giữ nguyên proxy của web", async () => {
+  const seen = [];
+  const { store } = mk({ channels: [
+    CH("K1", 11, { proxy: "socks5://1.1.1.1:80", gpmProfileId: "P1" }),
+    CH("K2", 12, { proxy: "socks5://2.2.2.2:80" }),
+    CH("K3", 13, { proxy: "socks5://3.3.3.3:80", gpmProfileId: "P3", videoSource: "local" }),
+  ], getProfileProxy: async (pid) => { seen.push(pid); return null; } });
+  const out = await store.readConfigSheet();
+  assert.deepEqual(out.map((c) => c.proxy), ["socks5://1.1.1.1:80", "socks5://2.2.2.2:80", "socks5://3.3.3.3:80"]);
+  assert.deepEqual(seen, ["P1"], "chỉ kênh có profile và cần tải mới hỏi GPM");
 });
 
 test("listChannelConfigs: lấy từ web, lưu bản sao; mất mạng trả bản đã lưu kèm offline=true", async () => {
@@ -151,15 +163,7 @@ test("updateChannelConfig: mất mạng -> báo lỗi offline (KHÔNG xếp hàn
   await assert.rejects(() => b.store.updateChannelConfig("abc", {}), (e) => e.status === 400);
 });
 
-test("proxy: web đã giao sẵn user/mật khẩu (user:pass@host:port) thì dùng NGUYÊN, không ghép thêm từ kho cục bộ", async () => {
-  const seen = [];
-  const { store } = mk({ channels: [CH("K1", 11, { proxy: "socks5://web:webpw@1.2.3.4:80" })], getProxyAuth: (n, hp) => { seen.push([n, hp]); return { user: "may", pass: "maypw" }; } });
-  const [c] = await store.readConfigSheet();
-  assert.equal(c.proxy, "socks5://web:webpw@1.2.3.4:80");
-  assert.equal(seen.length, 0, "không cần hỏi kho cục bộ");
-});
-
-test("proxy: chưa nhập user/mật khẩu trong app -> giữ nguyên scheme://host:port; kênh không proxy không đổi", async () => {
+test("proxy: không có profile -> giữ nguyên scheme://host:port; kênh không proxy không đổi", async () => {
   const { store } = mk({ channels: [CH("K1", 11, { proxy: "socks5://1.2.3.4:80" }), CH("K2", 12)] });
   const [a, b] = await store.readConfigSheet();
   assert.equal(a.proxy, "socks5://1.2.3.4:80");
@@ -167,7 +171,7 @@ test("proxy: chưa nhập user/mật khẩu trong app -> giữ nguyên scheme://
 });
 
 test("proxy: không sửa đối tượng đã cache (ghép mật khẩu chỉ trên bản sao)", async () => {
-  const { store, d } = mk({ channels: [CH("K1", 11, { proxy: "socks5://1.2.3.4:80" })], getProxyAuth: () => ({ user: "u", pass: "p" }) });
+  const { store, d } = mk({ channels: [CH("K1", 11, { proxy: "socks5://1.2.3.4:80", gpmProfileId: "P1" })], getProfileProxy: async () => "socks5://1.2.3.4:80:u:p" });
   await store.readConfigSheet();
   assert.equal(d.read("channels").channels[0].proxy, "socks5://1.2.3.4:80", "bản lưu trên đĩa không chứa mật khẩu");
 });
@@ -288,7 +292,7 @@ test("setUrlStatus: kênh không có trên web -> ném lỗi (không âm thầm 
 });
 
 test("không gửi gì lên web ngoài trạng thái/URL: mật khẩu proxy không lọt vào thân yêu cầu", async () => {
-  const { store, f } = mk({ channels: [CH("K1", 11, { proxy: "socks5://1.2.3.4:80" })], getProxyAuth: () => ({ user: "u", pass: "SecretPw" }) });
+  const { store, f } = mk({ channels: [CH("K1", 11, { proxy: "socks5://1.2.3.4:80", gpmProfileId: "P1" })], getProfileProxy: async () => "socks5://1.2.3.4:80:u:SecretPw" });
   await store.readConfigSheet(); await store.readChannelUrls("K1");
   await store.setUrlStatus("K1", 101, "done"); await store.flush();
   assert.ok(!JSON.stringify(f.st.calls).includes("SecretPw"));
