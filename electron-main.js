@@ -1952,7 +1952,10 @@ ipcMain.handle("proxy-auth:status", async () => {
       rows: channels.filter((c) => String(c.proxy || "").trim()).map((c) => {
         const hp = hostPortOf(c.proxy);
         const a = lookupAuth(store, c.sheetName);
-        return { name: c.sheetName, hostPort: hp, hasAuth: !!lookupAuth(store, c.sheetName, hp), changed: !!(a && a.hostPort && a.hostPort !== hp), user: a?.user ? a.user.slice(0, 2) + "***" : "" };
+        // Web đã giao sẵn user/mật khẩu (proxy có dạng user:pass@host:port): không cần nhập thêm trên máy
+        const afterScheme = String(c.proxy || "").split("://").pop();
+        const fromWeb = afterScheme.includes("@");
+        return { name: c.sheetName, hostPort: hp, fromWeb, hasAuth: fromWeb || !!lookupAuth(store, c.sheetName, hp), changed: !!(a && a.hostPort && a.hostPort !== hp), user: a?.user ? a.user.slice(0, 2) + "***" : "" };
       }),
     };
   } catch (err) { return { ok: false, error: String(err?.message || err) }; }

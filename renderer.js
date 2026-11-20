@@ -5643,8 +5643,8 @@ async function runConcat() {
     const need = r.rows.filter((x) => !x.hasAuth).length;
     if (st) { st.textContent = r.rows.length ? (need ? `${need}/${r.rows.length} kênh còn thiếu mật khẩu proxy` : `✅ Đủ mật khẩu cho ${r.rows.length} kênh`) : "Chưa có kênh nào dùng proxy"; st.style.color = need ? "#b7791f" : "#1a7f37"; }
     box.innerHTML = r.rows.map((x) => `<div class="sw-proxy-row" data-n="${escapeHtml(x.name)}"><span class="nm" title="${escapeHtml(x.name)}">${escapeHtml(x.name)}</span><span class="hp">${escapeHtml(x.hostPort)}</span>
-      <span class="${x.hasAuth ? "ok" : "no"}">${x.hasAuth ? "✓ " + escapeHtml(x.user) : x.changed ? "proxy đã đổi, nhập lại" : "chưa nhập"}</span>
-      <button class="btn btn-secondary" data-edit="${escapeHtml(x.name)}">${x.hasAuth ? "Sửa" : "Nhập"}</button></div>`).join("");
+      <span class="${x.hasAuth ? "ok" : "no"}">${x.fromWeb ? "✓ lấy từ web" : x.hasAuth ? "✓ " + escapeHtml(x.user) : x.changed ? "proxy đã đổi, nhập lại" : "chưa nhập"}</span>
+      ${x.fromWeb ? "<span></span>" : `<button class="btn btn-secondary" data-edit="${escapeHtml(x.name)}">${x.hasAuth ? "Sửa" : "Nhập"}</button>`}</div>`).join("");
   }
   $("sw-proxy-refresh")?.addEventListener("click", renderProxyAuth);
   $("sw-proxy-list")?.addEventListener("click", (e) => {

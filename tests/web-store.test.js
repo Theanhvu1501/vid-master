@@ -109,6 +109,14 @@ test("proxy: ghép user/mật khẩu cục bộ vào scheme://host:port; web kh�
   assert.ok(!JSON.stringify(f.st.calls).includes("p@ss"), "mật khẩu không được đi qua mạng");
 });
 
+test("proxy: web đã giao sẵn user/mật khẩu (user:pass@host:port) thì dùng NGUYÊN, không ghép thêm từ kho cục bộ", async () => {
+  const seen = [];
+  const { store } = mk({ channels: [CH("K1", 11, { proxy: "socks5://web:webpw@1.2.3.4:80" })], getProxyAuth: (n, hp) => { seen.push([n, hp]); return { user: "may", pass: "maypw" }; } });
+  const [c] = await store.readConfigSheet();
+  assert.equal(c.proxy, "socks5://web:webpw@1.2.3.4:80");
+  assert.equal(seen.length, 0, "không cần hỏi kho cục bộ");
+});
+
 test("proxy: chưa nhập user/mật khẩu trong app -> giữ nguyên scheme://host:port; kênh không proxy không đổi", async () => {
   const { store } = mk({ channels: [CH("K1", 11, { proxy: "socks5://1.2.3.4:80" }), CH("K2", 12)] });
   const [a, b] = await store.readConfigSheet();
