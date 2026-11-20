@@ -202,11 +202,36 @@ export function createWebStore({ fetchImpl = fetch, getBase, getToken, disk, get
     return added;
   }
 
+  // ---------------------------------------------------------------- Cấu hình kênh (màn hình Kênh trong app)
+  // Đọc: lấy từ web, giữ bản sao trên đĩa; mất mạng thì trả bản đã lưu kèm offline=true (giao diện khóa nút sửa).
+  // Ghi: CHỈ khi có mạng. Cố ý không xếp hàng ghi bù: sửa lúc offline rồi gộp sau dễ sinh xung đột khó giải thích với người dùng.
+  async function listChannelConfigs() {
+    load();
+    try {
+      const r = await call("GET", "/api/app/channel-configs");
+      const out = { channels: r.data.channels || [], schema: r.data.schema || null, machineId: r.data.machineId };
+      try { disk.write("cfg", out); } catch { /* không quan trọng */ }
+      return { ok: true, offline: false, ...out };
+    } catch (e) {
+      if (!e.offline) throw e;
+      const c = disk.read("cfg");
+      if (c && Array.isArray(c.channels)) return { ok: true, offline: true, ...c };
+      throw e;
+    }
+  }
+  async function updateChannelConfig(id, body) {
+    load();
+    if (!Number.isInteger(id)) throw new WebStoreError("Kênh không hợp lệ", { status: 400 });
+    const r = await call("PUT", `/api/app/channel-configs/${id}`, body && typeof body === "object" ? body : {});
+    mem.channels = null; mem.revision = ""; // lần đọc cấu hình chạy kế tiếp phải lấy bản mới (không dựa vào ETag cũ)
+    return r.data;
+  }
+
   // Tên kênh -> id trên web (cho chỗ khác trong app cần gọi API)
   const webId = (name) => mem.webIds.get(name) || null;
 
   return {
-    readConfigSheet, readChannelUrls, setUrlStatus, setUploadStatus, appendUrls, flush,
+    readConfigSheet, readChannelUrls, setUrlStatus, setUploadStatus, appendUrls, flush, listChannelConfigs, updateChannelConfig,
     webId, pending: () => { load(); return mem.queue.length; }, isOnline: () => lastOnline,
     // Dùng cho test và chẩn đoán
     _mem: mem,

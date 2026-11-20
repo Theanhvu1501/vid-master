@@ -1934,6 +1934,24 @@ function getSheetRunner(win) {
   return sheetRunner;
 }
 
+// ===== Màn hình Kênh trong app: xem và SỬA cấu hình các kênh của máy này (cùng dữ liệu với web) =====
+// Mọi thay đổi đi qua máy chủ nên web và app không thể lệch nhau. Mất mạng thì chỉ xem, không sửa được.
+ipcMain.handle("channels:list", async () => {
+  try {
+    if (!webConfigured()) return { ok: false, error: "Chưa đăng nhập." };
+    return await webStore().listChannelConfigs();
+  } catch (err) { return { ok: false, offline: !!err?.offline, error: String(err?.message || err) }; }
+});
+ipcMain.handle("channels:update", async (e, { id, body } = {}) => {
+  try {
+    if (!webConfigured()) return { ok: false, error: "Chưa đăng nhập." };
+    return { ok: true, channel: await webStore().updateChannelConfig(Number(id), body) };
+  } catch (err) {
+    // 409: kênh vừa được sửa ở nơi khác; kèm bản mới để giao diện nạp lại
+    return { ok: false, status: err?.status || 0, offline: !!err?.offline, error: String(err?.message || err) };
+  }
+});
+
 // ===== User/mật khẩu proxy của từng kênh: chỉ lưu trên máy này (mã hóa), không bao giờ lên web =====
 // "socks5://user:pass@1.2.3.4:80" -> "1.2.3.4:80"
 function hostPortOf(raw) {

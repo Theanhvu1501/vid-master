@@ -56,6 +56,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
   sheet: {
     testConnection: (s) => ipcRenderer.invoke("sheet:test-connection", s),
+    channelsList: () => ipcRenderer.invoke("channels:list"),
+    channelsUpdate: (id, body) => ipcRenderer.invoke("channels:update", { id, body }),
     proxyAuthStatus: () => ipcRenderer.invoke("proxy-auth:status"),
     proxyAuthSet: (name, user, pass) => ipcRenderer.invoke("proxy-auth:set", { name, user, pass }),
     proxyAuthImport: () => ipcRenderer.invoke("proxy-auth:import"),

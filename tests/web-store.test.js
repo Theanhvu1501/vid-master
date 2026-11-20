@@ -28,6 +28,12 @@ function fake(over = {}) {
       return json(200, { revision: rev, rows: st.rows[m[1]] || [] });
     }
     if (m && init.method === "POST") { const body = JSON.parse(init.body); st.appended.push(...body.urls); return json(200, { added: body.urls.length }); }
+    if (path === "/api/app/channel-configs" && init.method === "GET") return json(200, { machineId: "MID1", channels: st.channels.map((c) => ({ id: c.webId, name: c.sheetName, videosPerDay: c.videosPerDay, version: 3 })), schema: { modes: [], fields: [] } });
+    if (path.startsWith("/api/app/channel-configs/") && init.method === "PUT") {
+      const body = JSON.parse(init.body); st.edits = st.edits || []; st.edits.push({ path, body });
+      if (st.editStatus) return json(st.editStatus, { message: "x", code: st.editStatus === 409 ? "version" : undefined });
+      return json(200, { id: Number(path.split("/").pop()), ...body });
+    }
     if (path === "/api/app/videos/status") {
       if (st.failStatus) return json(st.failStatus, { message: "bận" });
       const body = JSON.parse(init.body); st.statuses.push(...body.updates); return json(200, { applied: body.updates.length, stale: 0, rejected: [] });
@@ -107,6 +113,42 @@ test("proxy: ghép user/mật khẩu cục bộ vào scheme://host:port; web kh�
   const [c] = await store.readConfigSheet();
   assert.equal(c.proxy, "socks5://bob:p%40ss%3Aw%2Frd@1.2.3.4:80");
   assert.ok(!JSON.stringify(f.st.calls).includes("p@ss"), "mật khẩu không được đi qua mạng");
+});
+
+test("listChannelConfigs: lấy từ web, lưu bản sao; mất mạng trả bản đã lưu kèm offline=true", async () => {
+  const dk = disk();
+  const a = mk({ disk: dk });
+  const r1 = await a.store.listChannelConfigs();
+  assert.equal(r1.offline, false); assert.deepEqual(r1.channels.map((c) => c.name), ["K1", "K2"]); assert.ok(r1.schema);
+  const b = mk({ disk: dk }); b.f.st.online = false;
+  const r2 = await b.store.listChannelConfigs();
+  assert.equal(r2.offline, true, "mất mạng: dùng bản đã lưu và báo offline để giao diện khóa nút sửa");
+  assert.equal(r2.channels.length, 2);
+});
+
+test("listChannelConfigs: mất mạng và CHƯA có bản lưu -> ném lỗi (không giả vờ rỗng)", async () => {
+  const { store, f } = mk(); f.st.online = false;
+  await assert.rejects(() => store.listChannelConfigs(), (e) => e.offline === true);
+});
+
+test("updateChannelConfig: gửi PUT lên web, kèm phiên bản; sau đó lần đọc cấu hình chạy kế tiếp KHÔNG dùng ETag cũ", async () => {
+  const { store, f } = mk(); await store.readConfigSheet();
+  const r = await store.updateChannelConfig(11, { videosPerDay: 5, version: 3 });
+  assert.equal(r.videosPerDay, 5);
+  const put = f.st.edits[0];
+  assert.equal(put.path, "/api/app/channel-configs/11"); assert.deepEqual(put.body, { videosPerDay: 5, version: 3 });
+  await store.readConfigSheet();
+  const last = f.st.calls.filter((c) => c.path === "/api/app/channels").at(-1);
+  assert.equal(last.headers["If-None-Match"], undefined, "đã sửa nên phải lấy lại bản mới");
+});
+
+test("updateChannelConfig: mất mạng -> báo lỗi offline (KHÔNG xếp hàng ghi bù); 409 phiên bản -> báo lỗi có status", async () => {
+  const a = mk(); await a.store.readConfigSheet(); a.f.st.online = false;
+  await assert.rejects(() => a.store.updateChannelConfig(11, { videosPerDay: 1 }), (e) => e.offline === true);
+  assert.equal(a.store.pending(), 0, "không có gì bị xếp hàng để ghi bù");
+  const b = mk(); await b.store.readConfigSheet(); b.f.st.editStatus = 409;
+  await assert.rejects(() => b.store.updateChannelConfig(11, { videosPerDay: 1 }), (e) => e.status === 409);
+  await assert.rejects(() => b.store.updateChannelConfig("abc", {}), (e) => e.status === 400);
 });
 
 test("proxy: web đã giao sẵn user/mật khẩu (user:pass@host:port) thì dùng NGUYÊN, không ghép thêm từ kho cục bộ", async () => {

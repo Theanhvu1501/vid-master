@@ -5000,25 +5000,33 @@ async function runConcat() {
     pill.style.display = "none";
     const quota = document.createElement("span");
     quota.className = "sw-quota";
+    const edit = document.createElement("button");
+    edit.className = "sw-icon-btn";
+    edit.textContent = "✎";
+    edit.title = "Sửa cấu hình kênh";
+    edit.setAttribute("aria-label", "Sửa cấu hình kênh " + c.name);
     const caret = document.createElement("button");
     caret.className = "sw-caret";
     caret.textContent = "▾";
     caret.title = "Xem video của kênh";
-    top.append(dot, name, pill, plug, quota, caret);
+    top.append(dot, name, pill, edit, plug, quota, caret);
 
     const stats = document.createElement("div");
     stats.className = "sw-stats";
     const updated = document.createElement("div");
     updated.className = "sw-updated";
+    const xinfo = document.createElement("div");
+    xinfo.className = "sw-xinfo";
     const activity = document.createElement("div");
     activity.className = "sw-activity";
     const body = document.createElement("div");
     body.className = "sw-card-body";
     body.style.display = "none";
 
-    card.append(top, stats, updated, activity, body);
+    card.append(top, stats, updated, xinfo, activity, body);
 
     plug.addEventListener("click", () => connectOne(c));
+    edit.addEventListener("click", () => window.ChannelConfigUI?.open(c.name));
     caret.addEventListener("click", () => {
       c.open = !c.open;
       caret.textContent = c.open ? "▴" : "▾";
@@ -5026,7 +5034,7 @@ async function runConcat() {
       if (c.open) refreshPending(c, true); // mở card = lúc cần danh sách chờ đăng nhất
     });
 
-    c.el = { card, dot, name, pill, plug, quota, stats, updated, activity, body };
+    c.el = { card, dot, name, pill, plug, quota, stats, updated, xinfo, activity, body };
     return card;
   }
 
@@ -5349,6 +5357,23 @@ async function runConcat() {
     // Số liệu đọc từ ⚙config có thể đã cũ — nói rõ nó cũ tới đâu.
     updated.textContent = s?.updatedAt && !s.error ? `cập nhật lúc ${s.updatedAt}` : "";
 
+    // Ngày còn hạn của proxy và số video đã đăng (lấy từ cấu hình trên web, nạp ở lần mở tab hoặc sau khi sửa)
+    const wc = window.ChannelConfigUI?.get(c.name);
+    c.el.xinfo.replaceChildren();
+    if (wc) {
+      const posted = document.createElement("span");
+      posted.textContent = `đã đăng ${wc.videoStats?.posted ?? 0}/${wc.videoStats?.total ?? 0} video`;
+      c.el.xinfo.append(posted);
+      if (wc.proxy) {
+        const px = document.createElement("span");
+        const d = wc.proxyDaysLeft;
+        px.className = d == null ? "" : d <= 3 ? "px-bad" : d <= 7 ? "px-warn" : "px-ok";
+        px.textContent = " · " + window.ChannelConfigUI.proxyLine(wc);
+        c.el.xinfo.append(px);
+      }
+      if (wc.warnings?.length) { const w = document.createElement("span"); w.className = "px-warn"; w.textContent = ` · ⚠ ${wc.warnings.length} cảnh báo`; w.title = wc.warnings.map((x) => x.message).join(String.fromCharCode(10)); c.el.xinfo.append(w); }
+    }
+
     activity.textContent = act.text;
     activity.classList.toggle("err", act.err);
     activity.title = act.text;
@@ -5391,7 +5416,7 @@ async function runConcat() {
     try {
       const r = await api.gpmListChannels();
       if (!r?.ok) { setEmpty("Chưa tải được danh sách kênh."); setBanner(`❌ ${r?.error || "lỗi"}`, "error"); return; }
-      if (!r.channels.length) { setEmpty("Sheet ⚙config chưa có kênh nào."); loaded = true; return; }
+      if (!r.channels.length) { setEmpty("Chưa có kênh nào được gán cho máy này. Vào trang web để thêm kênh và gán máy."); loaded = true; return; }
       // Gộp, KHÔNG xoá: runner có thể đã chạy (autoRunOnOpen) và tạo card từ sự kiện
       // trước khi người dùng mở tab. Xoá sạch ở đây sẽ nuốt mất video đang chạy.
       grid.querySelector(".sw-empty")?.remove();
@@ -5415,6 +5440,12 @@ async function runConcat() {
       probeGpm(); // ngầm, không chặn: card hiện số liệu trước, chấm GPM sáng sau.
       // Chạy nền: 13 tab Sheet, mỗi tab một lượt đọc. Không chặn việc hiện card.
       refreshAllPending();
+      // Cấu hình đầy đủ từ web (hạn proxy, số video đã đăng, cảnh báo) để hiện trên thẻ; sửa xong thì thẻ tự cập nhật.
+      window.ChannelConfigUI?.load().then(() => renderAll()).catch(() => {});
+      if (!window.__ccuHooked && window.ChannelConfigUI) {
+        window.__ccuHooked = true;
+        window.ChannelConfigUI.onChange(() => { window.ChannelConfigUI.load().then(() => { renderAll(); loaded = false; loadChannelsOnce(); }).catch(() => {}); });
+      }
     } catch (err) {
       setEmpty("Chưa tải được danh sách kênh.");
       setBanner(`❌ Lỗi khi tải danh sách kênh: ${err.message}`, "error");
