@@ -139,6 +139,29 @@ export function channelResultEvent(task, profile, r) {
   return { level: "error", kind: "task", channel: name, profileId, message: `${label}: ${name} lỗi · ${scrubText(msgText || "không rõ", 160)}` };
 }
 
+/** Các mẻ chứa ít nhất một profile của tác vụ (theo GPM Profile ID), không lặp, giữ thứ tự gặp. Đầu vào rác trả mảng rỗng. */
+export function batchesOfProfiles(batches, profiles) {
+  if (!Array.isArray(batches) || !Array.isArray(profiles)) return [];
+  const ids = new Set(profiles.map((p) => (p && p.id != null ? String(p.id) : "")).filter(Boolean));
+  if (!ids.size) return [];
+  const out = [];
+  for (const p of profiles) {
+    const id = p && p.id != null ? String(p.id) : "";
+    const b = id ? batches.find((x) => x && Array.isArray(x.channels) && x.channels.some((c) => c && String(c.gpmProfileId) === id)) : null;
+    if (b && !out.includes(b)) out.push(b);
+  }
+  return out;
+}
+
+/** Nhãn tác vụ kèm tên mẻ để web biết mẻ nào đang chạy. Server giới hạn nhãn 60 ký tự nên cắt ở đây. */
+export function batchTaskLabel(label, batches) {
+  const names = (Array.isArray(batches) ? batches : []).map((b) => String(b?.name ?? "").replace(/\s+/g, " ").trim()).filter(Boolean).map((n) => (n.length > 24 ? n.slice(0, 23) + "…" : n));
+  if (!names.length) return label;
+  const shown = names.slice(0, 3).join(", ") + (names.length > 3 ? ` +${names.length - 3} mẻ` : "");
+  const full = `${label} · ${shown}`;
+  return full.length > 60 ? full.slice(0, 59) + "…" : full;
+}
+
 /**
  * Bộ theo dõi các tác vụ đang chạy. Một máy có thể chạy nhiều tác vụ cùng lúc (render thủ công + tải video...),
  * nên giữ một danh sách; mỗi tác vụ có id riêng.
@@ -151,9 +174,9 @@ export function createTaskTracker({ emit, now = () => Date.now(), maxFinished = 
   const snapshot = () => [...active.values()].map((t) => ({ id: t.id, key: t.key, label: t.label, startedAt: t.startedAt, done: t.done, total: t.total, channel: t.channel || null }));
 
   return {
-    start(key, { total = null } = {}) {
+    start(key, { total = null, label = null } = {}) {
       const id = `${key}#${++seq}`;
-      const t = { id, key, label: taskLabel(key), startedAt: now(), done: 0, total: Number.isFinite(total) ? total : null, channel: null };
+      const t = { id, key, label: label ? String(label).slice(0, 60) : taskLabel(key), startedAt: now(), done: 0, total: Number.isFinite(total) ? total : null, channel: null };
       active.set(id, t);
       send({ type: "task", phase: "start", id, key, label: t.label, startedAt: t.startedAt, total: t.total });
       return id;

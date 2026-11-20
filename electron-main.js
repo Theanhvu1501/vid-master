@@ -20,7 +20,7 @@ import { runLogin, runChangeThumb, runSchedule, stopAutomation, resetCancel, for
 import { runDistribute, buildPlan, listVideos } from "./sheet/distribute.js";
 import { runProxyCheck, maskProxy, checkProxy, toGpmProxy } from "./sheet/proxy-tools.js";
 import { createMonitorAgent, createProxyHealth, buildSnapshot, proxyIdentity, toHttpBase, DEFAULT_SERVER_URL } from "./sheet/monitor-agent.js";
-import { createTaskTracker, channelResultEvent, isTrackedTask, lastMeaningfulLine } from "./sheet/task-monitor.js";
+import { createTaskTracker, channelResultEvent, isTrackedTask, lastMeaningfulLine, batchesOfProfiles, batchTaskLabel, taskLabel } from "./sheet/task-monitor.js";
 import { readLoginAccounts, readChannelPlans, attachProfileData, countNames } from "./sheet/excel-import.js";
 import { resolveThumbRun, resolveScheduleRun } from "./sheet/run-options.js";
 import { runCreateChannel, createChannelOne } from "./sheet/create-channel.js";
@@ -1965,6 +1965,33 @@ ipcMain.handle("channels:videos", async (e, { sheetName } = {}) => {
     return { ok: true, rows: await webUrls(name) };
   } catch (err) { return { ok: false, offline: !!err?.offline, error: String(err?.message || err) }; }
 });
+// ----- App là nơi SỬA cấu hình: tạo/xóa kênh Auto, nhập Excel, quản lý mẻ. Server giữ dữ liệu, web chỉ xem. -----
+const cfgFail = (err) => ({ ok: false, status: err?.status || 0, code: err?.code || "", offline: !!err?.offline, error: String(err?.message || err) });
+const cfgCall = (fn) => async (e, args = {}) => {
+  try {
+    if (!webConfigured()) return { ok: false, error: "Chưa đăng nhập." };
+    return { ok: true, ...(await fn(args)) };
+  } catch (err) { return cfgFail(err); }
+};
+ipcMain.handle("channels:create", cfgCall(async ({ body }) => ({ channel: await webStore().createChannelConfig(body) })));
+ipcMain.handle("channels:delete", cfgCall(async ({ id }) => { await webStore().deleteChannelConfig(Number(id)); return {}; }));
+// Chọn file Excel rồi gửi lên server xem trước/áp dụng. Server cắt cột tài khoản và user/mật khẩu proxy trước khi xử lý.
+ipcMain.handle("channels:import-pick", async () => {
+  try {
+    const r = await dialog.showOpenDialog(mainWindow, { title: "Chọn file Excel cấu hình kênh", properties: ["openFile"], filters: [{ name: "Excel", extensions: ["xlsx", "xls", "csv"] }] });
+    if (r.canceled || !r.filePaths?.[0]) return { ok: false, canceled: true };
+    const { readSheetRows } = await import("./sheet/excel-import.js");
+    return { ok: true, file: r.filePaths[0], rows: readSheetRows(r.filePaths[0]) };
+  } catch (err) { return { ok: false, error: "Không đọc được file: " + String(err?.message || err) }; }
+});
+ipcMain.handle("channels:import", cfgCall(async ({ rows, apply, removeMissing }) => ({ plan: await webStore().importChannelConfigs(rows, { apply: !!apply, removeMissing: !!removeMissing }) })));
+ipcMain.handle("batches:list", async () => { try { if (!webConfigured()) return { ok: false, error: "Chưa đăng nhập." }; return await webStore().listBatches(); } catch (err) { return cfgFail(err); } });
+ipcMain.handle("batches:create", cfgCall(async ({ body }) => ({ batch: await webStore().createBatch(body) })));
+ipcMain.handle("batches:update", cfgCall(async ({ id, body }) => ({ batch: await webStore().updateBatch(Number(id), body) })));
+ipcMain.handle("batches:delete", cfgCall(async ({ id }) => { await webStore().deleteBatch(Number(id)); return {}; }));
+ipcMain.handle("batches:add-channel", cfgCall(async ({ id, gpmProfileId, name }) => ({ batch: await webStore().addBatchChannel(Number(id), { gpmProfileId, name }) })));
+ipcMain.handle("batches:remove-channel", cfgCall(async ({ id, gpmProfileId }) => ({ batch: await webStore().removeBatchChannel(Number(id), gpmProfileId) })));
+
 ipcMain.handle("channels:update", async (e, { id, body } = {}) => {
   try {
     if (!webConfigured()) return { ok: false, error: "Chưa đăng nhập." };
@@ -2243,6 +2270,17 @@ const gpmHostOf = (h) => (h || "").trim() || "127.0.0.1:19995";
 // Chặn chạy chồng: hai tác vụ cùng mở/đóng profile GPM sẽ đá nhau; và Theo dõi Sheet đang chạy
 // thì đóng profile của nó giữa chừng upload.
 let automationBusy = null;
+// Mẻ của máy này (bản đã lưu trên đĩa nếu mất mạng). Dùng để gắn tên mẻ vào tác vụ: web hiện "Lên lịch đăng · Mẻ A".
+// Lỗi ở đây không bao giờ được làm hỏng tác vụ thật: không biết mẻ thì dùng nhãn thường.
+async function batchLabelFor(key, profiles) {
+  const base = taskLabel(key);
+  try {
+    if (!webConfigured() || !Array.isArray(profiles) || !profiles.length) return { label: base, batches: [] };
+    const r = await webStore().listBatches();
+    const hit = batchesOfProfiles(r.batches, profiles);
+    return { label: batchTaskLabel(base, hit), batches: hit };
+  } catch { return { label: base, batches: [] }; }
+}
 function guardedHandler(channel, run) {
   ipcMain.handle(channel, async (e, opts = {}) => {
     try {
@@ -2256,7 +2294,8 @@ function guardedHandler(channel, run) {
       // Đăng nhập kênh, tạo channel, tự động hóa theo Sheet làm TRỰC TIẾP trong app và KHÔNG báo lên web
       // (chúng dùng tài khoản/mật khẩu). Xem UNTRACKED_TASKS trong sheet/task-monitor.js.
       const tracked = isTrackedTask(channel);
-      const taskId = tracked ? taskTracker.start(channel, { total: Array.isArray(opts.profiles) ? opts.profiles.length : null }) : null;
+      const taskLbl = tracked ? await batchLabelFor(channel, opts.profiles) : null;
+      const taskId = tracked ? taskTracker.start(channel, { total: Array.isArray(opts.profiles) ? opts.profiles.length : null, label: taskLbl.label }) : null;
       const userOnResult = opts.onResult;
       const onResult = tracked
         ? async (p, r) => {

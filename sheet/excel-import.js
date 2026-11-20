@@ -13,6 +13,11 @@ function readRows(file) {
   return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: "" });
 }
 
+/** Đọc bảng thô của sheet đầu tiên (mảng các dòng, mỗi dòng là mảng ô dạng chuỗi) để gửi cho server nhận diện cột. */
+export function readSheetRows(file) {
+  return readRows(file).map((r) => (Array.isArray(r) ? r.map((c) => String(c ?? "")) : []));
+}
+
 // File đăng nhập: A=Profile ID hoặc tên profile, B=Gmail, C=mật khẩu, D=mail khôi phục, E=mã 2FA (secret).
 // Dòng nào cột B không có "@" (vd. dòng tiêu đề, dòng chưa điền tài khoản) thì bỏ qua.
 export function readLoginAccounts(file) {

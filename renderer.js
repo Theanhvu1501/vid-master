@@ -2046,8 +2046,18 @@ document.addEventListener("DOMContentLoaded", async () => {
       const tabEl = document.getElementById(tabId);
       if (tabEl) tabEl.classList.add("active");
       if (tabId === "channel-stats") openChannelStats();
+      if (tabId === "batches") openBatches();
     });
   });
+
+  // Tab "Mẻ": dựng một lần khi mở lần đầu, các lần sau nạp lại
+  let batchView = null;
+  function openBatches() {
+    const root = document.getElementById("bt-root");
+    if (!root || !window.BatchUI) return;
+    if (!batchView) batchView = window.BatchUI.mount(root);
+    else batchView.reload();
+  }
 
   // Tab "Thống kê kênh": dựng một lần khi mở lần đầu, các lần sau nạp lại số liệu
   let channelStatsView = null;
@@ -5593,7 +5603,7 @@ async function runConcat() {
       dropMissing(r.channels.map((x) => x.sheetName));
       if (!r.channels.length) {
         selectedName = null; renderSide(true);
-        if (!channels.size) setEmpty("Chưa có kênh nào được gán cho máy này. Vào trang web để thêm kênh và gán máy.");
+        if (!channels.size) setEmpty("Máy này chưa có kênh nào. Bấm “＋ Thêm kênh” hoặc “📥 Nhập Excel” ở trên để thêm.");
         loaded = true; return;
       }
       // Gộp, KHÔNG xoá: runner có thể đã chạy (autoRunOnOpen) và tạo card từ sự kiện
@@ -5696,7 +5706,11 @@ async function runConcat() {
   setInterval(() => syncFromWeb(), 120000);
   window.addEventListener("focus", () => syncFromWeb());
 
-  // Nút "Tải lại": nạp ngay cấu hình từ web, không phụ thuộc socket. Dùng khi nghi app chưa ăn theo.
+  // Thêm kênh / Nhập Excel: app là nơi tạo kênh Auto (server lưu, web chỉ xem). Xong thì danh sách tự nạp lại qua ChannelConfigUI.onChange.
+  $("sw-add-channel")?.addEventListener("click", () => window.ChannelConfigUI?.openCreate());
+  $("sw-import-channels")?.addEventListener("click", () => window.ChannelConfigUI?.openImport());
+
+  // Nút "Tải lại": nạp ngay cấu hình từ server, không phụ thuộc socket. Dùng khi nghi app chưa ăn theo.
   const reloadBtn = $("sw-reload-web");
   reloadBtn?.addEventListener("click", async () => {
     if (reloadBtn.disabled) return;

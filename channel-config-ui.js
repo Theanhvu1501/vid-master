@@ -1,7 +1,7 @@
-/* Sửa cấu hình kênh ngay trong app (cùng dữ liệu với web). Mọi thay đổi đi qua máy chủ: web và app không thể lệch nhau.
+/* Tạo / sửa / xóa cấu hình kênh Auto ngay trong app. Server giữ dữ liệu, web chỉ xem (app > server > web).
  *
  * - Form được dựng từ ĐỊNH NGHĨA TRƯỜNG do máy chủ gửi kèm, nên app không giữ bản sao danh sách trường (không bao giờ lệch với web).
- * - Chỉ sửa kênh của máy này. Không tạo/xóa kênh, không đổi tên hay đổi máy (làm ở web).
+ * - Chỉ làm việc với kênh của máy này. Tên kênh đặt lúc tạo, không đổi sau đó (tên là tên thư mục trên máy).
  * - Mất mạng: xem được bản đã lưu nhưng khóa nút Lưu. Hai nơi sửa cùng lúc: máy chủ trả 409, app nạp lại bản mới.
  * - Giao diện chỉ dùng textContent / value (không nội suy HTML) vì mọi chuỗi đều đến từ máy chủ.
  *
@@ -128,8 +128,9 @@
       return g;
     };
 
+    const creating = !!opts.create;
     const body = el("div", { class: "ccu-body" });
-    const form = el("form", { id: "ccu-form", autocomplete: "off", novalidate: true });
+    const form = el("form", { autocomplete: "off", novalidate: true });
     const foot = el("div", { class: "ccu-foot" });
 
     // đầu: tên + thống kê + cảnh báo
@@ -146,6 +147,11 @@
 
     const core = (k) => fieldByKey(k);
     const row = (...fs) => el("div", { class: "ccu-row" }, fs.map((f) => group(core(f), false)));
+    let nameInput = null;
+    if (creating) {
+      nameInput = el("input", { id: "ccu-name", type: "text", autocomplete: "off", maxlength: "60", placeholder: "vd: LOFI_01 (cũng là tên thư mục trên máy)", value: c.name || "" });
+      form.append(el("div", { class: "ccu-group" }, el("label", { for: "ccu-name", text: "Tên kênh *" }), nameInput, el("div", { class: "ccu-help", text: "Không đổi được sau khi tạo. Không chứa \\ / : * ? \" < > |" })));
+    }
     form.append(
       row("enabled", "uploadEnabled"), row("videosPerDay", "videoSource"), group(core("sourceHandle"), false), group(core("postTimes"), false),
     );
@@ -296,12 +302,13 @@
     };
     form.append(group(core("renderMode"), false), modeBox);
     drawMode();
-    form.append(el("div", { class: "ccu-note", text: "Tên kênh, máy chạy và việc tạo hoặc xóa kênh làm ở trang web. Telegram đã cấu hình trên web." }));
+    form.append(el("div", { class: "ccu-note", text: creating ? "Kênh được tạo cho máy này. Một GPM Profile chỉ dùng cho một kênh hoặc một mẻ." : "Cấu hình kênh chỉ sửa trong app; web chỉ để theo dõi." }));
 
     const msg = el("div", { class: "ccu-msg", role: "alert", "aria-live": "polite" });
-    const save = el("button", { class: "btn btn-primary", type: "submit", form: "ccu-form", id: "ccu-save", text: "Lưu thay đổi" });
+    const save = el("button", { class: "btn btn-primary", type: "button", id: "ccu-save", text: creating ? "Tạo kênh" : "Lưu thay đổi", onclick: () => form.requestSubmit() });
+    const delBtn = !creating && !st.offline ? el("button", { class: "btn btn-secondary", type: "button", id: "ccu-delete", text: "Xóa kênh", onclick: async () => { const r = await removeChannel(c); if (r && !r.ok && !r.canceled) { msg.className = "ccu-msg err"; msg.textContent = r.error || "Không xóa được"; } } }) : null;
     if (st.offline) { save.disabled = true; save.title = "Mất kết nối tới máy chủ"; }
-    foot.append(msg, el("button", { class: "btn btn-secondary", type: "button", onclick: close, text: "Đóng" }), save);
+    foot.append(msg, ...(delBtn ? [delBtn] : []), el("button", { class: "btn btn-secondary", type: "button", onclick: close, text: "Đóng" }), save);
     m.firstChild.append(foot);
     const rerender = (nc) => render(nc, opts);
 
@@ -317,6 +324,7 @@
       const keep = new Set([...schema.coreKeys, ...schema.fields.filter((f) => f.section === "mode" && f.modes.includes(mode())).map((f) => f.key)]);
       for (const k of Object.keys(out)) if (!keep.has(k)) delete out[k];
       delete out.name; if (mode() !== "composer") delete out.presetName;
+      if (creating) out.name = (nameInput.value || "").trim();
       // Proxy: web chỉ nhận địa chỉ (scheme://host:port). Nếu người dùng gõ proxy đầy đủ có user/mật khẩu thì ghi vào
       // GPM profile trên máy này (main process), phần gửi lên web đã bị cắt user/mật khẩu.
       const typedProxy = String(out.proxy || "").trim();
@@ -326,8 +334,8 @@
         const hasAuth = /@|^[^/]+:\d+:[^:]+:/.test(typedProxy.replace(/^[a-z0-9]+:\/\//i, ""));
         if (hasAuth) gpmWrite = typedProxy;
       }
-      out.version = c.version;
-      save.disabled = true; save.textContent = "Đang lưu…"; msg.textContent = ""; msg.className = "ccu-msg";
+      if (!creating) out.version = c.version;
+      save.disabled = true; save.textContent = creating ? "Đang tạo…" : "Đang lưu…"; msg.textContent = ""; msg.className = "ccu-msg";
       if (gpmWrite) {
         const pid = String(out.gpmProfileId || raw.gpmProfileId || "").trim();
         if (!pid) { save.disabled = false; save.textContent = "Lưu thay đổi"; msg.className = "ccu-msg err"; msg.textContent = "Chọn GPM Profile trước khi nhập proxy có user/mật khẩu (proxy được lưu vào profile)."; return; }
@@ -335,7 +343,10 @@
         if (!w || !w.ok) { save.disabled = false; save.textContent = "Lưu thay đổi"; msg.className = "ccu-msg err"; msg.textContent = "Không ghi được proxy vào GPM: " + ((w && w.error) || "lỗi"); return; }
         out.proxy = w.addr; // chỉ scheme://host:port
       }
-      const r = await api().channelsUpdate(c.id, out).catch((er) => ({ ok: false, error: er.message }));
+      const r = creating
+        ? await api().channelsCreate(out).catch((er) => ({ ok: false, error: er.message }))
+        : await api().channelsUpdate(c.id, out).catch((er) => ({ ok: false, error: er.message }));
+      if (r && r.ok && creating) { close(); await load(); listeners.forEach((cb) => { try { cb(r.channel); } catch { /* ignore */ } }); return; }
       if (r && r.ok) {
         msg.textContent = "Đã lưu"; msg.className = "ccu-msg ok";
         listeners.forEach((cb) => { try { cb(r.channel); } catch { /* ignore */ } });
@@ -344,9 +355,10 @@
         if (nc) { rerender(nc); const s2 = m.querySelector(".ccu-msg"); if (s2) { s2.textContent = "Đã lưu"; s2.className = "ccu-msg ok"; } }
         return;
       }
-      save.disabled = false; save.textContent = "Lưu thay đổi";
+      save.disabled = false; save.textContent = creating ? "Tạo kênh" : "Lưu thay đổi";
       msg.className = "ccu-msg err";
-      if (r && r.status === 409) {
+      if (r && r.status === 409 && (creating || r.code)) { msg.textContent = r.error || "Trùng tên hoặc GPM Profile"; }
+      else if (r && r.status === 409) {
         msg.textContent = "Kênh vừa được sửa ở nơi khác (web hoặc máy khác). Đã nạp lại bản mới, hãy kiểm tra rồi sửa tiếp.";
         const again = await load(); const nc = again.ok && st.byName.get(c.name);
         if (nc) { rerender(nc); const s2 = m.querySelector(".ccu-msg"); if (s2) { s2.textContent = "Kênh vừa được sửa ở nơi khác. Đã nạp lại bản mới."; s2.className = "ccu-msg err"; } }
@@ -355,6 +367,53 @@
       } else msg.textContent = (r && r.error) || "Không lưu được";
     });
     setTimeout(() => { const f = $("ccu-videosPerDay") || form.querySelector("input,select"); if (f) f.focus(); }, 50);
+  }
+
+  // ---------------------------------------------------------------- tạo kênh mới
+  // Dùng lại đúng form sửa với một bản ghi rỗng: có thêm ô Tên kênh; Lưu = tạo mới.
+  async function openCreate(defaults = {}) {
+    const m = ensureModal();
+    m.replaceChildren(el("div", { class: "ccu-card" }, head("Thêm kênh"), el("div", { class: "ccu-body", text: "Đang tải…" }))); m.classList.add("active");
+    const r = await load();
+    if (!r || !r.ok) { m.replaceChildren(el("div", { class: "ccu-card" }, head("Thêm kênh"), el("div", { class: "ccu-body" }, el("p", { class: "ccu-err", text: (r && r.error) || "Không tải được" })), el("div", { class: "ccu-foot" }, el("button", { class: "btn btn-secondary", type: "button", onclick: close, text: "Đóng" })))); return; }
+    const blank = { id: 0, name: "", enabled: true, uploadEnabled: true, videosPerDay: 1, renderMode: "topTransparent", videoSource: "download", sourceHandle: "", channelUrl: "", postTimes: "", gpmProfileId: "", proxy: "", monetized: false, presetName: "", params: {}, version: 0, warnings: [], ...defaults };
+    render(blank, { create: true });
+  }
+  async function removeChannel(c) {
+    if (!(await window.appConfirm({ title: "Xóa kênh?", message: "Xóa kênh “" + c.name + "” khỏi hệ thống?", detail: "Danh sách video của kênh cũng bị xóa. Không hoàn tác được.", confirmText: "Xóa kênh" }))) return { ok: false, canceled: true };
+    const r = await api().channelsDelete(c.id).catch((e) => ({ ok: false, error: e.message }));
+    if (r && r.ok) { close(); listeners.forEach((cb) => { try { cb(null); } catch { /* ignore */ } }); }
+    return r;
+  }
+
+  // ---------------------------------------------------------------- nhập Excel (xem trước rồi mới ghi)
+  async function openImport() {
+    const pick = await api().channelsImportPick().catch((e) => ({ ok: false, error: e.message }));
+    if (!pick || pick.canceled) return;
+    const m = ensureModal(); m.classList.add("active");
+    const done = () => { close(); load().then(() => listeners.forEach((cb) => { try { cb(null); } catch { /* ignore */ } })); };
+    const fail = (msg) => m.replaceChildren(el("div", { class: "ccu-card" }, head("Nhập từ Excel"), el("div", { class: "ccu-body" }, el("p", { class: "ccu-err", text: msg })), el("div", { class: "ccu-foot" }, el("button", { class: "btn btn-secondary", type: "button", onclick: close, text: "Đóng" }))));
+    if (!pick.ok) return fail(pick.error || "Không đọc được file");
+    m.replaceChildren(el("div", { class: "ccu-card" }, head("Nhập từ Excel"), el("div", { class: "ccu-body", text: "Đang kiểm tra file…" })));
+    const pv = await api().channelsImport(pick.rows, { apply: false }).catch((e) => ({ ok: false, error: e.message }));
+    if (!pv || !pv.ok) return fail((pv && pv.error) || "Không kiểm tra được file");
+    const plan = pv.plan, sm = plan.summary;
+    const body = el("div", { class: "ccu-body" });
+    body.append(el("div", { class: "ccu-note", text: pick.file.split(/[\/]/).pop() + ": " + sm.create + " kênh mới, " + sm.update + " cập nhật, " + sm.unchanged + " không đổi, " + sm.skip + " bỏ qua, " + sm.error + " lỗi." }));
+    if (plan.sanitized && plan.sanitized.droppedColumns && plan.sanitized.droppedColumns.length) body.append(el("div", { class: "ccu-note warn", text: "Đã bỏ cột chứa tài khoản/mật khẩu: " + plan.sanitized.droppedColumns.join(", ") + " (không bao giờ lưu lên server)." }));
+    if (plan.sanitized && plan.sanitized.proxyCredentialsFound) body.append(el("div", { class: "ccu-note warn", text: "Đã cắt user/mật khẩu proxy ở " + plan.sanitized.proxyCredentialsFound + " dòng, chỉ giữ ip:port." }));
+    const bad = (plan.items || []).filter((i) => i.action === "error");
+    if (bad.length) body.append(el("ul", { class: "ccu-err" }, bad.slice(0, 12).map((i) => el("li", { text: "Dòng " + i.rowNo + " (" + (i.name || "?") + "): " + (i.errors || []).join("; ") }))));
+    const msg = el("div", { class: "ccu-msg", role: "alert" });
+    const can = sm.create + sm.update > 0;
+    const go = el("button", { class: "btn btn-primary", type: "button", text: can ? "Nhập " + (sm.create + sm.update) + " kênh" : "Không có gì để nhập", disabled: !can });
+    go.addEventListener("click", async () => {
+      go.disabled = true; go.textContent = "Đang nhập…";
+      const r = await api().channelsImport(pick.rows, { apply: true }).catch((e) => ({ ok: false, error: e.message }));
+      if (r && r.ok) { done(); return; }
+      go.disabled = false; go.textContent = "Thử lại"; msg.className = "ccu-msg err"; msg.textContent = (r && r.error) || "Không nhập được";
+    });
+    m.replaceChildren(el("div", { class: "ccu-card" }, head("Nhập từ Excel", "Xem trước, chưa ghi gì"), body, el("div", { class: "ccu-foot" }, msg, el("button", { class: "btn btn-secondary", type: "button", onclick: close, text: "Hủy" }), go)));
   }
 
   function proxyLine(c) {
@@ -372,7 +431,7 @@
     render(c, { host }); return true;
   }
   window.ChannelConfigUI = {
-    open, load, close, mount,
+    open, load, close, mount, openCreate, openImport,
     get: (name) => st.byName.get(name) || null,
     isOffline: () => st.offline,
     onChange(cb) { listeners.add(cb); return () => listeners.delete(cb); },
