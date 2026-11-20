@@ -11,7 +11,7 @@ import path from "path";
 import pLimit from "p-limit";
 import XLSX from "xlsx";
 import { connectProfile, closeProfile } from "./gpm-client.js";
-import { splitPostTimes, toStudioTime } from "./schedule-slots.js";
+import { splitPostTimes, toStudioTime, lastScheduledSlot } from "./schedule-slots.js";
 import { clickNextUntil, maxNextClicks, pageIo, walkError } from "./studio-wizard.js";
 
 // ============================================================================
@@ -117,7 +117,9 @@ export async function forEachProfile({ gpmHost, profiles, concurrency = 1, log, 
       if (r === "skip") { res.skipped++; await report(p, { status: "skip", message: "bỏ qua" }, plog); return; }
       res.ok++;
       plog("✅ xong");
-      await report(p, { status: "ok", message: typeof r === "string" ? r : "" }, plog);
+      // work() có thể trả chuỗi (thông báo) hoặc object { message, scheduledUntil, ... } (Auto lên lịch)
+      const info = r && typeof r === "object" ? r : null;
+      await report(p, { status: "ok", message: typeof r === "string" ? r : info?.message || "", ...(info?.scheduledUntil ? { scheduledUntil: info.scheduledUntil } : {}) }, plog);
     } catch (err) {
       res.fail++;
       plog(`❌ ${err?.message || err}`);
@@ -387,7 +389,9 @@ async function scheduleOne(page, o, p, log) {
     }
   }
   log(`đã lên lịch ${count} video`);
-  return `lên lịch ${count} video`;
+  // Trả cấu trúc: message cho UI, scheduledUntil cho báo tiến độ lên server
+  const last = lastScheduledSlot({ days, timeSlots, count });
+  return { message: `lên lịch ${count} video`, scheduledUntil: last?.iso || null, scheduledCount: count };
 }
 
 /**

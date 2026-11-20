@@ -117,3 +117,49 @@ export function assignTomorrowSlots(postTimes, usedSlots, now, wantCount) {
   }
   return free;
 }
+
+// === Phase 2: tính ngày/giờ cuối cùng thực sự được lên lịch ===
+
+/**
+ * Ghép ngày MM/DD/YYYY (dạng buildScheduleDays) + giờ Studio ("8:00 AM") thành ISO local.
+ * @returns {string|null} "YYYY-MM-DDTHH:MM:00" hoặc null nếu không parse được.
+ */
+export function slotToIso(dayMmDdYyyy, studioTime) {
+  // Ngày: MM/DD/YYYY
+  const dm = String(dayMmDdYyyy ?? "").match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!dm) return null;
+  const [, mm, dd, yyyy] = dm;
+  // Giờ: "8:00 AM" / "12:00 PM"
+  const tm = String(studioTime ?? "").match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!tm) return null;
+  let h = Number(tm[1]);
+  const m = tm[2];
+  const pm = /pm/i.test(tm[3]);
+  if (h < 1 || h > 12) return null;
+  h = (h % 12) + (pm ? 12 : 0);
+  return `${yyyy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}T${String(h).padStart(2, "0")}:${m}:00`;
+}
+
+/**
+ * Trả ngày + giờ của video CUỐI CÙNG thực sự được lên lịch.
+ * @param {object} p
+ * @param {string[]} p.days - mảng ngày MM/DD/YYYY từ buildScheduleDays
+ * @param {string[]} p.timeSlots - khung giờ Studio ("8:00 AM", "6:00 PM")
+ * @param {number} p.count - số video THỰC SỰ được lên lịch (có thể < days*timeSlots nếu thiếu nháp)
+ * @returns {{day: string, time: string, iso: string}|null}
+ */
+export function lastScheduledSlot({ days, timeSlots, count }) {
+  const n = Number(count);
+  if (!Array.isArray(days) || !Array.isArray(timeSlots) || !days.length || !timeSlots.length || !(n > 0)) return null;
+  const perDay = timeSlots.length;
+  const maxSlots = days.length * perDay;
+  const actual = Math.min(n, maxSlots);
+  // 0-indexed: video thứ actual nằm ở dayIdx, slotIdx
+  const dayIdx = Math.floor((actual - 1) / perDay);
+  const slotIdx = (actual - 1) % perDay;
+  const day = days[dayIdx];
+  const time = timeSlots[slotIdx];
+  const iso = slotToIso(day, time);
+  if (!iso) return null;
+  return { day, time, iso };
+}

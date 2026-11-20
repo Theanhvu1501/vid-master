@@ -130,9 +130,13 @@ export function summarizeResult(raw, { stopped = false } = {}) {
 export function channelResultEvent(task, profile, r) {
   const name = scrubText(profile?.name || profile?.id || "kênh", 80);
   const label = taskLabel(task);
-  if (r?.status === "ok") return { level: "success", kind: "task", channel: name, message: `${label}: ${name} xong${r.message && typeof r.message === "string" ? ` · ${scrubText(r.message, 120)}` : ""}` };
-  if (r?.status === "skip") return { level: "info", kind: "task", channel: name, message: `${label}: ${name} bỏ qua${r.message ? ` (${scrubText(r.message, 80)})` : ""}` };
-  return { level: "error", kind: "task", channel: name, message: `${label}: ${name} lỗi · ${scrubText(r?.message || "không rõ", 160)}` };
+  const msgText = typeof r?.message === "string" ? r.message : "";
+  // Chỉ nhận mốc ISO hợp lệ (Auto lên lịch báo "kênh này đã lên lịch tới đâu"); giá trị lạ thì bỏ
+  const scheduledUntil = Number.isFinite(Date.parse(r?.scheduledUntil)) ? String(r.scheduledUntil) : null;
+  const profileId = profile?.id ? scrubText(String(profile.id), 80) : null; // ID profile GPM: để server ghép kênh chắc chắn hơn ghép theo tên
+  if (r?.status === "ok") return { level: "success", kind: "task", channel: name, profileId, message: `${label}: ${name} xong${msgText ? ` · ${scrubText(msgText, 120)}` : ""}`, scheduledUntil };
+  if (r?.status === "skip") return { level: "info", kind: "task", channel: name, profileId, message: `${label}: ${name} bỏ qua${msgText ? ` (${scrubText(msgText, 80)})` : ""}` };
+  return { level: "error", kind: "task", channel: name, profileId, message: `${label}: ${name} lỗi · ${scrubText(msgText || "không rõ", 160)}` };
 }
 
 /**

@@ -15,6 +15,20 @@
   const sumOf = (a) => (a || []).reduce((s, x) => s + (x || 0), 0);
   function niceMax(v) { if (v <= 0) return 4; const p = Math.pow(10, Math.floor(Math.log10(v))), f = v / p; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p; }
 
+  // Tính "lịch tới ngày nào" từ scheduledUntil ISO -> {text, cls, daysLeft}
+  function schedLevel(iso) {
+    if (!iso) return { key: "none", rank: 9, label: "Chưa lên lịch", color: C.off, daysLeft: null };
+    const t = Date.parse(iso);
+    if (!Number.isFinite(t)) return { key: "none", rank: 9, label: "Chưa lên lịch", color: C.off, daysLeft: null };
+    const d = new Date(t);
+    const daysLeft = (t - Date.now()) / 86400000;
+    const label = `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
+    if (daysLeft <= 0) return { key: "expired", rank: 0, label: `${label} (hết)`, color: C.err, daysLeft };
+    if (daysLeft <= 1) return { key: "soon", rank: 1, label: `${label} (< 1 ngày)`, color: C.err, daysLeft };
+    if (daysLeft <= 3) return { key: "week", rank: 2, label: `${label} (${Math.round(daysLeft)} ngày)`, color: C.warn, daysLeft };
+    return { key: "ok", rank: 3, label: `${label} (${Math.round(daysLeft)} ngày)`, color: C.ok, daysLeft };
+  }
+
   // ---------------------------------------------------------------- logic thuần (có test)
   /** Tỉ lệ upload thành công = ok / (ok + lỗi). null khi chưa có upload nào (không bịa 0% hay 100%). */
   function successRate(ok, err) { const t = (ok || 0) + (err || 0); return t ? Math.round(((ok || 0) / t) * 100) : null; }
@@ -176,18 +190,20 @@
       const sorters = {
         name: (a, b) => a.c.name.localeCompare(b.c.name),
         proxy: (a, b) => a.p.rank - b.p.rank || (a.c.proxyDaysLeft ?? 1e9) - (b.c.proxyDaysLeft ?? 1e9),
+        sched: (a, b) => a.sc.rank - b.sc.rank || (a.sc.daysLeft ?? 1e9) - (b.sc.daysLeft ?? 1e9),
         rate: (a, b) => (successRate(a.ok, a.err) ?? 101) - (successRate(b.ok, b.err) ?? 101),
         views: (a, b) => (b.c.yt?.views ?? -1) - (a.c.yt?.views ?? -1),
         subs: (a, b) => (b.c.yt?.subscribers ?? -1) - (a.c.yt?.subscribers ?? -1),
       };
-      const table = chans.map((c) => ({ c, s: statusOf(c), p: proxyLevel(c), ok: sumOf(c.uploadOk), err: sumOf(c.uploadErr) })).sort(sorters[st.sort] || sorters.name);
+      const table = chans.map((c) => ({ c, s: statusOf(c), p: proxyLevel(c), sc: schedLevel(c.scheduledUntil), ok: sumOf(c.uploadOk), err: sumOf(c.uploadErr) })).sort(sorters[st.sort] || sorters.name);
       const th = (k, l, cls = "") => `<th class="${cls}"><button type="button" class="cd-th ${st.sort === k ? "on" : ""}" data-sort="${k}">${l}${st.sort === k ? " ↓" : ""}</button></th>`;
-      const rows = table.map(({ c, s, p, ok, err }) => {
+      const rows = table.map(({ c, s, p, sc, ok, err }) => {
         const r = successRate(ok, err), today = c.uploadOk[T] || 0, v = c.yt && has(c.yt.views) ? c.yt.views : null, sb = c.yt && has(c.yt.subscribers) ? c.yt.subscribers : null;
         return `<tr data-id="${c.id}" class="${st.pick === String(c.id) ? "sel" : ""}" tabindex="0" title="Bấm để xem riêng kênh này trên biểu đồ">
           <td><span class="cd-dot" style="background:${s.color}" title="${esc(s.label)}"></span></td>
           <td><div class="cd-n">${esc(c.name)}</div>${s.reasons.length ? `<div class="cd-s">${esc(s.reasons.join(" · "))}</div>` : ""}</td>
           <td><span class="cd-chip" style="--c:${p.color}">${esc(p.label)}</span></td>
+          <td><span class="cd-chip" style="--c:${sc.color}">${esc(sc.label)}</span></td>
           <td class="num">${fmt(today)}<span class="muted">/${fmt(c.perDay)}</span></td>
           <td>${sparkBars(d.days, c.uploadOk, c.uploadErr)}</td>
           <td class="num">${r === null ? '<span class="muted">—</span>' : `<span style="color:${r >= 90 ? C.ok : r >= 70 ? C.warn : C.err}">${r}%</span><span class="muted"> ${fmt(ok)}/${fmt(err)}</span>`}</td>
@@ -208,7 +224,7 @@
             <div class="cd-legend2"><span><i style="background:${C.ok}"></i>Thành công</span><span><i style="background:${C.err}"></i>Lỗi</span></div></section>
         </div>
         <section class="cd-card cd-tcard"><div class="cd-t">Chi tiết từng kênh<span class="cd-sub">bấm tiêu đề cột để sắp xếp · bấm dòng để xem riêng trên biểu đồ</span></div>
-          <div class="cd-tw"><table class="cd-table"><thead><tr><th></th>${th("name", "Kênh")}${th("proxy", "Hạn proxy")}<th class="r">Hôm nay</th><th>${d.days.length} ngày</th>${th("rate", "Upload OK/Lỗi", "r")}<th class="r" title="Đã render, chưa lên lịch">Chờ đăng</th><th class="r" title="Video chưa được xử lý">Còn</th><th class="r">Video lỗi</th>${th("views", "View", "r")}${th("subs", "Sub", "r")}</tr></thead><tbody>${rows}</tbody></table></div></section>`;
+          <div class="cd-tw"><table class="cd-table"><thead><tr><th></th>${th("name", "Kênh")}${th("proxy", "Hạn proxy")}${th("sched", "Lịch tới")}<th class="r">Hôm nay</th><th>${d.days.length} ngày</th>${th("rate", "Upload OK/Lỗi", "r")}<th class="r" title="Đã render, chưa lên lịch">Chờ đăng</th><th class="r" title="Video chưa được xử lý">Còn</th><th class="r">Video lỗi</th>${th("views", "View", "r")}${th("subs", "Sub", "r")}</tr></thead><tbody>${rows}</tbody></table></div></section>`;
     }
 
     async function load(manual) {
@@ -254,5 +270,5 @@
     return { reload: () => { if (root.offsetParent !== null) load(); else st.data = null; }, destroy: () => clearInterval(timer) };
   }
 
-  window.ChannelDashboard = { mount, successRate, proxyLevel, proxyOrder, statusOf, dailyBars, sparkBars };
+  window.ChannelDashboard = { mount, successRate, proxyLevel, proxyOrder, statusOf, schedLevel, dailyBars, sparkBars };
 })();

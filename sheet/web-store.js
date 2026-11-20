@@ -229,6 +229,55 @@ export function createWebStore({ fetchImpl = fetch, getBase, getToken, disk, get
     return r.data;
   }
 
+  // ---------------------------------------------------------------- App là nơi SỬA cấu hình (kênh Auto + mẻ)
+  // Server giữ dữ liệu, web chỉ xem. Mọi thao tác sửa cần có mạng: không xếp hàng ghi bù (sửa offline rồi gộp sau dễ xung đột).
+  // Sau mỗi thay đổi bỏ ETag cũ để lần đọc cấu hình kế tiếp lấy bản mới.
+  const afterConfigChange = () => { mem.channels = null; mem.revision = ""; };
+  const needId = (id, what = "Kênh") => { const n = Number(id); if (!Number.isInteger(n) || n <= 0) throw new WebStoreError(`${what} không hợp lệ`, { status: 400 }); return n; };
+  const enc = encodeURIComponent;
+
+  async function createChannelConfig(body) {
+    load();
+    const r = await call("POST", "/api/app/channel-configs", body && typeof body === "object" ? body : {});
+    afterConfigChange(); return r.data;
+  }
+  async function deleteChannelConfig(id) {
+    load();
+    const n = needId(id);
+    const r = await call("DELETE", `/api/app/channel-configs/${n}`);
+    afterConfigChange(); return r.data;
+  }
+  /** Nhập từ bảng Excel. Mặc định chỉ XEM TRƯỚC; { apply: true } mới ghi. removeMissing: xóa kênh không có trong file. */
+  async function importChannelConfigs(rows, { apply = false, removeMissing = false, existing = "update" } = {}) {
+    load();
+    if (!Array.isArray(rows)) throw new WebStoreError("Dữ liệu bảng không hợp lệ", { status: 400 });
+    const r = await call("POST", "/api/app/channel-configs/import", { rows, dryRun: !apply, removeMissing: !!removeMissing, existing });
+    if (apply) afterConfigChange();
+    return r.data;
+  }
+
+  // Mẻ: một mẻ có nhiều kênh (chọn từ GPM theo Profile ID). Mất mạng thì đọc được bản đã lưu (offline=true), không sửa được.
+  async function listBatches() {
+    load();
+    try {
+      const r = await call("GET", "/api/app/batches");
+      const out = { batches: r.data.batches || [], machineId: r.data.machineId };
+      try { disk.write("batches", out); } catch { /* không quan trọng */ }
+      return { ok: true, offline: false, ...out };
+    } catch (e) {
+      if (!e.offline) throw e;
+      const c = disk.read("batches");
+      if (c && Array.isArray(c.batches)) return { ok: true, offline: true, ...c };
+      throw e;
+    }
+  }
+  const createBatch = async (body) => { load(); return (await call("POST", "/api/app/batches", body && typeof body === "object" ? body : {})).data; };
+  const updateBatch = async (id, body) => { load(); return (await call("PUT", `/api/app/batches/${needId(id, "Mẻ")}`, body && typeof body === "object" ? body : {})).data; };
+  const deleteBatch = async (id) => { load(); return (await call("DELETE", `/api/app/batches/${needId(id, "Mẻ")}`)).data; };
+  const addBatchChannel = async (id, { gpmProfileId, name } = {}) => { load(); return (await call("POST", `/api/app/batches/${needId(id, "Mẻ")}/channels`, { gpmProfileId, name })).data; };
+  const removeBatchChannel = async (id, gpmProfileId) => { load(); return (await call("DELETE", `/api/app/batches/${needId(id, "Mẻ")}/channels/${enc(String(gpmProfileId ?? ""))}`)).data; };
+  const markBatchRendered = async (id) => { load(); return (await call("POST", `/api/app/batches/${needId(id, "Mẻ")}/rendered`)).data; };
+
   // Thống kê các kênh của máy này theo ngày (tab "Thống kê kênh"). Mất mạng thì trả bản đã lưu kèm offline=true.
   async function channelStats(days = 14, tz = 0) {
     load();
@@ -265,9 +314,10 @@ export function createWebStore({ fetchImpl = fetch, getBase, getToken, disk, get
 
   return {
     readConfigSheet, readChannelUrls, setUrlStatus, setUploadStatus, appendUrls, flush, listChannelConfigs, updateChannelConfig, channelStats, youtubeStats, fetchSourceUrls,
+    createChannelConfig, deleteChannelConfig, importChannelConfigs, listBatches, createBatch, updateBatch, deleteBatch, addBatchChannel, removeBatchChannel, markBatchRendered,
     webId, pending: () => { load(); return mem.queue.length; }, isOnline: () => lastOnline,
     // Dùng cho test và chẩn đoán
-    _mem: mem,
+    _mem: mem, _disk: disk,
   };
 }
 
