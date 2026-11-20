@@ -21,3 +21,4 @@ sheet-settings.json
 # Dữ liệu app tự sinh khi chạy: bản sao dữ liệu tài khoản (cache offline) và preset dựng sẵn
 .web-cache/
 presets/
+.channel-stats.json

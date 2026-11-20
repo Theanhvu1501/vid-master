@@ -1655,7 +1655,6 @@ async function createNewProject() {
       statusDiv.innerHTML = `✅ <strong>Đã tạo dự án "${result.projectName}" thành công!</strong><br><small>Đang chuyển sang dự án mới...</small>`;
 
       await loadProjects();
-      refreshDashboard();
       const projectSelect = document.getElementById("project-select");
       if (projectSelect) {
         projectSelect.value = result.projectName;
@@ -1750,7 +1749,6 @@ async function confirmDeleteProject() {
       deleteTargetProjectName = null;
 
       if (fromDashboard) {
-        await refreshDashboard();
         showProjectNotification(
           `Đã xóa dự án "${projectToDelete}" thành công!`,
           "success",
@@ -1802,147 +1800,11 @@ function formatProjectDate(isoStr) {
   }
 }
 
-async function refreshDashboard() {
-  const empty = document.getElementById("dashboard-empty");
-  const searchInput = document.getElementById("dashboard-search");
-  const cardsEl = document.getElementById("dashboard-cards");
-  if (!empty || !cardsEl) return;
-
-  if (!window.electronAPI || !window.electronAPI.getProjectsWithMeta) {
-    cardsEl.style.display = "none";
-    empty.style.display = "block";
-    empty.innerHTML = "<strong>Lỗi</strong> Không thể tải danh sách dự án.";
-    return;
-  }
-
-  const result = await window.electronAPI.getProjectsWithMeta();
-  let list = result.success ? result.projects || [] : [];
-  const query = (searchInput && searchInput.value || "").trim().toLowerCase();
-  if (query) {
-    list = list.filter(
-      (p) =>
-        (p.displayName && p.displayName.toLowerCase().includes(query)) ||
-        (p.name && p.name.toLowerCase().includes(query)),
-    );
-  }
-
-  if (list.length === 0) {
-    cardsEl.style.display = "none";
-    empty.style.display = "block";
-    empty.innerHTML = query
-      ? "<strong>Không tìm thấy dự án</strong> Thử đổi từ khóa tìm kiếm."
-      : '<strong>Chưa có dự án</strong> Tạo dự án từ menu ⚙️ → Thêm dự án mới.';
-    return;
-  }
-  empty.style.display = "none";
-  cardsEl.style.display = "grid";
-  cardsEl.innerHTML = "";
-
-  const todayStr = formatProjectDate(new Date().toISOString());
-
-  list.forEach((p) => {
-    const cycleVal = p.cycleDays != null ? String(p.cycleDays) : "—";
-    const lastRenderStr = p.lastRenderAt ? formatProjectDate(p.lastRenderAt) : "—";
-    let daysLeftText = "—";
-    let tagClass = "tag-muted";
-    if (p.daysLeft != null) {
-      if (p.daysLeft >= 3) {
-        daysLeftText = `${p.daysLeft} ngày còn lại`;
-        tagClass = "tag-green";
-      } else if (p.daysLeft === 2) {
-        daysLeftText = "2 ngày còn lại";
-        tagClass = "tag-yellow";
-      } else if (p.daysLeft === 1) {
-        daysLeftText = "1 ngày còn lại";
-        tagClass = "tag-red";
-      } else if (p.daysLeft === 0) {
-        daysLeftText = "Cần render ngay";
-        tagClass = "tag-red";
-      } else {
-        daysLeftText = `Quá hạn ${-p.daysLeft} ngày`;
-        tagClass = "tag-red";
-      }
-    }
-    const card = document.createElement("div");
-    card.className = "dashboard-card";
-    const starClass = p.starred ? "dashboard-card-star starred" : "dashboard-card-star";
-    const starChar = p.starred ? "★" : "☆";
-    card.innerHTML = `
-      <span class="${starClass}" data-project="${escapeHtml(p.name)}" data-starred="${p.starred ? "1" : "0"}" title="${p.starred ? "BKT (bỏ đánh dấu)" : "Đánh dấu BKT"}">${starChar}</span>
-      <div class="dashboard-card-header">
-        <span class="dashboard-card-title">${escapeHtml(p.displayName || p.name)}</span>
-      </div>
-      <div class="dashboard-card-meta">
-        <span><span class="label">Chu kỳ</span><span class="value">${escapeHtml(cycleVal)} ngày</span></span>
-        <span><span class="label">Ngày render gần nhất</span><span class="value">${escapeHtml(lastRenderStr)}</span></span>
-        <span><span class="label">Ngày hiện tại</span><span class="value">${escapeHtml(todayStr)}</span></span>
-      </div>
-      <div class="dashboard-card-status">
-        <span class="status-label">Trạng thái:</span>
-        <span class="dashboard-tag ${escapeHtml(tagClass)}">${escapeHtml(daysLeftText)}</span>
-      </div>
-    `;
-    const starEl = card.querySelector(".dashboard-card-star");
-    if (starEl && window.electronAPI && window.electronAPI.setProjectStarred) {
-      starEl.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        const proj = starEl.getAttribute("data-project");
-        const cur = starEl.getAttribute("data-starred") === "1";
-        await window.electronAPI.setProjectStarred(proj, !cur);
-        refreshDashboard();
-      });
-    }
-    cardsEl.appendChild(card);
-  });
-}
-
 function escapeHtml(s) {
   if (s == null) return "";
   const div = document.createElement("div");
   div.textContent = s;
   return div.innerHTML;
-}
-
-async function openProjectFromDashboard(projectName) {
-  if (!projectName || !window.electronAPI) return;
-  await window.electronAPI.setCurrentProject(projectName);
-  currentProjectName = projectName;
-  await loadProjects();
-  await loadSettings();
-  showProjectNotification(`Đã chuyển sang dự án: ${projectName === "default" ? "Mặc định" : projectName}`, "success");
-}
-
-async function runRenderFromDashboard(projectName, day, videos) {
-  if (!projectName || !window.electronAPI) return;
-  const dayVal = (day != null && day !== "" && day !== "—") ? String(day) : "1";
-  const videosVal = (videos != null && videos !== "" && videos !== "—") ? String(videos) : "1";
-
-  const panel = document.getElementById("dashboard-output-panel");
-  const bodyEl = document.getElementById("dashboard-output-body");
-  if (panel) panel.classList.remove("hidden");
-  if (bodyEl) bodyEl.textContent = `🚀 Đang chạy Render cho dự án "${projectName}" (ngày=${dayVal}, videos=${videosVal})...\n\n`;
-
-  await window.electronAPI.setCurrentProject(projectName);
-  currentProjectName = projectName;
-
-  window.electronAPI.removeScriptOutputListener?.();
-  window.electronAPI.onScriptOutput?.((data) => {
-    const b = document.getElementById("dashboard-output-body");
-    if (b) b.textContent += data;
-  });
-
-  try {
-    await window.electronAPI.runScript("render.js", [dayVal, videosVal], {});
-    if (bodyEl) bodyEl.textContent += "\n\n✅ Hoàn thành!";
-    if (window.electronAPI.setProjectLastRender) {
-      await window.electronAPI.setProjectLastRender(projectName);
-    }
-    showProjectNotification(`Render dự án "${projectName}" đã xong.`, "success");
-    refreshDashboard();
-  } catch (err) {
-    if (bodyEl) bodyEl.textContent += `\n\n❌ Lỗi: ${getErrorMessage(err)}`;
-    showProjectNotification(`Lỗi render: ${getErrorMessage(err)}`, "error");
-  }
 }
 
 // Lưu settings của project hiện tại
@@ -2169,38 +2031,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   await loadSettings();
   await initYtdlpExtractorArgs();
 
-  const dashboardSearch = document.getElementById("dashboard-search");
-  if (dashboardSearch) {
-    let dashboardSearchDebounce = null;
-    const DASHBOARD_SEARCH_DEBOUNCE_MS = 300;
-    dashboardSearch.addEventListener("input", () => {
-      if (dashboardSearchDebounce) clearTimeout(dashboardSearchDebounce);
-      dashboardSearchDebounce = setTimeout(() => {
-        dashboardSearchDebounce = null;
-        refreshDashboard();
-      }, DASHBOARD_SEARCH_DEBOUNCE_MS);
-    });
-    dashboardSearch.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") {
-        dashboardSearch.value = "";
-        if (dashboardSearchDebounce) clearTimeout(dashboardSearchDebounce);
-        dashboardSearchDebounce = null;
-        refreshDashboard();
-      }
-    });
-  }
-  const dashboardAddBtn = document.getElementById("dashboard-add-project");
-  if (dashboardAddBtn) {
-    dashboardAddBtn.addEventListener("click", openAddProjectDialog);
-  }
-  const dashboardOutputClose = document.getElementById("dashboard-output-close");
-  if (dashboardOutputClose) {
-    dashboardOutputClose.addEventListener("click", () => {
-      const panel = document.getElementById("dashboard-output-panel");
-      if (panel) panel.classList.add("hidden");
-    });
-  }
-
   document.querySelectorAll(".tab-button").forEach((button) => {
     button.addEventListener("click", () => {
       const tabId = button.getAttribute("data-tab");
@@ -2215,9 +2045,20 @@ document.addEventListener("DOMContentLoaded", async () => {
       button.classList.add("active");
       const tabEl = document.getElementById(tabId);
       if (tabEl) tabEl.classList.add("active");
-      if (tabId === "dashboard") refreshDashboard();
+      if (tabId === "channel-stats") openChannelStats();
     });
   });
+
+  // Tab "Thống kê kênh": dựng một lần khi mở lần đầu, các lần sau nạp lại số liệu
+  let channelStatsView = null;
+  function openChannelStats() {
+    const root = document.getElementById("cd-root");
+    if (!root || !window.ChannelDashboard) return;
+    if (!channelStatsView) channelStatsView = window.ChannelDashboard.mount(root);
+    else channelStatsView.reload();
+  }
+  // Web hoặc app đổi cấu hình/trạng thái kênh: biểu đồ đang mở thì nạp lại ngay (tab ẩn sẽ nạp khi mở)
+  window.electronAPI?.sheet?.onChannelsChanged?.(() => { try { channelStatsView?.reload(); } catch { /* ignore */ } });
 
   // Add event listeners to save settings on change
   const inputsToWatch = [

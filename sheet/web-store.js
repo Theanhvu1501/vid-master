@@ -224,11 +224,26 @@ export function createWebStore({ fetchImpl = fetch, getBase, getToken, disk, get
     return r.data;
   }
 
+  // Thống kê các kênh của máy này theo ngày (tab "Thống kê kênh"). Mất mạng thì trả bản đã lưu kèm offline=true.
+  async function channelStats(days = 14, tz = 0) {
+    load();
+    try {
+      const r = await call("GET", `/api/app/channel-stats?days=${encodeURIComponent(days)}&tz=${encodeURIComponent(tz)}`);
+      try { disk.write("stats", { days, ...r.data }); } catch { /* không quan trọng */ }
+      return { ok: true, offline: false, ...r.data };
+    } catch (e) {
+      if (!e.offline) throw e;
+      const c = disk.read("stats");
+      if (c && Array.isArray(c.channels)) return { ok: true, offline: true, ...c };
+      throw e;
+    }
+  }
+
   // Tên kênh -> id trên web (cho chỗ khác trong app cần gọi API)
   const webId = (name) => mem.webIds.get(name) || null;
 
   return {
-    readConfigSheet, readChannelUrls, setUrlStatus, setUploadStatus, appendUrls, flush, listChannelConfigs, updateChannelConfig,
+    readConfigSheet, readChannelUrls, setUrlStatus, setUploadStatus, appendUrls, flush, listChannelConfigs, updateChannelConfig, channelStats,
     webId, pending: () => { load(); return mem.queue.length; }, isOnline: () => lastOnline,
     // Dùng cho test và chẩn đoán
     _mem: mem,

@@ -58,6 +58,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     testConnection: (s) => ipcRenderer.invoke("sheet:test-connection", s),
     channelsList: () => ipcRenderer.invoke("channels:list"),
     channelsUpdate: (id, body) => ipcRenderer.invoke("channels:update", { id, body }),
+    channelStats: (days) => ipcRenderer.invoke("channels:stats", { days }),
     syncProxy: () => ipcRenderer.invoke("channels:sync-proxy"),
     gpmSetProfileProxy: (profileId, rawProxy) => ipcRenderer.invoke("gpm:set-profile-proxy", { profileId, rawProxy }),
     loadSettings: () => ipcRenderer.invoke("sheet:load-settings"),

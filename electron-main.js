@@ -1936,6 +1936,21 @@ ipcMain.handle("channels:list", async () => {
     return await webStore().listChannelConfigs();
   } catch (err) { return { ok: false, offline: !!err?.offline, error: String(err?.message || err) }; }
 });
+// Thống kê theo ngày của các kênh thuộc máy này (tab "Thống kê kênh")
+ipcMain.handle("channels:stats", async (e, { days } = {}) => {
+  try {
+    if (!webConfigured()) return { ok: false, error: "Chưa đăng nhập." };
+    const n = [7, 14, 30].includes(Number(days)) ? Number(days) : 14;
+    const r = await webStore().channelStats(n, new Date().getTimezoneOffset());
+    // View/sub lấy từ bản YouTube đã lưu trên máy (làm mới bằng nút "Cập nhật view/sub"); chưa có thì để trống chứ không bịa số
+    const yt = new Map(loadStatsCache().map((x) => [x.sheetName, x]));
+    for (const c of r.channels || []) {
+      const s = yt.get(c.name);
+      c.yt = s ? { subscribers: s.subscribers ?? null, views: s.views ?? null, videoCount: s.videoCount ?? null, hidden: !!s.hidden, updatedAt: s.updatedAt || null } : null;
+    }
+    return r;
+  } catch (err) { return { ok: false, offline: !!err?.offline, error: String(err?.message || err) }; }
+});
 ipcMain.handle("channels:update", async (e, { id, body } = {}) => {
   try {
     if (!webConfigured()) return { ok: false, error: "Chưa đăng nhập." };
