@@ -255,7 +255,7 @@ export function createMonitorAgent({
   getAppToken = () => "",
   getMachineId, appVersion = "", collectSnapshot, getState = () => ({}),
   WebSocketImpl = WebSocket, fetchImpl = globalThis.fetch, sessionId = crypto.randomUUID(),
-  log = () => {}, onStatus = () => {},
+  log = () => {}, onStatus = () => {}, onChannelsChanged = () => {},
   heartbeatMs = 20_000, snapshotMs = 5 * 60_000, snapshotMinMs = 120_000,
   backoffMs = [5_000, 15_000, 30_000, 60_000, 300_000], authBackoffMs = 300_000, maxBuffered = 200,
   // Cộng thêm 0..jitterMs ngẫu nhiên vào thời gian chờ nối lại: nhiều máy cùng mất kết nối (server khởi động
@@ -371,6 +371,8 @@ export function createMonitorAgent({
     sock.on("open", () => sock.send(JSON.stringify({ type: "hello", machineId: getMachineId(), appVersion, sessionId })));
     sock.on("message", (raw) => {
       let m; try { m = JSON.parse(raw.toString()); } catch { return; }
+      // Web hoặc máy khác vừa sửa cấu hình kênh của máy này: chỉ là tín hiệu, bên ngoài tự nạp lại qua API
+      if (m?.type === "channels-changed") { try { onChannelsChanged(); } catch { /* ignore */ } return; }
       if (m?.type !== "welcome" || welcomed) return;
       welcomed = true; attempt = 0;
       setStatus("connected", "Đã kết nối");

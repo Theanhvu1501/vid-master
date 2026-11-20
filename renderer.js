@@ -5689,15 +5689,20 @@ async function runConcat() {
   // Tự đồng bộ với web: định kỳ và khi quay lại cửa sổ app. Không dựng lại khung chi tiết
   // (tránh mất chữ đang gõ dở); chỉ cập nhật bảng và số liệu.
   let webSyncing = false;
-  async function syncFromWeb() {
-    if (!loaded || loading || webSyncing || document.hidden) return;
+  // opts.manual: người dùng bấm nút "Tải lại"; opts.signal: server báo có thay đổi. Cả hai chạy kể cả khi cửa sổ đang
+  // ẩn/không focus (đúng lúc người dùng đang sửa ở web). Chỉ vòng hỏi lại định kỳ mới bỏ qua khi cửa sổ ẩn.
+  async function syncFromWeb(opts = {}) {
+    const forced = opts.manual || opts.signal;
+    if (!loaded || loading || webSyncing || (document.hidden && !forced)) return false;
     webSyncing = true;
     try {
-      await pushProxyAddr();
+      // Nạp cấu hình trước để giao diện đổi ngay; việc hỏi GPM (chậm hơn) chạy sau, không chặn
       await window.ChannelConfigUI?.load();
       await syncQuota();
       renderAll();
-    } catch { /* lần sau thử lại */ } finally { webSyncing = false; }
+      pushProxyAddr(!!opts.manual).catch(() => {});
+      return true;
+    } catch { return false; } finally { webSyncing = false; }
   }
   // Gửi địa chỉ proxy (chỉ ip:port, không user/mật khẩu) của GPM profile lên web để tra hạn. GPM tắt thì bỏ qua.
   // Chạy tối đa 1 lần/2 phút: GPM không đổi proxy thường xuyên và mỗi lần phải hỏi GPM liệt kê profile.
@@ -5708,8 +5713,30 @@ async function runConcat() {
     lastProxyPush = Date.now();
     try { await window.electronAPI.sheet.syncProxy(); } catch { /* GPM không chạy: bỏ qua */ }
   }
-  setInterval(syncFromWeb, 30000);
-  window.addEventListener("focus", syncFromWeb);
+  // Server báo qua kết nối giám sát: nạp lại ngay (gộp tín hiệu sát nhau). Hỏi lại định kỳ chỉ còn là lưới an toàn
+  // phòng tín hiệu bị mất khi đứt mạng, nên thưa hơn nhiều so với trước.
+  let syncDebounce = null;
+  api.onChannelsChanged?.(() => { clearTimeout(syncDebounce); syncDebounce = setTimeout(() => syncFromWeb({ signal: true }), 300); });
+  setInterval(() => syncFromWeb(), 120000);
+  window.addEventListener("focus", () => syncFromWeb());
+
+  // Nút "Tải lại": nạp ngay cấu hình từ web, không phụ thuộc socket. Dùng khi nghi app chưa ăn theo.
+  const reloadBtn = $("sw-reload-web");
+  reloadBtn?.addEventListener("click", async () => {
+    if (reloadBtn.disabled) return;
+    const label = reloadBtn.textContent;
+    reloadBtn.disabled = true; reloadBtn.textContent = "⏳ Đang tải…";
+    try {
+      if (!loaded) { loadChannelsOnce(); await new Promise((r) => setTimeout(r, 400)); }
+      else {
+        const ok = await syncFromWeb({ manual: true });
+        if (!ok) throw new Error("Chưa tải lại được, thử lại sau ít giây");
+      }
+      setBanner("", null);
+      appToast("Đã tải lại cấu hình từ web", { kind: "success" });
+    } catch (e) { appToast(e?.message || "Không tải lại được", { kind: "error" }); }
+    finally { reloadBtn.disabled = false; reloadBtn.textContent = label; }
+  });
 
   const MISSING_LABEL = {
     subscribers: "Sub", totalViews: "Tổng view",

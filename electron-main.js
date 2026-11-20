@@ -1528,6 +1528,10 @@ const monitorAgent = createMonitorAgent({
   onStatus: (st) => {
     for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send("monitor:status", st);
   },
+  // Cấu hình kênh đổi ở web hoặc máy khác: báo giao diện nạp lại (dữ liệu vẫn lấy qua API HTTP)
+  onChannelsChanged: () => {
+    for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send("channels:changed");
+  },
 });
 let sheetRunnerWin = null;   // cửa sổ mà runner đang phát sự kiện tới
 let sheetRunnerKey = null;   // ảnh chụp cấu hình lúc dựng runner (đổi -> phải dựng lại)

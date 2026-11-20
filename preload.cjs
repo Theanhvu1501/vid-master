@@ -82,6 +82,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     accountGet: () => ipcRenderer.invoke("account:get"),
     accountLogout: () => ipcRenderer.invoke("account:logout"),
     onMonitorStatus: (cb) => ipcRenderer.on("monitor:status", (e, data) => cb(data)),
+    onChannelsChanged: (cb) => ipcRenderer.on("channels:changed", () => cb()),
     gpmTest: (gpmHost) => ipcRenderer.invoke("gpm:test", { gpmHost }),
     gpmListChannels: () => ipcRenderer.invoke("gpm:list-channels"),
     gpmListGroups: (gpmHost) => ipcRenderer.invoke("gpm:list-groups", { gpmHost }),
