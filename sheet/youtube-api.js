@@ -2,9 +2,8 @@
 // (không tạo bên trong) để test bơm object giả, không cần mạng.
 import { google } from "googleapis";
 
-// Key cũ từ get-url.js. Đã lộ trong lịch sử git — người dùng nên tự tạo key
-// riêng và dán vào ô "YouTube API key" trong tab Theo dõi Sheet.
-export const DEFAULT_YT_API_KEY = "AIzaSyDZTsPGvG0u5du3t7YGueGgnNi7IiulMus";
+// KHÔNG có key mặc định trong code: key cũ đã lộ trong lịch sử git và bị Google chặn (403 PERMISSION_DENIED).
+// App lấy view/sub và URL nguồn qua server bằng key dùng chung trên web; riêng script get-url.js (tab "Lấy URL") dùng key do người dùng nhập.
 
 const CHANNEL_ID_RE = /^UC[\w-]{22}$/;
 const HANDLE_RE = /^[A-Za-z0-9._-]{3,30}$/;

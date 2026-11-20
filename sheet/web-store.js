@@ -17,7 +17,7 @@ const MAX_BATCH = 1500;
 const MAX_QUEUE = 20_000;
 
 export class WebStoreError extends Error {
-  constructor(message, { status = 0, reason = "", offline = false } = {}) { super(message); this.status = status; this.reason = reason; this.offline = offline; }
+  constructor(message, { status = 0, reason = "", offline = false, code = "" } = {}) { super(message); this.status = status; this.reason = reason; this.offline = offline; this.code = code; }
 }
 
 /**
@@ -76,7 +76,7 @@ export function createWebStore({ fetchImpl = fetch, getBase, getToken, disk, get
     }
     if (res.status >= 500 || res.status === 429) { lastOnline = false; throw new WebStoreError("Máy chủ đang bận, sẽ thử lại", { status: res.status, offline: true }); }
     lastOnline = true;
-    if (!res.ok) throw new WebStoreError(data?.message || `Lỗi ${res.status}`, { status: res.status });
+    if (!res.ok) throw new WebStoreError(data?.message || `Lỗi ${res.status}`, { status: res.status, code: data?.code || "" });
     return { status: res.status, data };
   }
 
@@ -133,6 +133,11 @@ export function createWebStore({ fetchImpl = fetch, getBase, getToken, disk, get
         mem.channels = r.data.channels || []; mem.revision = r.data.revision || ""; mem.webIds = new Map();
         for (const ch of mem.channels) if (ch.webId) mem.webIds.set(ch.sheetName, ch.webId);
         saveChannels();
+        // Web đã xóa/chuyển kênh đi: bỏ danh sách video đã lưu của kênh đó (chỉ khi web vừa trả danh sách mới, tức có bằng chứng;
+        // mất mạng hoặc 304 thì giữ nguyên). Không bỏ thì kênh cũ phình dữ liệu trên đĩa mãi và có thể hiện lại nhầm khi tạo lại cùng tên.
+        let pruned = false;
+        for (const name of [...mem.rows.keys()]) if (!mem.webIds.has(name)) { mem.rows.delete(name); pruned = true; }
+        if (pruned) saveVideos();
       }
     } catch (e) {
       if (e.offline && mem.channels) log("Mất kết nối máy chủ: dùng cấu hình kênh đã lưu trên máy");
@@ -239,11 +244,27 @@ export function createWebStore({ fetchImpl = fetch, getBase, getToken, disk, get
     }
   }
 
+  // View/sub YouTube của các kênh thuộc máy này. Server dùng key YouTube CHUNG (key không bao giờ rời server).
+  // Lỗi của YouTube/key (chưa có key, key bị từ chối, hết quota...) được giữ nguyên message + code để giao diện nói đúng nguyên nhân.
+  async function youtubeStats() {
+    load();
+    const r = await call("GET", "/api/app/youtube-stats");
+    return r.data;
+  }
+  // Lấy URL video từ kênh nguồn cho một kênh (nút "Lấy URL nguồn"): server gọi YouTube, lọc trùng và thêm vào danh sách của kênh.
+  async function fetchSourceUrls(name, sortBy = "views") {
+    load();
+    const id = webIdOf(name);
+    const r = await call("POST", `/api/app/channels/${id}/source-urls`, { sortBy: sortBy === "newest" ? "newest" : "views" });
+    mem.rows.delete(name); // danh sách đã đổi trên server: lần đọc kế tiếp phải lấy bản mới, không dựa vào bản lưu
+    return r.data;
+  }
+
   // Tên kênh -> id trên web (cho chỗ khác trong app cần gọi API)
   const webId = (name) => mem.webIds.get(name) || null;
 
   return {
-    readConfigSheet, readChannelUrls, setUrlStatus, setUploadStatus, appendUrls, flush, listChannelConfigs, updateChannelConfig, channelStats,
+    readConfigSheet, readChannelUrls, setUrlStatus, setUploadStatus, appendUrls, flush, listChannelConfigs, updateChannelConfig, channelStats, youtubeStats, fetchSourceUrls,
     webId, pending: () => { load(); return mem.queue.length; }, isOnline: () => lastOnline,
     // Dùng cho test và chẩn đoán
     _mem: mem,

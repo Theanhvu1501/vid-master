@@ -2,13 +2,13 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import * as XLSX from "xlsx";
-import { createYoutubeClient, fetchSourceVideos, DEFAULT_YT_API_KEY } from "./sheet/youtube-api.js";
+import { createYoutubeClient, fetchSourceVideos } from "./sheet/youtube-api.js";
 
 // __dirname trong ESM
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const apiKey = process.env.YT_API_KEY || DEFAULT_YT_API_KEY;
+const apiKey = String(process.env.YT_API_KEY || "").trim();
 const minSeconds = 60 * 10; // chỉ lấy video >10 phút
 
 // Đường dẫn output mặc định
@@ -36,6 +36,11 @@ if (fs.existsSync(projectConfigPath)) {
 }
 
 async function getVideoUrls(handle, sortBy) {
+  if (!apiKey) {
+    console.error("Chưa có API key YouTube. Nhập key vào ô \"YouTube API key\" của tab này (không còn key mặc định trong app).");
+    console.error("Muốn thêm URL cho kênh đã có trên web thì dùng nút \"Lấy URL nguồn\" ở tab Kênh: nó dùng key dùng chung của hệ thống.");
+    process.exit(1);
+  }
   const youtube = createYoutubeClient(apiKey);
 
   const directoryPath = path.join(outputBaseFolder, handle.replace(/^@/, ""));

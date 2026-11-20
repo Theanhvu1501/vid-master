@@ -38,6 +38,16 @@ function fake(over = {}) {
       if (st.failStatus) return json(st.failStatus, { message: "bận" });
       const body = JSON.parse(init.body); st.statuses.push(...body.updates); return json(200, { applied: body.updates.length, stale: 0, rejected: [] });
     }
+    if (path === "/api/app/youtube-stats") {
+      if (st.ytFail) return json(st.ytFail.status, { message: st.ytFail.message, code: st.ytFail.code });
+      return json(200, { updatedAt: "2026-11-20T00:00:00Z", rows: st.channels.map((c) => ({ id: c.webId, name: c.sheetName, subscribers: 10, views: 200, videoCount: 3, hidden: false })) });
+    }
+    m = path.match(/^\/api\/app\/channels\/(\d+)\/source-urls$/);
+    if (m && init.method === "POST") {
+      if (st.ytFail) return json(st.ytFail.status, { message: st.ytFail.message, code: st.ytFail.code });
+      st.sourceCalls = (st.sourceCalls || []); st.sourceCalls.push({ id: m[1], body: JSON.parse(init.body) });
+      return json(200, { added: 2, skipped: 1, total: 3 });
+    }
     return json(404, {});
   };
   return { st, fetchImpl };
@@ -296,4 +306,68 @@ test("không gửi gì lên web ngoài trạng thái/URL: mật khẩu proxy kh�
   await store.readConfigSheet(); await store.readChannelUrls("K1");
   await store.setUrlStatus("K1", 101, "done"); await store.flush();
   assert.ok(!JSON.stringify(f.st.calls).includes("SecretPw"));
+});
+
+test("kênh bị xóa trên web: danh sách video đã lưu của kênh đó bị bỏ khỏi bộ nhớ và khỏi đĩa", async () => {
+  const dk = disk();
+  const a = mk({ disk: dk });
+  await a.store.readConfigSheet(); await a.store.readChannelUrls("K1"); await a.store.readChannelUrls("K2");
+  assert.deepEqual(Object.keys(dk.read("videos")).sort(), ["K1", "K2"]);
+  // web xóa K2, giữ K1
+  a.f.st.channels = a.f.st.channels.filter((c) => c.sheetName !== "K2"); a.f.st.revision = "r2";
+  await a.store.readConfigSheet();
+  assert.deepEqual(Object.keys(dk.read("videos")), ["K1"], "video của kênh đã xóa không còn trên đĩa");
+  await assert.rejects(() => a.store.readChannelUrls("K2"), (e) => e.status === 404, "đọc kênh đã xóa báo rõ là không còn");
+});
+
+test("mất mạng thì KHÔNG dọn bộ nhớ video: không có bằng chứng web đã xóa kênh", async () => {
+  const dk = disk();
+  const a = mk({ disk: dk });
+  await a.store.readConfigSheet(); await a.store.readChannelUrls("K1"); await a.store.readChannelUrls("K2");
+  a.f.st.online = false;
+  await a.store.readConfigSheet();
+  assert.deepEqual(Object.keys(dk.read("videos")).sort(), ["K1", "K2"]);
+});
+
+test("web không đổi (304) thì không dọn nhầm video đã lưu", async () => {
+  const dk = disk();
+  const a = mk({ disk: dk });
+  await a.store.readConfigSheet(); await a.store.readChannelUrls("K1"); await a.store.readChannelUrls("K2");
+  await a.store.readConfigSheet(); // lần 2: ETag khớp -> 304
+  assert.deepEqual(Object.keys(dk.read("videos")).sort(), ["K1", "K2"]);
+});
+
+test("youtubeStats: lấy số liệu YouTube qua server (app không giữ key), gửi token", async () => {
+  const { store, f } = mk(); await store.readConfigSheet();
+  const r = await store.youtubeStats();
+  assert.deepEqual(r.rows.map((x) => [x.name, x.views]), [["K1", 200], ["K2", 200]]);
+  const call = f.st.calls.find((c) => c.path === "/api/app/youtube-stats");
+  assert.equal(call.headers.Authorization, "Bearer APPTOK");
+});
+
+test("youtubeStats: key YouTube bị từ chối -> lỗi giữ nguyên message + code (không biến thành 'phiên hết hạn' hay 'server bận')", async () => {
+  const { store, f } = mk(); await store.readConfigSheet();
+  f.st.ytFail = { status: 424, message: "API key YouTube bị từ chối: Permission denied on the service.", code: "forbidden" };
+  await assert.rejects(() => store.youtubeStats(), (e) => e.code === "forbidden" && e.status === 424 && !e.offline && /bị từ chối/.test(e.message));
+  f.st.ytFail = { status: 424, message: "chưa có key", code: "no-key" };
+  await assert.rejects(() => store.youtubeStats(), (e) => e.code === "no-key" && !e.offline);
+});
+
+test("fetchSourceUrls: gọi đúng kênh + kiểu sắp xếp, bỏ danh sách video đã lưu để lần đọc sau lấy bản mới", async () => {
+  const dk = disk();
+  const a = mk({ disk: dk });
+  await a.store.readConfigSheet(); await a.store.readChannelUrls("K1");
+  assert.ok(dk.read("videos").K1);
+  const r = await a.store.fetchSourceUrls("K1", "newest");
+  assert.deepEqual([r.added, r.skipped], [2, 1]);
+  assert.deepEqual(a.f.st.sourceCalls, [{ id: "11", body: { sortBy: "newest" } }]);
+  await a.store.fetchSourceUrls("K1", "bậy bạ");
+  assert.equal(a.f.st.sourceCalls[1].body.sortBy, "views", "kiểu sắp xếp lạ về mặc định");
+});
+
+test("fetchSourceUrls: kênh không có trên web -> 404 rõ ràng; lỗi key giữ nguyên code", async () => {
+  const { store, f } = mk(); await store.readConfigSheet();
+  await assert.rejects(() => store.fetchSourceUrls("KHONGCO"), (e) => e.status === 404);
+  f.st.ytFail = { status: 424, message: "hết quota", code: "quota" };
+  await assert.rejects(() => store.fetchSourceUrls("K1"), (e) => e.code === "quota" && !e.offline);
 });
