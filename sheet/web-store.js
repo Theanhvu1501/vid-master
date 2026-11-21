@@ -276,7 +276,8 @@ export function createWebStore({ fetchImpl = fetch, getBase, getToken, disk, get
   const deleteBatch = async (id) => { load(); return (await call("DELETE", `/api/app/batches/${needId(id, "Mẻ")}`)).data; };
   const addBatchChannel = async (id, { gpmProfileId, name } = {}) => { load(); return (await call("POST", `/api/app/batches/${needId(id, "Mẻ")}/channels`, { gpmProfileId, name })).data; };
   const removeBatchChannel = async (id, gpmProfileId) => { load(); return (await call("DELETE", `/api/app/batches/${needId(id, "Mẻ")}/channels/${enc(String(gpmProfileId ?? ""))}`)).data; };
-  const markBatchRendered = async (id) => { load(); return (await call("POST", `/api/app/batches/${needId(id, "Mẻ")}/rendered`)).data; };
+  const reportBatchAction = async (id, body) => { load(); return (await call("POST", `/api/app/batches/${needId(id, "Mẻ")}/action-run`, body && typeof body === "object" ? body : {})).data; };
+  const markBatchRendered = async (id, day) => { load(); return (await call("POST", `/api/app/batches/${needId(id, "Mẻ")}/rendered`, Number.isInteger(Number(day)) && Number(day) >= 1 ? { day: Number(day) } : undefined)).data; };
 
   // Thống kê các kênh của máy này theo ngày (tab "Thống kê kênh"). Mất mạng thì trả bản đã lưu kèm offline=true.
   async function channelStats(days = 14, tz = 0) {
@@ -314,7 +315,7 @@ export function createWebStore({ fetchImpl = fetch, getBase, getToken, disk, get
 
   return {
     readConfigSheet, readChannelUrls, setUrlStatus, setUploadStatus, appendUrls, flush, listChannelConfigs, updateChannelConfig, channelStats, youtubeStats, fetchSourceUrls,
-    createChannelConfig, deleteChannelConfig, importChannelConfigs, listBatches, createBatch, updateBatch, deleteBatch, addBatchChannel, removeBatchChannel, markBatchRendered,
+    createChannelConfig, deleteChannelConfig, importChannelConfigs, listBatches, createBatch, updateBatch, deleteBatch, addBatchChannel, removeBatchChannel, markBatchRendered, reportBatchAction,
     webId, pending: () => { load(); return mem.queue.length; }, isOnline: () => lastOnline,
     // Dùng cho test và chẩn đoán
     _mem: mem, _disk: disk,

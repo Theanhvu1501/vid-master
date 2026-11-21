@@ -2392,7 +2392,7 @@ function clearRenderOutputFolder() {
   saveSettings();
 }
 
-async function runRender() {
+async function runRenderCore(folderOverride) {
   const day = document.getElementById("render-day").value;
   const videos = document.getElementById("render-videos").value;
   const videoSpeed = document.getElementById("render-video-speed").value;
@@ -2414,6 +2414,7 @@ async function runRender() {
           document.getElementById("render-gpu-codec").value = gpuVideoCodec;
         } else {
           alert("⚠️ Không phát hiện GPU encoder nào. Vui lòng kiểm tra driver GPU.");
+          window.__renderOutcome = { ok: false, message: "Không phát hiện GPU encoder" };
           return;
         }
       } catch (error) {
@@ -2552,6 +2553,7 @@ async function runRender() {
 
   if (!day || !videos) {
     alert("Vui lòng nhập đầy đủ thông tin!");
+    window.__renderOutcome = { ok: false, message: "Chưa nhập số ngày hoặc số video" };
     return;
   }
 
@@ -2570,6 +2572,7 @@ async function runRender() {
     });
 
     const options = {
+      batchName: window.__pipelineBatchName || (typeof rbSelectedId === "function" && rbSelectedId() ? (document.getElementById("render-batch-select")?.selectedOptions[0]?.textContent || "") : ""),
       // Không dùng fileMapping cho render vì render.js sẽ đọc path trực tiếp từ config
       renderConfig: {
         renderMode,
@@ -2620,15 +2623,16 @@ async function runRender() {
         dualFrameFramePath,
         dualFrameFrameScale,
         // Sử dụng path trực tiếp từ GUI, không copy
-        overlayFolder: selectedRenderOverlayFolder || "./overlays",
-        backgroundFolder: selectedRenderBackgroundFolder || "./backgrounds",
-        outputFolder: selectedRenderOutputFolder || "./done",
+        overlayFolder: (folderOverride && folderOverride.overlayFolder) || selectedRenderOverlayFolder || "./overlays",
+        backgroundFolder: (folderOverride && folderOverride.backgroundFolder) || selectedRenderBackgroundFolder || "./backgrounds",
+        outputFolder: (folderOverride && folderOverride.outputFolder) || selectedRenderOutputFolder || "./done",
         videoSpeed,
       },
     };
 
     await window.electronAPI.runScript("render.js", [day, videos], options);
     showOutput("render", "\n\n✅ Hoàn thành!");
+    window.__renderOutcome = { ok: true, message: "Render xong" };
     const proj = currentProjectName || "default";
     try { await markSelectedBatchRendered(); } catch { /* không để việc báo mẻ làm hỏng render */ }
     if (window.electronAPI.setProjectLastRender) {
@@ -2636,8 +2640,92 @@ async function runRender() {
     }
   } catch (error) {
     showOutput("render", `\n\n❌ Lỗi: ${getErrorMessage(error)}\n`);
+    window.__renderOutcome = { ok: false, message: getErrorMessage(error) };
   }
 }
+
+// runRender: nút "Chạy Render" như cũ. runRenderForBatch: cho pipeline của mẻ, trả { ok, message } thay vì chỉ ghi ra màn hình.
+// Kết quả do runRenderCore ghi vào window.__renderOutcome ở mọi điểm kết thúc; không có dấu nào nghĩa là thoát sớm ngoài dự kiến
+// (coi là LỖI, không coi là thành công).
+async function runRender() { await runRenderCore(); }
+async function runRenderForBatch(folderOverride) {
+  window.__renderOutcome = null;
+  try { await runRenderCore(folderOverride); } catch (e) { return { ok: false, message: getErrorMessage(e) }; }
+  const r = window.__renderOutcome; window.__renderOutcome = null;
+  return r && typeof r === "object" ? r : { ok: false, message: "Render dừng sớm (không có kết quả)" };
+}
+
+// ============ Hành động của mẻ: mỗi hành động chạy ĐỘC LẬP, có cài đặt riêng ============
+// Không nối liền nhau vì giữa các bước người dùng phải upload video bằng tay. Mỗi hành động trả { ok, message } (hoặc { ok:false, canceled:true }).
+// Việc báo trạng thái lên server/web do batch-ui.js làm quanh mỗi lần chạy.
+function batchDefaultsFromMachine() {
+  const v = (id) => (document.getElementById(id)?.value || "").trim();
+  return { overlayFolder: selectedRenderOverlayFolder || "", backgroundFolder: selectedRenderBackgroundFolder || "", outputFolder: selectedRenderOutputFolder || "",
+    thumbFolder: v("automation-thumb-folder"), numVideos: v("automation-thumb-num"), numDays: v("automation-sch-days"), postTimes: v("automation-sch-times") };
+}
+async function pickBatchFolder() {
+  if (!checkElectronAPI()) return "";
+  try { return (await window.electronAPI.selectFolder()) || ""; } catch { return ""; }
+}
+// Render: áp cấu hình dùng chung + NGÀY HIỆN TẠI của mẻ vào tab Render, dùng thư mục nguồn/nền/đích của mẻ, chạy như bấm tay; xong thì báo server tăng ngày.
+async function runBatchRenderAction(batch, settings) {
+  const api = window.electronAPI && window.electronAPI.sheet;
+  if (!api || !api.batchesApplyRender) return { ok: false, message: "Phiên bản app không hỗ trợ" };
+  try {
+    await saveSettings(); // giữ những gì đang nhập trước khi ghi đè phần dùng chung
+    const a = await api.batchesApplyRender(batch.id, rbProject());
+    if (!a || !a.ok) return { ok: false, message: (a && a.error) || "Không lấy được cấu hình của mẻ" };
+    await loadSettings();
+  } catch (e) { return { ok: false, message: getErrorMessage(e) }; }
+  const day = parseInt(document.getElementById("render-day")?.value, 10) || 1;
+  // thư mục đích thật sự được dùng: của mẻ nếu có, không thì thư mục đang chọn ở tab Render
+  const outFolder = (settings && settings.outputFolder) || selectedRenderOutputFolder || "";
+  const countOut = async () => { try { const c = outFolder ? await api.batchesCountVideos(outFolder) : null; return c && c.ok ? { count: c.count, newest: c.newest } : null; } catch { return null; } };
+  const before = await countOut();
+  window.__pipelineBatchName = batch.name;
+  let r;
+  try { r = await runRenderForBatch(settings || {}); } finally { window.__pipelineBatchName = ""; }
+  r = window.BatchActions.judgeRender(r, before, await countOut()); // ngày của mẻ chỉ tăng khi thật sự có video mới
+  if (r && r.ok) {
+    let m = null;
+    try { m = await api.batchesMarkRendered(batch.id, day); } catch { /* báo ở dưới */ }
+    if (!m || !m.ok) return { ok: true, message: "Render xong ngày " + day + " (chưa ghi được ngày lên server)", day };
+    const nb = m.batch;
+    return { ok: true, day, message: nb && nb.currentDay ? "Xong ngày " + day + ", lần tới ngày " + nb.currentDay + (nb.roundNo > (batch.roundNo || 1) ? " (sang vòng " + nb.roundNo + ")" : "") : "Render xong ngày " + day };
+  }
+  return r || { ok: false, message: "Render không có kết quả" };
+}
+// Thay thumbnail / Lên lịch: chạy trên các kênh của mẻ (theo GPM Profile ID), dùng đúng hàm của tab Tự động hóa.
+async function runBatchAutomationAction(kind, batch, settings) {
+  const api = window.electronAPI && window.electronAPI.automation;
+  if (!api) return { ok: false, message: "Phiên bản app không hỗ trợ" };
+  if (automationRunning) return { ok: false, message: "Tab Tự động hóa đang chạy việc khác, đợi xong rồi chạy lại" };
+  const profiles = (batch.channels || []).filter((c) => c && c.gpmProfileId).map((c) => ({ id: c.gpmProfileId, name: c.name || c.gpmProfileId, label: c.name || c.gpmProfileId }));
+  if (!profiles.length) return { ok: false, message: "Mẻ chưa có kênh nào" };
+  const base = { gpmHost: autoHost(), profiles, concurrency: parseInt(autoVal("automation-concurrency"), 10) || 1 };
+  const opts = kind === "thumb"
+    ? { ...base, thumbFolder: settings.thumbFolder, numVideos: settings.numVideos || "8", thumbFolders: {} }
+    : { ...base, numDays: settings.numDays || "3", startDate: settings.startDate || undefined, postTimes: settings.postTimes };
+  clearAutomationOutput();
+  api.removeLogListener();
+  api.onLog((payload) => showAutomationOutput(typeof payload === "string" ? payload : payload.msg));
+  setAutomationRunning(true);
+  showAutomationOutput("🚀 Mẻ “" + batch.name + "” · " + (kind === "thumb" ? "Thay thumbnail" : "Lên lịch") + "\n");
+  try {
+    const r = await (kind === "thumb" ? api.changeThumb({ ...opts, batchName: batch.name }) : api.schedule({ ...opts, batchName: batch.name }));
+    showAutomationOutput(r && r.success ? "\n✅ " + (r.message || "Hoàn tất") : "\n❌ " + ((r && r.error) || "Có lỗi xảy ra"));
+    return window.BatchActions.resultFromAutomation(r);
+  } catch (e) {
+    showAutomationOutput("\n❌ " + getErrorMessage(e));
+    return { ok: false, message: getErrorMessage(e) };
+  } finally { setAutomationRunning(false); }
+}
+
+// Cho batch-ui.js (script riêng) gọi được các hàm của renderer.js
+window.runBatchRenderAction = runBatchRenderAction;
+window.runBatchAutomationAction = runBatchAutomationAction;
+window.__batchMachineDefaults = batchDefaultsFromMachine;
+window.__batchPickFolder = pickBatchFolder;
 
 // ============ Mẻ ở tab Render ============
 // Mẻ gắn với cấu hình render: lấy/lưu phần DÙNG CHUNG (kiểu render, độ mờ, tốc độ, số ngày...). Đường dẫn, GPU, khóa API, proxy
@@ -2663,7 +2751,9 @@ async function loadRenderBatches() {
 }
 async function markSelectedBatchRendered() {
   const id = rbSelectedId(); if (!id) return;
-  await window.electronAPI.sheet.batchesMarkRendered(id);
+  if (window.__pipelineBatchName) return; // pipeline của mẻ tự đánh dấu, tránh tăng ngày hai lần
+  const day = parseInt(document.getElementById("render-day")?.value, 10);
+  await window.electronAPI.sheet.batchesMarkRendered(id, Number.isFinite(day) ? day : undefined);
 }
 function bindRenderBatch() {
   const sel = document.getElementById("render-batch-select"); if (!sel || sel.dataset.bound) return; sel.dataset.bound = "1";
@@ -5897,9 +5987,14 @@ async function loadAutomationProfiles() {
 
     const sel = document.getElementById("automation-group-filter");
     const cur = sel.value;
+    const per = new Map();
+    for (const p of automationProfiles) { const k = p.groupId === undefined || p.groupId === null || p.groupId === "" ? "__none" : String(p.groupId); per.set(k, (per.get(k) || 0) + 1); }
+    const gname = new Map(automationGroups.map((g) => [String(g.id), g.name]));
+    const opts = [...per].map(([k, n]) => ({ k, n, name: k === "__none" ? "Chung" : gname.get(k) || k }))
+      .sort((a, b) => a.name.localeCompare(b.name, "vi"));
     sel.innerHTML = '<option value="">Tất cả group</option>' +
-      automationGroups.map((g) => `<option value="${escapeHtml(String(g.id))}">${escapeHtml(g.name)}</option>`).join("");
-    sel.value = automationGroups.some((g) => String(g.id) === cur) ? cur : "";
+      opts.map((o) => `<option value="${escapeHtml(o.k)}">${escapeHtml(o.name)} (${o.n})</option>`).join("");
+    sel.value = opts.some((o) => o.k === cur) ? cur : "";
 
     statusEl.textContent = `✅ ${automationProfiles.length} profile`;
     statusEl.style.color = "var(--accent-success)";
@@ -5913,7 +6008,10 @@ async function loadAutomationProfiles() {
 function getFilteredAutomationProfiles() {
   const group = autoVal("automation-group-filter");
   const q = autoVal("automation-profile-search").toLowerCase();
-  return automationProfiles.filter((p) => (!group || String(p.groupId) === group) && (!q || p.name.toLowerCase().includes(q)));
+  const gname = new Map(automationGroups.map((g) => [String(g.id), String(g.name || "").toLowerCase()]));
+  const gk = (p) => (p.groupId === undefined || p.groupId === null || p.groupId === "" ? "__none" : String(p.groupId));
+  return automationProfiles.filter((p) => (!group || gk(p) === group)
+    && (!q || p.name.toLowerCase().includes(q) || String(p.id).toLowerCase().includes(q) || (gname.get(String(p.groupId)) || "").includes(q)));
 }
 
 function renderAutomationProfiles() {
@@ -5925,10 +6023,10 @@ function renderAutomationProfiles() {
     ? shown.map((p) => `
         <label class="auto-profile-item">
           <input type="checkbox" data-id="${escapeHtml(p.id)}" ${automationSelected.has(p.id) ? "checked" : ""} />
-          <span title="${escapeHtml(`Profile ID: ${p.id}\n${p.proxyMasked || "Chưa có proxy"}`)}">${escapeHtml(profileLabel(p))}${p.hasProxy ? "" : " ⚠"}</span>
-          <span class="grp">${escapeHtml(groupName.get(String(p.groupId)) || "")}</span>
+          <span class="nm" title="${escapeHtml(`Profile ID: ${p.id}\n${p.proxyMasked || "Chưa có proxy"}`)}">${escapeHtml(profileLabel(p))}${p.hasProxy ? "" : " ⚠"}</span>
+          <span class="grp">${escapeHtml(groupName.get(String(p.groupId)) || "Chung")}</span>
         </label>`).join("")
-    : '<div style="padding:12px;color:var(--text-muted);font-size:12px;">Không có profile nào.</div>';
+    : `<div class="auto-profile-empty">${automationProfiles.length ? "Không có profile nào khớp." : "Không có profile GPM."}</div>`;
   list.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
     cb.addEventListener("change", () => {
       cb.checked ? automationSelected.add(cb.dataset.id) : automationSelected.delete(cb.dataset.id);
@@ -5941,10 +6039,8 @@ function renderAutomationProfiles() {
 function updateAutomationSelectionUi() {
   renderThumbOverrides();
   const shown = getFilteredAutomationProfiles();
-  const countEl = document.getElementById("automation-selected-count");
-  if (countEl) countEl.textContent = String(automationSelected.size);
-  const all = document.getElementById("automation-select-all");
-  if (all) all.checked = shown.length > 0 && shown.every((p) => automationSelected.has(p.id));
+  const countEl = document.getElementById("automation-pick-count");
+  if (countEl) countEl.textContent = shown.length + (automationProfiles.length !== shown.length ? " / " + automationProfiles.length : "") + " kênh" + (automationSelected.size ? " · đã chọn " + automationSelected.size : "");
 }
 
 function toggleAutomationSelectAll(checked) {

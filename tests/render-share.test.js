@@ -84,7 +84,7 @@ import { renderToBatchPatch, batchToRenderShared } from "../sheet/render-share.j
 
 test("renderToBatchPatch: gửi thông số mẻ và phần render dùng chung, không có đường dẫn/khóa", () => {
   const p = renderToBatchPatch(FULL);
-  assert.equal(p.totalDays, 3); assert.equal(p.videosPerDay, 5); assert.equal(p.cycleDays, 19);
+  assert.ok(!("totalDays" in p)); assert.equal(p.videosPerDay, 5); assert.equal(p.cycleDays, 19);
   assert.equal(p.render.renderMode, "chromaKey");
   const text = JSON.stringify(p);
   for (const bad of ["outputFolder", "overlayFolder", "pexelsApiKey", "px-SECRET", "1.2.3.4", "h264_nvenc", "useGPU", "Users"]) assert.ok(!text.includes(bad), bad + " lọt vào dữ liệu gửi mẻ");
@@ -92,20 +92,20 @@ test("renderToBatchPatch: gửi thông số mẻ và phần render dùng chung, 
 
 test("renderToBatchPatch: số ngoài khoảng bị kẹp, số rác thì bỏ qua (không gửi giá trị bịa)", () => {
   const p = renderToBatchPatch({ day: "9999", videos: "0", cycleDays: "abc", renderMode: "crop" });
-  assert.equal(p.totalDays, 365); assert.equal(p.videosPerDay, 1); assert.ok(!("cycleDays" in p));
+  assert.ok(!("totalDays" in p)); assert.equal(p.videosPerDay, 1); assert.ok(!("cycleDays" in p));
   assert.deepEqual(renderToBatchPatch(null), { render: {} });
 });
 
 test("batchToRenderShared: ba thông số của mẻ đè lên, phần render dùng chung được áp, khóa riêng máy bị bỏ", () => {
   const out = batchToRenderShared({ totalDays: 19, videosPerDay: 3, cycleDays: 10, render: { renderMode: "crop", opacity: "0.4", outputFolder: "E:\\x", day: "99" } });
-  assert.equal(out.day, "19", "thông số của mẻ thắng giá trị day nằm trong render"); assert.equal(out.videos, "3"); assert.equal(out.cycleDays, "10");
+  assert.equal(out.day, "1", "ngày hiện tại lấy từ currentDay của mẻ (chưa có thì 1), không lấy từ render"); assert.equal(out.videos, "3"); assert.equal(out.cycleDays, "10");
   assert.equal(out.renderMode, "crop"); assert.equal(out.opacity, "0.4");
   assert.ok(!("outputFolder" in out));
 });
 
 test("batchToRenderShared: mẻ rác hoặc thiếu trường trả rỗng, không ném lỗi", () => {
   for (const bad of [null, undefined, "x", 5]) assert.deepEqual(batchToRenderShared(bad), {});
-  assert.deepEqual(batchToRenderShared({ render: null }), {});
+  assert.deepEqual(batchToRenderShared({ render: null }), { day: "1" }, "mẻ hợp lệ nhưng chưa có gì thì chỉ có ngày 1");
 });
 
 test("vòng đi vòng lại: đẩy lên mẻ rồi kéo xuống máy khác giữ nguyên thông số dùng chung, không đụng phần riêng máy", () => {
@@ -113,7 +113,7 @@ test("vòng đi vòng lại: đẩy lên mẻ rồi kéo xuống máy khác gi�
   const batch = { ...patch };
   const machine2 = { outputFolder: "F:\may2", useGPU: false, opacity: "0.1", renderMode: "topTransparent", day: "1" };
   const merged = mergeRenderSettings(machine2, batchToRenderShared(batch));
-  assert.equal(merged.renderMode, "chromaKey"); assert.equal(merged.opacity, "0.7"); assert.equal(merged.day, "3");
+  assert.equal(merged.renderMode, "chromaKey"); assert.equal(merged.opacity, "0.7"); assert.equal(merged.day, "1");
   assert.equal(merged.outputFolder, "F:\may2"); assert.equal(merged.useGPU, false);
 });
 
@@ -194,4 +194,34 @@ test("batchRenderSchema: đủ kiểu + trường; bản sao nên sửa đổi k
   assert.equal(s.modes.length, 6); assert.ok(s.common.length >= 1); for (const m of s.modes) assert.ok(s.byMode[m.id].length > 0);
   s.byMode.crop[0].def = "HACK"; assert.notEqual(batchRenderSchema().byMode.crop[0].def, "HACK");
   assert.doesNotThrow(() => JSON.stringify(s));
+});
+
+import { nextBatchDay } from "../sheet/render-share.js";
+
+test("SỬA ÁNH XẠ: ô 'day' của tab Render là NGÀY HIỆN TẠI của vòng, không phải số ngày mỗi vòng", () => {
+  // Gửi lên mẻ: day KHÔNG được biến thành totalDays
+  const p = renderToBatchPatch({ day: "7", videos: "4", cycleDays: "19", renderMode: "crop" });
+  assert.ok(!("totalDays" in p), "day không phải số ngày của vòng");
+  assert.equal(p.videosPerDay, 4); assert.equal(p.cycleDays, 19);
+  assert.ok(!("day" in p.render), "ngày hiện tại thuộc về mẻ (currentDay), không đi theo phần dùng chung");
+  // Kéo từ mẻ về: day = currentDay của mẻ, không phải totalDays
+  const out = batchToRenderShared({ totalDays: 19, currentDay: 6, videosPerDay: 3, cycleDays: 10, render: { renderMode: "crop", day: "99" } });
+  assert.equal(out.day, "6"); assert.equal(out.videos, "3"); assert.equal(out.cycleDays, "10");
+  assert.equal(batchToRenderShared({ totalDays: 19, videosPerDay: 3 }).day, "1", "mẻ chưa có currentDay thì bắt đầu từ ngày 1");
+});
+
+test("nextBatchDay: tăng 1 mỗi lần render xong; hết vòng thì về 1 và báo sang vòng mới", () => {
+  assert.deepEqual(nextBatchDay(1, 19), { day: 2, newRound: false });
+  assert.deepEqual(nextBatchDay(18, 19), { day: 19, newRound: false });
+  assert.deepEqual(nextBatchDay(19, 19), { day: 1, newRound: true });
+  assert.deepEqual(nextBatchDay(25, 19), { day: 1, newRound: true }, "ngày vượt tổng số thì coi như hết vòng");
+});
+
+test("nextBatchDay: giá trị rác không làm hỏng, mặc định ngày 1 của vòng 19 ngày", () => {
+  assert.deepEqual(nextBatchDay(undefined, undefined), { day: 2, newRound: false });
+  assert.deepEqual(nextBatchDay("abc", "xyz"), { day: 2, newRound: false });
+  assert.deepEqual(nextBatchDay(0, 5), { day: 2, newRound: false }, "ngày 0 coi là ngày 1");
+  assert.deepEqual(nextBatchDay(-3, 5), { day: 2, newRound: false });
+  assert.deepEqual(nextBatchDay(1, 1), { day: 1, newRound: true }, "vòng 1 ngày: mỗi lần render là một vòng mới");
+  assert.deepEqual(nextBatchDay("3", "5"), { day: 4, newRound: false }, "chuỗi số vẫn đọc được");
 });

@@ -72,19 +72,23 @@ const toInt = (v, lo, hi) => { const n = parseInt(v, 10); return Number.isFinite
 /** Cấu hình render của app -> phần gửi lên mẻ: thông số mẻ + phần render dùng chung. Không có gì nhạy cảm. */
 export function renderToBatchPatch(render) {
   const { shared } = splitRenderSettings(render);
-  const patch = { render: shared };
-  const days = toInt(shared.day, 1, 365), per = toInt(shared.videos, 1, 100), cyc = toInt(shared.cycleDays, 1, 365);
-  if (days !== null) patch.totalDays = days;
+  // "day" của tab Render là NGÀY HIỆN TẠI của vòng (render.js dùng nó để chọn video bắt đầu), không phải số ngày của cả vòng.
+  // Ngày hiện tại thuộc về mẻ (currentDay, do app tự tăng sau mỗi lần render) nên không gửi theo phần dùng chung.
+  const { day, ...rest } = shared;
+  const patch = { render: rest };
+  const per = toInt(shared.videos, 1, 100), cyc = toInt(shared.cycleDays, 1, 365);
   if (per !== null) patch.videosPerDay = per;
   if (cyc !== null) patch.cycleDays = cyc;
   return patch;
 }
 
-/** Mẻ -> cấu hình render áp lên máy này: phần render dùng chung của mẻ, rồi ba thông số của mẻ đè lên (mẻ là nơi giữ giá trị chuẩn). */
+/** Mẻ -> cấu hình render áp lên máy này: phần render dùng chung của mẻ, rồi video/ngày, chu kỳ và NGÀY HIỆN TẠI của mẻ đè lên. */
 export function batchToRenderShared(batch) {
   const out = mergeRenderSettings({}, batch && batch.render);
   if (!batch || typeof batch !== "object") return out;
-  if (Number.isFinite(Number(batch.totalDays))) out.day = String(batch.totalDays);
+  delete out.day; // không nhận "day" lẫn trong phần render dùng chung
+  const cd = parseInt(batch.currentDay, 10);
+  out.day = String(Number.isFinite(cd) && cd >= 1 ? cd : 1);
   if (Number.isFinite(Number(batch.videosPerDay))) out.videos = String(batch.videosPerDay);
   if (Number.isFinite(Number(batch.cycleDays))) out.cycleDays = String(batch.cycleDays);
   return out;
@@ -176,4 +180,14 @@ export function batchBodyWithRender(body) {
 /** Định nghĩa trường để giao diện tự dựng form (một nguồn duy nhất, giao diện không giữ bản sao danh sách trường). */
 export function batchRenderSchema() {
   return { modes: BATCH_RENDER_MODES.map((m) => ({ ...m })), common: BATCH_COMMON_FIELDS.map((f) => ({ ...f })), byMode: Object.fromEntries(Object.entries(BATCH_MODE_FIELDS).map(([k, v]) => [k, v.map((f) => ({ ...f, options: f.options ? [...f.options] : undefined }))])) };
+}
+
+/**
+ * Ngày của vòng sau khi render xong ngày `current`: tăng 1; qua ngày cuối thì về ngày 1 và báo sang vòng mới.
+ * Giá trị rác coi như ngày 1 của vòng 19 ngày (cùng mặc định với mẻ).
+ */
+export function nextBatchDay(current, totalDays) {
+  const cur = Math.max(1, parseInt(current, 10) || 1);
+  const total = Math.max(1, parseInt(totalDays, 10) || 19);
+  return cur >= total ? { day: 1, newRound: true } : { day: cur + 1, newRound: false };
 }

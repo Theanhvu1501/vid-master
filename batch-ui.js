@@ -28,6 +28,9 @@
   const ICONS = {
     edit: ["M12 20h9", "M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"],
     trash: ["M3 6h18", "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6", "M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"],
+    check: ["M20 6 9 17l-5-5"],
+    x: ["M18 6 6 18", "M6 6l12 12"],
+    ban: ["M4.9 4.9l14.2 14.2", "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z"],
     unlink: ["M18.84 12.25l1.72-1.71a5 5 0 0 0-7.07-7.07l-1.72 1.71", "M5.16 11.75l-1.72 1.71a5 5 0 0 0 7.07 7.07l1.72-1.71", "M8 2v3", "M2 8h3", "M16 22v-3", "M22 16h-3"],
   };
   function icon(name) {
@@ -67,11 +70,11 @@
 
   // ---------------------------------------------------------------- màn hình
   const ago = (iso) => { const m = Math.round((Date.now() - Date.parse(iso)) / 60000); return !Number.isFinite(m) ? "" : m < 1 ? "vừa xong" : m < 60 ? m + " phút trước" : m < 1440 ? Math.round(m / 60) + " giờ trước" : Math.round(m / 1440) + " ngày trước"; };
-  const field = (label, input, help) => el("div", { class: "bt-group" }, el("label", { text: label }), input, help ? el("div", { class: "bt-help", text: help }) : null);
+  const field = (label, input, help) => el("div", { class: "form-group bt-group" }, el("label", { text: label }), input, help ? el("small", { text: help }) : null);
   const numInput = (v, min, max, step) => el("input", { type: "number", min, max, step: step || "1", value: v });
 
   function mount(root) {
-    const st = { batches: [], offline: false, loading: false, err: "", sel: null /* id | "new" | null */, schema: null, dirty: false };
+    const st = { batches: [], offline: false, loading: false, err: "", sel: null /* id | "new" | null */, schema: null, dirty: false, live: new Map() /* "batchId:kind" -> đang chạy trên máy này */, stopFor: null, machineDefs: {}, actTab: "render", renderCtx: null };
     const byId = (id) => st.batches.find((x) => x.id === id);
 
     async function loadSchema() {
@@ -119,17 +122,21 @@
       renderSide(side);
     }
 
-    // một dòng trong danh sách: tên + thẻ tóm tắt; bấm để mở bên phải
+    // một dòng trong danh sách: tên + thẻ tóm tắt + ba chấm trạng thái hành động; bấm để mở bên phải
     function item(b) {
       const rows = sortChannels(b.channels, b.warnDays), due = renderDue(b.lastRenderAt, b.cycleDays);
       const out = rows.filter((r) => r.s.key === "out").length, soon = rows.filter((r) => r.s.key === "soon").length;
       const cur = st.sel === b.id;
-      return el("button", { type: "button", class: "bt-item" + (cur ? " cur" : ""), "aria-current": cur ? "true" : null, onclick: () => select(b.id) },
+      const node = el("div", { class: "bt-item" + (cur ? " cur" : ""), role: "button", tabindex: "0", "aria-current": cur ? "true" : null, onclick: () => select(b.id),
+        onkeydown: (ev) => { if ((ev.key === "Enter" || ev.key === " ") && ev.target === node) { ev.preventDefault(); select(b.id); } } },
         el("div", { class: "bt-item-top" }, el("strong", { text: b.name }), el("span", { class: "bt-count", text: (b.channels || []).length + " kênh" })),
         el("div", { class: "bt-chips" },
           el("span", { class: "bt-chip brand", text: b.totalDays + " ngày × " + b.videosPerDay + " video/ngày" }),
+          b.currentDay ? el("span", { class: "bt-chip blue", text: "ngày " + b.currentDay + "/" + b.totalDays + " · vòng " + (b.roundNo || 1) }) : null,
           due ? el("span", { class: "bt-chip " + (due.overdue ? "err" : due.daysLeft <= 1 ? "warn" : "blue"), text: due.overdue ? "tới hạn render vòng mới" : "render sau " + due.daysLeft + " ngày" }) : el("span", { class: "bt-chip", text: "chưa render" }),
-          out ? el("span", { class: "bt-chip err", text: out + " hết lịch" }) : null, soon ? el("span", { class: "bt-chip warn", text: soon + " sắp hết" }) : null));
+          out ? el("span", { class: "bt-chip err", text: out + " hết lịch" }) : null, soon ? el("span", { class: "bt-chip warn", text: soon + " sắp hết" }) : null),
+        actionDots(b));
+      return node;
     }
 
     // ---- khung bên phải: form sửa tại chỗ
@@ -145,6 +152,7 @@
       const name = el("input", { type: "text", maxlength: "100", value: b ? b.name : "", placeholder: "vd: Lofi đợt 1" });
       const days = numInput(b ? b.totalDays : 19, 1, 365), per = numInput(b ? b.videosPerDay : 3, 1, 100), cyc = numInput(b ? b.cycleDays : 19, 1, 365), warn = numInput(b ? b.warnDays : 1, 0, 30);
       const desc = el("textarea", { rows: "2", maxlength: "500", text: b ? b.description : "" });
+      const curDay = numInput(b ? b.currentDay || 1 : 1, 1, 365);
       const mode = el("select", {}, schema.modes.map((m) => el("option", { value: m.id, text: m.label })));
       mode.value = schema.byMode[rd.renderMode] ? rd.renderMode : "topTransparent";
 
@@ -167,22 +175,25 @@
       };
       mode.addEventListener("change", () => { st.dirty = true; drawRender(); });
       drawRender();
+      const collectRender = () => ({ renderMode: mode.value, renderValues: Object.fromEntries([...schema.common, ...(schema.byMode[mode.value] || [])].map((f) => [f.key, typed[f.key] ?? (rd[f.key] !== undefined ? rd[f.key] : f.def)])), renderBase: rd });
+      // Mẻ đã tạo: ngày hiện tại + kiểu render + thông số render nằm trong tab Render (xem actionCard), không nằm ở form cài đặt
+      st.renderCtx = isNew ? null : { id: b.id, curDay, mode, renderBox, collectRender };
 
       const msg = el("div", { class: "bt-msg", role: "alert" });
       const save = el("button", { class: "btn btn-primary", type: "button", text: isNew ? "Tạo mẻ" : "Lưu thay đổi", disabled: st.offline });
-      const form = el("div", { class: "bt-form" },
+      const formKids = [
         field("Tên mẻ *", name),
         el("div", { class: "bt-row" }, field("Số ngày mỗi vòng", days), field("Video mỗi ngày / kênh", per)),
         el("div", { class: "bt-row" }, field("Chu kỳ render (ngày)", cyc, "Sau bấy nhiêu ngày kể từ lần render cuối thì tới hạn render vòng mới."), field("Báo khi lịch còn ≤ (ngày)", warn, "Kênh còn ít ngày hơn mức này thì cảnh báo, kể cả trên web.")),
-        field("Ghi chú", desc),
-        el("div", { class: "bt-sep", text: "Cách render" }),
-        field("Kiểu render", mode, "Giống mục Render. Đường dẫn thư mục, GPU, khóa API ở lại máy này, không lưu theo mẻ."),
-        renderBox, msg);
-      for (const x of [name, days, per, cyc, warn, desc]) x.addEventListener("input", () => { st.dirty = true; });
+        field("Ghi chú", desc)];
+      if (isNew) formKids.push(el("div", { class: "bt-sep", text: "Cách render" }), field("Kiểu render", mode, "Giống mục Render. Đường dẫn thư mục, GPU, khóa API ở lại máy này, không lưu theo mẻ."), renderBox);
+      formKids.push(msg);
+      const form = el("div", { class: "bt-form" }, ...formKids);
+      for (const x of [name, days, per, cyc, warn, desc, curDay]) x.addEventListener("input", () => { st.dirty = true; });
 
       save.addEventListener("click", async () => {
         const body = { name: name.value.trim(), description: desc.value, totalDays: Number(days.value), videosPerDay: Number(per.value), cycleDays: Number(cyc.value), warnDays: Number(warn.value),
-          renderMode: mode.value, renderValues: Object.fromEntries([...schema.common, ...(schema.byMode[mode.value] || [])].map((f) => [f.key, typed[f.key] ?? (rd[f.key] !== undefined ? rd[f.key] : f.def)])), renderBase: rd };
+          ...(isNew ? {} : { currentDay: Number(curDay.value) }), ...collectRender() };
         if (!body.name) { msg.className = "bt-msg err"; msg.textContent = "Tên mẻ không được để trống"; name.focus(); return; }
         save.disabled = true; const old = save.textContent; save.textContent = "Đang lưu…"; msg.textContent = "";
         const r = await (isNew ? api().batchesCreate(body) : api().batchesUpdate(b.id, body)).catch((e) => ({ ok: false, error: e.message }));
@@ -191,12 +202,15 @@
         await load(); toast(isNew ? "Đã tạo mẻ" : "Đã lưu mẻ");
       });
 
-      // phần kênh của mẻ (chỉ khi mẻ đã tồn tại)
-      const kids = [el("div", { class: "bt-side-head" }, el("h3", { text: isNew ? "Thêm mẻ" : b.name }),
-        isNew ? null : el("div", { class: "bt-side-actions" }, iconBtn("trash", "Xóa mẻ", "danger", () => removeBatch(b), st.offline))), form,
-        el("div", { class: "bt-foot-row" }, isNew ? el("button", { class: "btn btn-secondary", type: "button", text: "Hủy", onclick: async () => { if (await confirmLeave()) { st.sel = null; st.dirty = false; paint(); } } }) : null, save)];
-      if (!isNew) kids.push(channelsBlock(b));
-      side.replaceChildren(...kids);
+      const head = el("div", { class: "bt-side-head" }, el("h3", { text: isNew ? "Thêm mẻ" : b.name }),
+        isNew ? null : el("div", { class: "bt-side-actions" }, iconBtn("trash", "Xóa mẻ", "danger", () => removeBatch(b), st.offline)));
+      const footer = el("div", { class: "bt-foot-row" }, isNew ? el("button", { class: "btn btn-secondary", type: "button", text: "Hủy", onclick: async () => { if (await confirmLeave()) { st.sel = null; st.dirty = false; paint(); } } }) : null, save);
+      if (isNew) { side.replaceChildren(head, form, footer); return; }
+      // hành động dùng nhiều nên ở trên cùng; cài đặt mẻ làm một lần nên gấp lại ở cuối
+      const tog = el("button", { class: "bt-toggle", type: "button", "aria-expanded": "false", text: "▸ Cài đặt mẻ", onclick: () => {
+        const o = tog.getAttribute("aria-expanded") === "true"; tog.setAttribute("aria-expanded", o ? "false" : "true"); tog.textContent = (o ? "▸" : "▾") + " Cài đặt mẻ"; wrap.classList.toggle("open", !o); } });
+      const wrap = el("div", { class: "bt-collapse" }, el("div", { class: "bt-sep bt-sep-inside" }, tog), el("div", { class: "bt-collapse-body" }, form, footer));
+      side.replaceChildren(head, actionsBlock(b), channelsBlock(b), wrap);
     }
 
     function channelsBlock(b) {
@@ -212,6 +226,158 @@
             el("td", { class: "actions" }, iconBtn("unlink", "Bỏ kênh khỏi mẻ (không xóa profile trong GPM)", "danger", () => removeChannel(b, c), st.offline))))))
         : el("div", { class: "bt-empty small" }, el("span", { text: "Mẻ chưa có kênh. Bấm “＋ Thêm kênh” để chọn từ GPM." }));
       return el("div", { class: "bt-channels" }, head, body);
+    }
+
+    // ================= Hành động của mẻ =================
+    // Mỗi hành động (Render / Thay thumbnail / Lên lịch) có cài đặt riêng, nút chạy riêng, kết quả riêng. KHÔNG nối liền nhau:
+    // giữa chúng người dùng phải upload video bằng tay lên YouTube nên mỗi hành động được bấm khi tới lúc.
+    const BA = () => window.BatchActions;
+    const STATUS_TEXT = { running: "Đang chạy", success: "Thành công", failed: "Thất bại", canceled: "Đã dừng" };
+    const STATUS_ICON = { success: "check", failed: "x", canceled: "ban" };
+    const liveKey = (id, kind) => id + ":" + kind;
+    const anyLive = () => st.live.size > 0;
+
+    // trạng thái hiển thị: ưu tiên "đang chạy" trên máy này, rồi tới kết quả lần gần nhất lấy từ server
+    function actionState(b, kind) {
+      if (st.live.has(liveKey(b.id, kind))) return { status: "running", message: "", at: null };
+      const r = (b.runs || {})[kind];
+      return r && r.status ? r : { status: "none", message: "", at: null };
+    }
+    const SHORT = { render: "Render", thumb: "Thumbnail", schedule: "Lên lịch" };
+    function dotNode(kind, s, withName) {
+      const dot = el("span", { class: "bt-dot" }, STATUS_ICON[s.status] ? icon(STATUS_ICON[s.status]) : null);
+      return el("div", { class: "bt-stage " + (s.status === "none" ? "pending" : s.status), title: BA().ACTION_LABEL[kind] + ": " + (STATUS_TEXT[s.status] || "Chưa chạy") + (s.message ? " · " + s.message : "") },
+        dot, withName ? el("span", { class: "bt-stage-name", text: SHORT[kind] || kind }) : null);
+    }
+    // ba chấm nhỏ trong danh sách bên trái: nhìn lướt biết hành động nào xong/lỗi/đang chạy
+    function actionDots(b) {
+      const box = el("div", { class: "bt-pipe compact", "data-dots": b.id });
+      BA().ACTION_IDS.forEach((k) => box.append(dotNode(k, actionState(b, k), true)));
+      return box;
+    }
+
+    // cài đặt riêng của từng hành động: lấy từ server (đã lưu cho mẻ), thiếu thì lấy mặc định từ máy; gửi lên server khi bấm Chạy
+    const drafts = new Map();
+    const settingsFor = (b) => { if (!drafts.has(b.id)) drafts.set(b.id, BA().mergeSettings(b.actions, st.machineDefs || {})); return drafts.get(b.id); };
+
+    // Tự lưu cài đặt hành động ngay khi gõ/chọn, không cần bấm Chạy:
+    //  - đường dẫn thư mục: ghi ngay xuống đĩa của máy này (không bao giờ lên server)
+    //  - phần còn lại (số ngày, ngày bắt đầu, giờ đăng, số video): gửi server sau khi ngừng gõ ~0,8 giây
+    const saveTimers = new Map();
+    function autosave(b) {
+      const set = settingsFor(b), bl = window.BatchLocal;
+      if (bl) { const { local } = bl.splitSettings(set); api().batchesSaveLocal?.(b.id, local).catch(() => {}); }
+      clearTimeout(saveTimers.get(b.id));
+      saveTimers.set(b.id, setTimeout(() => {
+        saveTimers.delete(b.id);
+        const remote = bl ? bl.splitSettings(settingsFor(b)).remote : null;
+        if (remote && Object.keys(remote).length && !st.offline) api().batchesUpdate(b.id, { actions: remote }).catch(() => {}); // mất mạng thì thôi, lần Chạy sau sẽ gửi lại
+      }, 800));
+    }
+
+    // một thẻ hành động: tiêu đề + trạng thái, cài đặt riêng, nút Chạy
+    function actionCard(b, kind, saved) {
+      const def = BA().ACTIONS.find((a) => a.id === kind), s = actionState(b, kind), running = s.status === "running";
+      const set = saved[kind], inputs = {}, rows = [];
+      const touch = () => autosave(b);
+      const text = (key, label, ph, help) => { inputs[key] = el("input", { type: "text", value: set[key] || "", placeholder: ph || "" }); inputs[key].addEventListener("input", () => { set[key] = inputs[key].value; touch(); }); rows.push(field(label, inputs[key], help)); };
+      const pickRow = (key, label, help) => {
+        inputs[key] = el("input", { type: "text", value: set[key] || "", placeholder: "Chưa chọn (dùng thư mục đang chọn ở tab Render)", readonly: true });
+        const clear = el("button", { class: "folder-clear", type: "button", title: "Bỏ chọn", "aria-label": "Bỏ chọn", text: "×", onclick: () => { inputs[key].value = ""; set[key] = ""; touch(); } });
+        const pick = el("button", { class: "btn btn-secondary", type: "button", text: "Chọn", onclick: async () => { const p = await window.__batchPickFolder?.(); if (p) { inputs[key].value = p; set[key] = p; touch(); } } });
+        rows.push(field(label, el("div", { class: "folder-select" }, el("div", { class: "folder-input-wrap" }, inputs[key], clear), pick), help));
+      };
+      const numField = (key, label, min, max, help) => { inputs[key] = numInput(set[key] || "", min, max); inputs[key].addEventListener("input", () => { set[key] = inputs[key].value; touch(); }); rows.push(field(label, inputs[key], help)); };
+
+      if (kind === "render") {
+        // Mọi thiết lập của render nằm ở đây: ngày hiện tại, thư mục nguồn/nền/đích, kiểu render và thông số (gấp lại cho gọn)
+        const ctx = st.renderCtx && st.renderCtx.id === b.id ? st.renderCtx : null;
+        if (ctx) rows.push(field("Ngày hiện tại của vòng", ctx.curDay, "Lần render kế sẽ render ngày này (" + b.videosPerDay + " video/kênh), vòng " + (b.roundNo || 1) + ". Tự tăng sau mỗi lần render xong; sửa nếu muốn render lại."));
+        pickRow("overlayFolder", "Thư mục video nguồn (overlay)", "Ổ/thư mục chứa video nguồn của mẻ này.");
+        pickRow("backgroundFolder", "Thư mục video nền", "Để trống nếu kiểu render không dùng nền.");
+        pickRow("outputFolder", "Thư mục lưu video đã render (đích)", "Ổ/thư mục nhận video render xong.");
+        if (ctx) {
+          const tog = el("button", { class: "bt-toggle", type: "button", "aria-expanded": "false", text: "▸ Cách render", onclick: () => {
+            const o = tog.getAttribute("aria-expanded") === "true"; tog.setAttribute("aria-expanded", o ? "false" : "true"); tog.textContent = (o ? "▸" : "▾") + " Cách render"; wrap.classList.toggle("open", !o); } });
+          const wrap = el("div", { class: "bt-collapse" }, el("div", { class: "bt-sep bt-sep-inside" }, tog),
+            el("div", { class: "bt-collapse-body" }, field("Kiểu render", ctx.mode, "Giống mục Render. GPU, khóa API ở lại máy này, không lưu theo mẻ."), ctx.renderBox));
+          rows.push(wrap);
+        }
+      } else if (kind === "thumb") {
+        pickRow("thumbFolder", "Thư mục ảnh thumbnail", "Dùng cho mọi kênh trong mẻ. Đường dẫn chỉ áp dụng trên máy này.");
+        numField("numVideos", "Số video đổi thumbnail mỗi kênh", 1, 200, "Áp cho các video nháp (Draft) bạn đã upload tay.");
+      } else {
+        numField("numDays", "Số ngày lên lịch", 1, 60, "Mỗi ngày dùng hết các khung giờ bên dưới.");
+        inputs.startDate = el("input", { type: "date", value: set.startDate || "" }); inputs.startDate.addEventListener("input", () => { set.startDate = inputs.startDate.value; touch(); });
+        rows.push(field("Ngày bắt đầu (tuỳ chọn)", inputs.startDate, "Để trống = hôm nay. Video đầu tiên được đặt vào ngày kế tiếp."));
+        text("postTimes", "Giờ đăng mỗi ngày", "8:00, 12:00, 18:00", "Nhiều khung giờ cách nhau bằng dấu phẩy.");
+      }
+
+      const msg = el("div", { class: "bt-msg", role: "alert" });
+      const run = el("button", { class: "btn btn-primary bt-add", type: "button", text: running ? "Đang chạy…" : "▶ Chạy " + def.label.toLowerCase(), disabled: st.offline || running || anyLive(), onclick: () => runAction(b, kind, msg) });
+      const stop = running ? el("button", { class: "btn btn-secondary bt-add", type: "button", text: "⏹ Dừng", onclick: () => stopAction(b, kind) }) : null;
+      const status = el("div", { class: "bt-act-status " + (s.status === "none" ? "" : s.status) },
+        s.status === "none" ? el("span", { text: "Chưa chạy" }) : el("span", { class: "bt-pbadge " + s.status, text: STATUS_TEXT[s.status] }),
+        el("span", { class: "bt-help", text: [s.message, s.at ? ago(s.at) : ""].filter(Boolean).join(" · ") }));
+      return el("div", { class: "bt-act " + (running ? "running" : ""), "data-act": kind },
+        el("div", { class: "bt-act-head" }, dotNode(kind, s), el("div", { class: "bt-act-title" }, el("strong", { text: def.label }), el("div", { class: "bt-help", text: def.hint })), status),
+        el("div", { class: "bt-act-body" }, ...rows), el("div", { class: "bt-act-foot" }, msg, stop, run));
+    }
+
+    // ba tab Render | Thay thumbnail | Lên lịch: chỉ hiện một thẻ, không phải kéo xuống
+    function actionsBlock(b) {
+      const saved = settingsFor(b);
+      const tab = BA().ACTION_IDS.includes(st.actTab) ? st.actTab : "render";
+      const tabs = el("div", { class: "bt-tabs", role: "tablist", "aria-label": "Hành động của mẻ" }, BA().ACTIONS.map((a) => {
+        const s2 = actionState(b, a.id), on = a.id === tab;
+        return el("button", { type: "button", role: "tab", class: "bt-tab" + (on ? " active" : ""), "aria-selected": on ? "true" : "false", title: a.label + ": " + (STATUS_TEXT[s2.status] || "Chưa chạy"),
+          onclick: () => { st.actTab = a.id; try { localStorage.setItem("batch_act_tab", a.id); } catch { /* không quan trọng */ } refreshActionViews(); } },
+          el("span", { class: "bt-tabdot " + (s2.status === "none" ? "pending" : s2.status) }), el("span", { text: a.label }));
+      }));
+      return el("div", { class: "bt-actions-block", "data-actions": b.id },
+        tabs, actionCard(b, tab, saved),
+        el("div", { class: "bt-help bt-actnote", text: "Mỗi hành động chạy riêng khi bạn bấm: giữa các bước bạn upload video bằng tay lên YouTube nên chúng không chạy nối tiếp." }));
+    }
+    // cập nhật tại chỗ khi trạng thái đổi, KHÔNG vẽ lại phần còn lại của form đang sửa
+    function refreshActionViews() {
+      for (const box of root.querySelectorAll("[data-dots]")) { const b = byId(Number(box.dataset.dots)); if (b) box.replaceWith(actionDots(b)); }
+      const blk = root.querySelector("[data-actions]");
+      if (blk) { const b = byId(Number(blk.dataset.actions)); if (b) blk.replaceWith(actionsBlock(b)); }
+    }
+
+    async function reportRun(b, kind, status, message, day) {
+      try { await api().batchesActionRun?.(b.id, { kind, status, message, day, at: new Date().toISOString() }); } catch { /* báo web không được làm hỏng việc chạy */ }
+    }
+    async function runAction(b, kind, msgEl) {
+      const fresh = byId(b.id) || b, set = settingsFor(fresh)[kind];
+      const plan = BA().planAction(kind, fresh, set);
+      if (!plan.ok) { msgEl.className = "bt-msg err"; msgEl.textContent = plan.errors.join(". "); return; }
+      if (anyLive()) { toast("Đang chạy một hành động, đợi xong hoặc bấm Dừng.", "error"); return; }
+      msgEl.textContent = "";
+      // lưu cài đặt hành động lên server (web thấy ổ nguồn/đích, số ngày, ngày bắt đầu...). Với render còn lưu ngày hiện tại và cách render
+      // vì render lấy chúng từ server: không lưu được thì KHÔNG chạy để khỏi render nhầm ngày hoặc nhầm kiểu.
+      const ctx = kind === "render" && st.renderCtx && st.renderCtx.id === fresh.id ? st.renderCtx : null;
+      const body = { ...(ctx ? { ...ctx.collectRender(), currentDay: Number(ctx.curDay.value) } : {}), actions: { [kind]: set } };
+      const sv = await api().batchesUpdate(fresh.id, body).catch((e) => ({ ok: false, error: e.message }));
+      if (ctx && (!sv || sv.ok === false)) { msgEl.className = "bt-msg err"; msgEl.textContent = "Không lưu được cấu hình render: " + ((sv && sv.error) || "lỗi"); return; }
+      const key = liveKey(fresh.id, kind);
+      st.live.set(key, true); st.stopFor = null; refreshActionViews();
+      await reportRun(fresh, kind, "running", "");
+      let r;
+      try {
+        r = kind === "render" ? await window.runBatchRenderAction(fresh, set) : await window.runBatchAutomationAction(kind, fresh, set);
+        if (st.stopFor === key && !(r && r.ok)) r = { ok: false, canceled: true, message: "Đã dừng" };
+      } catch (e) { r = { ok: false, message: String((e && e.message) || e) }; }
+      const out = BA().normalizeOutcome(r);
+      st.live.delete(key); st.stopFor = null;
+      await reportRun(fresh, kind, out.status, out.message, r && r.day);
+      toast(BA().ACTION_LABEL[kind] + ": " + (STATUS_TEXT[out.status] || out.status) + (out.message ? " · " + out.message : ""), out.status === "success" ? "success" : "error");
+      st.dirty = false; await load(); // lấy ngày/vòng và kết quả mới từ server
+    }
+    function stopAction(b, kind) {
+      st.stopFor = liveKey(b.id, kind);
+      try { window.electronAPI.automation.stop(); } catch { /* không có tác vụ tự động hóa đang chạy */ }
+      toast("Đã yêu cầu dừng. Render không dừng giữa chừng được; thay thumbnail và lên lịch dừng ở kênh kế tiếp.");
     }
 
     async function removeBatch(b) {
@@ -248,33 +414,46 @@
     }
     async function pickChannels(b) {
       const list = el("div", { class: "bt-pick-list", text: "Đang lấy danh sách GPM…" });
-      const search = el("input", { type: "text", placeholder: "Tìm theo tên hoặc group…", autocomplete: "off" });
+      const search = el("input", { type: "text", placeholder: "Tìm theo tên hoặc Profile ID…", autocomplete: "off" });
+      const groupSel = el("select", { "aria-label": "Lọc theo group" }, el("option", { value: "", text: "Tất cả group" }));
       const count = el("span", { class: "bt-muted", text: "" });
       const chosen = new Set();
-      let profiles = [], groups = {};
+      let profiles = [], groups = {}, shown = [];
       const used = new Map(); // profileId -> lý do không chọn được
       for (const x of st.batches) for (const c of x.channels || []) used.set(c.gpmProfileId, x.id === b.id ? "đã có trong mẻ này" : "đang ở mẻ “" + x.name + "”");
       try {
         const ac = await window.ChannelConfigUI?.load?.();
         for (const c of (ac && ac.channels) || []) if (c.gpmProfileId) used.set(c.gpmProfileId, "đang chạy Auto (“" + c.name + "”)");
       } catch { /* không biết thì để server chặn */ }
+      // groupId từ GPM có thể là số còn giá trị của <select> luôn là chuỗi: so sánh bằng chuỗi (so sánh trực tiếp làm lọc group không ra profile nào)
+      const gkey = (p) => (p.groupId === undefined || p.groupId === null || p.groupId === "" ? "__none" : String(p.groupId));
       const draw = () => {
-        const q = search.value.toLowerCase().trim();
-        const rows = profiles.filter((p) => !q || p.name.toLowerCase().includes(q) || (groups[p.groupId] || "").toLowerCase().includes(q) || p.id.toLowerCase().includes(q));
-        count.textContent = chosen.size ? "Đã chọn " + chosen.size : "";
+        const q = search.value.toLowerCase().trim(), g = groupSel.value;
+        const rows = profiles.filter((p) => (!g || gkey(p) === g) && (!q || p.name.toLowerCase().includes(q) || (groups[p.groupId] || "").toLowerCase().includes(q) || p.id.toLowerCase().includes(q)));
+        shown = rows;
+        const free = rows.filter((p) => !used.has(p.id)).length;
+        count.textContent = rows.length + (profiles.length !== rows.length ? " / " + profiles.length : "") + " kênh · " + free + " chọn được" + (chosen.size ? " · đã chọn " + chosen.size : "");
         list.replaceChildren(...(rows.length ? rows.map((p) => {
           const why = used.get(p.id), cb = el("input", { type: "checkbox", checked: chosen.has(p.id), disabled: !!why });
-          cb.addEventListener("change", () => { cb.checked ? chosen.add(p.id) : chosen.delete(p.id); count.textContent = chosen.size ? "Đã chọn " + chosen.size : ""; });
+          cb.addEventListener("change", () => { cb.checked ? chosen.add(p.id) : chosen.delete(p.id); draw(); });
           return el("label", { class: "bt-pick" + (why ? " off" : "") }, cb, el("span", { class: "bt-pick-name", text: p.name }), el("span", { class: "bt-muted", text: groups[p.groupId] || "Chung" }), why ? el("span", { class: "bt-why", text: why }) : null);
         }) : [el("div", { class: "bt-empty small", text: profiles.length ? "Không có profile nào khớp." : "Không có profile GPM." })]));
       };
       search.addEventListener("input", draw);
+      groupSel.addEventListener("change", draw);
+      const selectAll = el("button", { class: "btn btn-secondary bt-add", type: "button", text: "Chọn hết kết quả", onclick: () => { for (const p of shown) if (!used.has(p.id)) chosen.add(p.id); draw(); } });
+      const clearAll = el("button", { class: "btn btn-secondary bt-add", type: "button", text: "Bỏ chọn", onclick: () => { chosen.clear(); draw(); } });
       (async () => {
         const r = await api().gpmListProfilesFull?.().catch((e) => ({ ok: false, error: e.message }));
         if (!r || !r.ok) { list.textContent = "Không lấy được danh sách GPM: " + ((r && r.error) || "GPM chưa chạy?"); return; }
-        profiles = r.profiles || []; groups = Object.fromEntries((r.groups || []).map((g) => [g.id, g.name])); draw();
+        profiles = r.profiles || []; groups = Object.fromEntries((r.groups || []).map((gr) => [gr.id, gr.name]));
+        const per = new Map(); for (const p of profiles) per.set(gkey(p), (per.get(gkey(p)) || 0) + 1);
+        [...per].sort((x, y) => String(x[0] === "__none" ? "Chung" : groups[x[0]] || x[0]).localeCompare(String(y[0] === "__none" ? "Chung" : groups[y[0]] || y[0]), "vi"))
+          .forEach(([k, n]) => groupSel.append(el("option", { value: k, text: (k === "__none" ? "Chung" : groups[k] || k) + " (" + n + ")" })));
+        draw();
       })();
-      modal("Thêm kênh vào “" + b.name + "”", el("div", {}, field("Chọn kênh từ GPM", search, "Mỗi profile chỉ ở một mẻ hoặc một kênh Auto."), list, count), {
+      modal("Thêm kênh vào “" + b.name + "”", el("div", {}, field("Chọn kênh từ GPM", el("div", { class: "bt-pickrow" }, search, groupSel), "Mỗi profile chỉ ở một mẻ hoặc một kênh Auto."), list,
+        el("div", { class: "bt-pick-foot" }, count, el("span", { class: "bt-pick-btns" }, selectAll, clearAll))), {
         ok: "Thêm vào mẻ",
         onOk: async () => {
           if (!chosen.size) return { ok: false, error: "Chưa chọn kênh nào" };
@@ -290,6 +469,8 @@
       });
     }
 
+    try { st.actTab = localStorage.getItem("batch_act_tab") || "render"; } catch { st.actTab = "render"; }
+    try { st.machineDefs = window.__batchMachineDefaults ? window.__batchMachineDefaults() : {}; } catch { st.machineDefs = {}; }
     paint(); load();
     return { reload: () => { if (root.offsetParent !== null && !st.dirty) load(); } };
   }

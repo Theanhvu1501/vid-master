@@ -972,11 +972,11 @@ ipcMain.handle("batches:apply-render", async (e, { id, projectName } = {}) => {
   } catch (err) { return { ok: false, offline: !!err?.offline, error: String(err?.message || err) }; }
 });
 // Đánh dấu mẻ đã render xong (hạn render vòng tiếp = lần này + chu kỳ). Không có mẻ nào chọn thì bỏ qua.
-ipcMain.handle("batches:mark-rendered", async (e, { id } = {}) => {
+ipcMain.handle("batches:mark-rendered", async (e, { id, day } = {}) => {
   try {
     if (!webConfigured() || !Number.isInteger(Number(id))) return { ok: false };
-    await webStore().markBatchRendered(Number(id));
-    return { ok: true };
+    const batch = await webStore().markBatchRendered(Number(id), day);
+    return { ok: true, batch };
   } catch (err) { return { ok: false, offline: !!err?.offline, error: String(err?.message || err) }; }
 });
 
@@ -2025,10 +2025,53 @@ ipcMain.handle("channels:import-pick", async () => {
   } catch (err) { return { ok: false, error: "Không đọc được file: " + String(err?.message || err) }; }
 });
 ipcMain.handle("channels:import", cfgCall(async ({ rows, apply, removeMissing }) => ({ plan: await webStore().importChannelConfigs(rows, { apply: !!apply, removeMissing: !!removeMissing }) })));
-ipcMain.handle("batches:list", async () => { try { if (!webConfigured()) return { ok: false, error: "Chưa đăng nhập." }; return await webStore().listBatches(); } catch (err) { return cfgFail(err); } });
-ipcMain.handle("batches:create", cfgCall(async ({ body }) => ({ batch: await webStore().createBatch(batchBodyWithRender(body)) })));
+// Đường dẫn thư mục của hành động trong mẻ: lưu TẠI MÁY (cùng thư mục cache theo tài khoản), không lên server. Xem sheet/batch-local.cjs.
+const batchLocal = require("./sheet/batch-local.cjs");
+const batchLocalDisk = () => createDiskStore({ dir: webStoreDir(), fs, path });
+const readBatchLocal = () => { const d = batchLocalDisk().read("batch-local"); return d && typeof d === "object" && !Array.isArray(d) ? d : {}; };
+function saveBatchLocal(id, local) {
+  const all = readBatchLocal(), clean = batchLocal.cleanLocal(local), cur = batchLocal.cleanLocal(all[String(id)]);
+  for (const kind of Object.keys(clean)) cur[kind] = { ...(cur[kind] || {}), ...clean[kind] };
+  for (const kind of Object.keys(cur)) { for (const k of Object.keys(cur[kind])) if (cur[kind][k] === "") delete cur[kind][k]; if (!Object.keys(cur[kind]).length) delete cur[kind]; }
+  if (Object.keys(cur).length) all[String(id)] = cur; else delete all[String(id)];
+  batchLocalDisk().write("batch-local", all);
+}
+// Mẻ trả cho giao diện: cài đặt hành động = phần từ server + đường dẫn từ máy này
+function withLocal(b, all) { return b && typeof b === "object" ? { ...b, actions: batchLocal.joinSettings(b.actions, (all || {})[String(b.id)]) } : b; }
+
+ipcMain.handle("batches:list", async () => { try { if (!webConfigured()) return { ok: false, error: "Chưa đăng nhập." }; const r = await webStore().listBatches(); if (r && Array.isArray(r.batches)) { let all = readBatchLocal(); if (!r.offline) { const pruned = batchLocal.pruneLocal(all, r.batches.map((b) => b.id)); if (Object.keys(pruned).length !== Object.keys(all).length) { all = pruned; try { batchLocalDisk().write("batch-local", all); } catch { /* không quan trọng */ } } } return { ...r, batches: r.batches.map((b) => withLocal(b, all)) }; } return r; } catch (err) { return cfgFail(err); } });
+ipcMain.handle("batches:create", cfgCall(async ({ body }) => { const plan = batchLocal.planUpdate(body); const batch = await webStore().createBatch(batchBodyWithRender(plan.remoteBody)); if (plan.saveLocal && batch && batch.id) saveBatchLocal(batch.id, plan.saveLocal); return { batch: withLocal(batch, readBatchLocal()) }; }));
+ipcMain.handle("batches:action-run", cfgCall(async ({ id, body }) => ({ batch: await webStore().reportBatchAction(Number(id), body) })));
+// Đếm video ở một thư mục (đệ quy, giới hạn độ sâu và số file) để xác nhận render có ra video thật. Chỉ đọc, không sửa gì.
+ipcMain.handle("batches:count-videos", async (e, { folder } = {}) => {
+  try {
+    const root = String(folder || "").trim();
+    if (!root || !fs.existsSync(root) || !fs.statSync(root).isDirectory()) return { ok: false, error: "Thư mục không tồn tại" };
+    let count = 0, newest = 0, seen = 0;
+    const walk = (dir, depth) => {
+      if (depth > 4 || seen > 20000) return;
+      let list; try { list = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const d of list) {
+        seen++;
+        const p = path.join(dir, d.name);
+        if (d.isDirectory()) walk(p, depth + 1);
+        else if (/\.(mp4|mov|mkv|webm|avi)$/i.test(d.name)) { count++; try { newest = Math.max(newest, fs.statSync(p).mtimeMs); } catch { /* bỏ qua */ } }
+      }
+    };
+    walk(root, 0);
+    return { ok: true, count, newest };
+  } catch (err) { return { ok: false, error: String((err && err.message) || err) }; }
+});
 ipcMain.handle("batches:schema", () => ({ ok: true, schema: batchRenderSchema() }));
-ipcMain.handle("batches:update", cfgCall(async ({ id, body }) => ({ batch: await webStore().updateBatch(Number(id), batchBodyWithRender(body)) })));
+ipcMain.handle("batches:update", cfgCall(async ({ id, body }) => {
+  const plan = batchLocal.planUpdate(body);
+  if (plan.saveLocal) saveBatchLocal(Number(id), plan.saveLocal);       // đường dẫn: chỉ ở máy này
+  if (!plan.callServer) return { batch: null, localOnly: true };         // không còn gì để gửi server
+  const batch = await webStore().updateBatch(Number(id), batchBodyWithRender(plan.remoteBody));
+  return { batch: withLocal(batch, readBatchLocal()) };
+}));
+// Lưu nháp đường dẫn thư mục của một mẻ (gọi khi người dùng chọn thư mục): chỉ ghi file trên máy
+ipcMain.handle("batches:save-local", async (e, { id, local } = {}) => { try { saveBatchLocal(Number(id), local); return { ok: true }; } catch (err) { return { ok: false, error: String(err?.message || err) }; } });
 ipcMain.handle("batches:delete", cfgCall(async ({ id }) => { await webStore().deleteBatch(Number(id)); return {}; }));
 ipcMain.handle("batches:add-channel", cfgCall(async ({ id, gpmProfileId, name }) => ({ batch: await webStore().addBatchChannel(Number(id), { gpmProfileId, name }) })));
 ipcMain.handle("batches:remove-channel", cfgCall(async ({ id, gpmProfileId }) => ({ batch: await webStore().removeBatchChannel(Number(id), gpmProfileId) })));
@@ -2794,7 +2837,8 @@ ipcMain.handle(
           env: env,
         });
         const scriptKey = path.basename(scriptPath);
-        const taskId = isTrackedTask(scriptKey) ? taskTracker.start(scriptKey) : null;
+        const batchName = typeof options.batchName === "string" ? options.batchName.trim() : "";
+        const taskId = isTrackedTask(scriptKey) ? taskTracker.start(scriptKey, batchName ? { label: batchTaskLabel(taskLabel(scriptKey), [{ name: batchName }]) } : {}) : null;
         const finishTask = (r) => { if (taskId) taskTracker.finish(taskId, r); };
 
         let stdout = "";
