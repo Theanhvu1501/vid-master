@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+  <title>VidMaster</title>
+  <style>
+    /* Bảng màu và kiểu dáng lấy theo hộp xác nhận (delete-confirm-dialog) của renderer.html */
+    :root {
+      --bg-primary:#0f1419; --bg-secondary:#151b23; --bg-tertiary:#1c2430; --bg-hover:#2a3444;
+      --accent:#fa6e03; --accent-rgb:250,110,3; --gradient:linear-gradient(135deg,#fa6e03 0%,#e85d04 100%);
+      --danger:#ff6b6b; --warning:#fcc419; --info:#4dabf7;
+      --text:#e8edf4; --muted:#94a3b8; --border:#2d3748; --r-md:8px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; color: var(--text); background: var(--bg-secondary); display: flex; flex-direction: column; overflow: hidden; -webkit-app-region: drag; }
+    .bar { height: 3px; flex: none; background: var(--gradient); }
+    body.danger .bar { background: linear-gradient(135deg,#ff6b6b,#e03131); }
+    .head { padding: 22px 24px 16px; text-align: center; border-bottom: 1px solid var(--border); background: rgba(var(--accent-rgb), .07); }
+    body.danger .head, body.error .head { background: rgba(255,107,107,.08); }
+    body.warning .head { background: rgba(252,196,25,.08); }
+    .icon { font-size: 40px; line-height: 1; margin-bottom: 8px; display: block; }
+    h1 { font-size: 17px; font-weight: 700; }
+    body.danger h1, body.error h1 { color: var(--danger); }
+    .body { flex: 1; min-height: 0; padding: 18px 24px 0; overflow-y: auto; text-align: center; -webkit-app-region: no-drag; }
+    .msg { font-size: 14px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+    .detail { margin-top: 12px; padding: 10px 12px; border-radius: 10px; background: rgba(252,196,25,.1); border: 1px solid rgba(252,196,25,.3); color: var(--warning); font-size: 12.5px; line-height: 1.5; text-align: left; overflow-wrap: anywhere; white-space: pre-wrap; }
+    body.error .detail { background: rgba(255,107,107,.08); border-color: rgba(255,107,107,.3); color: var(--danger); font-family: Consolas, Monaco, monospace; }
+    .actions { display: flex; gap: 8px; padding: 16px 24px 20px; -webkit-app-region: no-drag; }
+    button { flex: 1; padding: 12px 14px; border: 0; border-radius: var(--r-md); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; background: var(--bg-tertiary); color: var(--text); transition: background .15s, transform .15s, box-shadow .15s; }
+    button:hover { background: var(--bg-hover); }
+    button.primary { background: var(--gradient); color: #fff; box-shadow: 0 2px 8px rgba(var(--accent-rgb), .3); }
+    button.primary:hover { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(var(--accent-rgb), .4); }
+    body.danger button.primary { background: linear-gradient(135deg,#ff6b6b,#e03131); box-shadow: 0 2px 8px rgba(255,107,107,.3); }
+    button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    @media (prefers-reduced-motion: reduce) { button { transition: none; } }
+  </style>
+</head>
+<body>
+  <div class="bar" aria-hidden="true"></div>
+  <div class="head"><span class="icon" id="icon" aria-hidden="true"></span><h1 id="title"></h1></div>
+  <div class="body"><div class="msg" id="msg"></div><div class="detail" id="detail" hidden></div></div>
+  <div class="actions" id="actions"></div>
+  <script>
+    // Chỉ dùng textContent: nội dung có thể chứa lỗi/đường dẫn từ nơi khác, không bao giờ nội suy HTML.
+    const ICON = { question: "❓", warning: "⚠️", error: "❌", info: "ℹ️", danger: "🗑️", logout: "🚪" };
+    const $ = (id) => document.getElementById(id);
+    let chosen = false, count = 1, cancelId = 0, defaultId = 0;
+    const choose = (i) => { if (chosen) return; chosen = true; document.querySelectorAll("button").forEach((b) => { b.disabled = true; }); window.noticeApi.choose(i); };
+    window.noticeApi.info().then((o) => {
+      document.body.classList.add(o.kind || "info"); if (o.danger) document.body.classList.add("danger");
+      document.title = o.title || "VidMaster";
+      $("icon").textContent = o.icon || ICON[o.danger ? "danger" : o.kind] || ICON.info;
+      $("title").textContent = o.title || "";
+      $("msg").textContent = o.message || "";
+      if (o.detail) { $("detail").textContent = o.detail; $("detail").hidden = false; }
+      const buttons = Array.isArray(o.buttons) && o.buttons.length ? o.buttons : ["OK"];
+      count = buttons.length; cancelId = Number.isInteger(o.cancelId) ? o.cancelId : count - 1; defaultId = Number.isInteger(o.defaultId) ? o.defaultId : 0;
+      buttons.forEach((label, i) => {
+        const b = document.createElement("button"); b.type = "button"; b.textContent = String(label);
+        // Nút chính (cam hoặc đỏ khi nguy hiểm) là nút KHÔNG phải nút hủy; hộp chỉ có một nút thì nút đó là chính.
+        if (count === 1 || i !== cancelId) b.classList.add("primary");
+        b.addEventListener("click", () => choose(i));
+        $("actions").append(b);
+      });
+      const focusBtn = $("actions").children[defaultId] || $("actions").children[0]; focusBtn?.focus();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { e.preventDefault(); choose(cancelId); }
+      else if (e.key === "Enter" && document.activeElement?.tagName !== "BUTTON") { e.preventDefault(); choose(defaultId); }
+    });
+  </script>
+</body>
+</html>

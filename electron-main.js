@@ -27,6 +27,17 @@ import { resolveThumbRun, resolveScheduleRun } from "./sheet/run-options.js";
 import { runCreateChannel, createChannelOne } from "./sheet/create-channel.js";
 import { writeSample, SAMPLE_FILES } from "./sheet/excel-samples.js";
 import { createUploadQueue } from "./sheet/upload-queue.js";
+import * as veo3Adapter from "./sheet/veo3-adapter.js";
+import { createNoticeService } from "./sheet/notice-window.js";
+import puppeteer from "puppeteer-core";
+import { createChannelKeyStore } from "./sheet/ai-keys.js";
+import { optimizeVideo, buildThumbPrompt } from "./sheet/ai-optimize.js";
+import { makeThumbViaProfile } from "./sheet/ai-thumb.js";
+import { importCookiesIntoBrowser } from "./sheet/veo3/cookies-import.js";
+import { createThumbAccountPool, drawWithAccounts, classifyDrawError } from "./sheet/ai-thumb-pool.js";
+import { generateTitle } from "./sheet/ai-title.js";
+import { handleVeo3Generate } from "./sheet/veo3/image-generation.js";
+import { startProfile as gpmStartProfile } from "./sheet/gpm-client.js";
 import { sendTelegram, sendTelegramPhoto, buildDigest, buildChannelReport, parseTopicId } from "./sheet/telegram-notify.js";
 import { renderOne, resolveFfmpegPaths } from "./sheet/render-core.js";
 import { detectChromaColor } from "./sheet/chroma-detect.js";
@@ -528,6 +539,17 @@ function showLoginDialog(notice = "") {
 }
 
 // Mở app: khôi phục phiên đã lưu, hỏi server còn hợp lệ không; không có/không hợp lệ thì bắt đăng nhập.
+
+// Hộp thông báo/xác nhận theo style của app (cửa sổ nhỏ riêng, chạy được cả khi chưa có cửa sổ chính). Thay cho dialog.showMessageBox mặc định.
+// Nếu không dựng được cửa sổ thì rơi về hộp mặc định để người dùng vẫn thấy thông báo.
+const appNotice = createNoticeService({
+  BrowserWindow, ipcMain,
+  htmlPath: path.join(__dirname, "notice-dialog.html"),
+  preloadPath: path.join(__dirname, "notice-preload.cjs"),
+  iconPath: path.join(__dirname, "assets/icon.ico"),
+  fallback: (parent, o) => dialog.showMessageBox(parent || undefined, { type: o.type || "info", title: o.title || "VidMaster", message: o.message || "", detail: o.detail || "", buttons: o.buttons || ["OK"], defaultId: o.defaultId, cancelId: o.cancelId }),
+});
+
 async function checkLicenseBeforeStart() {
   try {
     const r = await sessionMgr.restore();
@@ -539,7 +561,7 @@ async function checkLicenseBeforeStart() {
     return true;
   } catch (error) {
     console.error("Error in login check:", error);
-    await dialog.showMessageBox(null, { type: "error", title: "Lỗi", message: "Lỗi kiểm tra đăng nhập", detail: String(error?.message || error), buttons: ["OK"] });
+    await appNotice.show(null, { type: "error", title: "Lỗi", message: "Lỗi kiểm tra đăng nhập", detail: String(error?.message || error), buttons: ["Đóng"] });
     app.quit();
     return false;
   }
@@ -598,7 +620,7 @@ const LICENSE_CHECK_INTERVAL = 60 * 60 * 1000;
 async function forceLogout(message) {
   try { monitorAgent.stop(); } catch { /* ignore */ }
   sessionMgr.logout();
-  await dialog.showMessageBox(null, { type: "warning", title: "Đã đăng xuất", message: message || "Phiên đăng nhập không còn hợp lệ.", buttons: ["OK"] });
+  await appNotice.show(null, { type: "warning", icon: "🚪", title: "Đã đăng xuất", message: message || "Phiên đăng nhập không còn hợp lệ.", detail: "Ứng dụng sẽ khởi động lại để bạn đăng nhập lại.", buttons: ["Đăng nhập lại"] });
   app.relaunch();
   app.quit();
 }
@@ -763,6 +785,8 @@ app.on("before-quit", () => {
   stopPotServer();
   taskTracker.abortAll();
   monitorAgent.stop();
+  // Đóng Chrome riêng của tab Veo3 (nếu đang mở) để không mồ côi sau khi thoát app.
+  veo3Adapter.destroy().catch(() => {});
 });
 
 app.on("activate", () => {
@@ -1379,6 +1403,203 @@ ipcMain.handle("download-ytdlp", async () => {
   }
 });
 
+// ================= AI viết title (Gemini) =================
+// Cài đặt + khóa lưu TẠI MÁY (khóa mã hóa bằng safeStorage). Giao diện chỉ nhận bản không có khóa.
+// ================= AI tối ưu title + thumbnail theo kênh =================
+// Khóa AI do người dùng tự nhập cho TỪNG kênh, lưu tại máy và mã hóa (safeStorage); không lên server, không trả lại giao diện.
+const aiKeyDisk = createDiskStore({ dir: getConfigDir(), fs, path });
+const channelKeys = createChannelKeyStore({
+  io: { read: (n) => aiKeyDisk.read(n), write: (n, d) => aiKeyDisk.write(n, d) },
+  crypto: { available: () => safeStorage.isEncryptionAvailable(), encrypt: (t) => safeStorage.encryptString(t).toString("base64"), decrypt: (t) => safeStorage.decryptString(Buffer.from(t, "base64")) },
+});
+ipcMain.handle("ai:key-get", (e, name) => ({ ok: true, ...channelKeys.view(name) }));
+ipcMain.handle("ai:key-set", (e, { name, key } = {}) => channelKeys.set(name, key));
+ipcMain.handle("ai:key-clear", (e, name) => channelKeys.clear(name));
+// Chặn hai bên cùng giành một profile GPM: bước AI đang dùng profile thì hàng đợi upload phải chờ (upload mở lại profile sẽ cắt phiên AI).
+const profileLocks = new Map();
+async function lockProfile(profileId) {
+  const prev = profileLocks.get(profileId) || Promise.resolve();
+  let release; const mine = new Promise((r) => { release = r; });
+  profileLocks.set(profileId, prev.then(() => mine));
+  await prev;
+  return () => { release(); if (profileLocks.get(profileId) === mine) profileLocks.delete(profileId); };
+}
+const thumbPool = createThumbAccountPool({ listAccounts: () => veo3Adapter.accounts.list() });
+const makeAiOptimizer = (emitEvent) => async ({ channel, title, descriptionPath, thumbPath, gpmHost, profileId }) => optimizeVideo({
+  channel, title, descriptionPath, thumbPath,
+  deps: {
+    getKey: (n) => channelKeys.get(n),
+    generateTitle,
+    // Đọc/ghi qua buffer: sharp mở theo đường dẫn bị lỗi với tên file tiếng Nhật rất dài (title video).
+    normalizeThumb: async (p) => { const buf = await sharp(fs.readFileSync(p)).resize(1280, 720, { fit: "cover" }).jpeg({ quality: 90 }).toBuffer(); fs.writeFileSync(p, buf); },
+    exists: (p) => fs.existsSync(p), readText: (p) => fs.readFileSync(p, "utf-8"), unlink: (p) => fs.unlinkSync(p),
+    rename: (a, b) => fs.renameSync(a, b), copy: (a, b) => fs.copyFileSync(a, b),
+    log: (message) => emitEvent({ type: "log", message }),
+    makeThumb: async ({ title: t, referencePath, outPath }) => {
+      const nm = channel.sheetName || channel.name;
+      const say = (m) => emitEvent({ type: "log", message: `[${nm}] ${m}` });
+      // 1) Xoay vòng các account Veo3 đã đăng nhập (Chrome riêng, ít bị Google chặn hơn profile GPM). Account hết hạn mức thì nghỉ, chuyển account khác.
+      const tmpDir = path.join(app.getPath("userData"), "veo3", "thumb-tmp");
+      const r = await drawWithAccounts({
+        pool: thumbPool, log: say,
+        draw: async (acc) => {
+          let last = {};
+          const res = await veo3Adapter.generateForAccount(acc.id, {
+            prompt: buildThumbPrompt(t), model: "Nano Banana pro", aspectRatio: "16:9", outputCount: 1,
+            referenceImages: [{ filePath: referencePath, mime: "image/jpeg", filename: "reference.jpg" }],
+          }, (d) => { if (d && (d.step === "need_login" || d.error)) last = d; }, { outputDir: tmpDir, headless: true });
+          const f = res && res.ok ? res.images?.[0]?.filePath : null;
+          if (f && fs.existsSync(f)) { fs.copyFileSync(f, outPath); try { fs.unlinkSync(f); } catch { /* file tạm */ } return { ok: true }; }
+          return { ok: false, kind: classifyDrawError({ step: last.step, errorCode: last.errorCode, message: last.error || last.message }), message: last.error || last.message || "không tạo được ảnh" };
+        },
+      });
+      if (r.ok) { say(`AI vẽ thumbnail bằng account Veo3 "${veo3Adapter.accounts.get(r.accountId)?.name || r.accountId.slice(0, 8)}".`); return outPath; }
+      // 2) Hết cách: thử ngay trong profile GPM của kênh (cần đã đăng nhập Flow trong profile đó).
+      const release = await lockProfile(profileId);
+      try {
+        return await makeThumbViaProfile({
+          gpmHost, profileId, title: t, referencePath, outPath,
+          deps: {
+            startProfile: gpmStartProfile,
+            connect: (addr) => puppeteer.connect({ browserURL: `http://${addr}`, defaultViewport: null }),
+            generate: handleVeo3Generate, writeFile: (f, b) => fs.writeFileSync(f, b), log: say,
+          },
+        });
+      } catch (profileErr) {
+        const why = r.tried.length ? r.tried.map((x) => x.message).join("; ") : "chưa có account Veo3 nào đăng nhập";
+        throw new Error(`${why}; profile kênh: ${String(profileErr?.message || profileErr).slice(0, 120)}`);
+      } finally { release(); }
+    },
+  },
+});
+
+// ================= Sinh ảnh bằng Veo3 (Google Flow API qua Puppeteer) =================
+// Quản lý nhiều account Google, mỗi account một Chrome profile riêng.
+const veo3Settings = { model: "Nano Banana pro", aspectRatio: "16:9", parallelJobs: 1, headless: true, outputDir: "" };
+let veo3Run = null; // AbortController khi đang chạy
+const veo3OutputDir = () => {
+  if (veo3Settings.outputDir && fs.existsSync(veo3Settings.outputDir)) return veo3Settings.outputDir;
+  const d = path.join(getConfigDir(), "veo3", "output");
+  try { fs.mkdirSync(d, { recursive: true }); } catch { /* veo3 tự tạo */ }
+  return d;
+};
+
+ipcMain.handle("veo3:get", () => {
+  try {
+    return { ok: true, accounts: veo3Adapter.accounts.list(), settings: veo3Settings, running: !!veo3Run };
+  } catch (err) {
+    return { ok: false, error: String(err?.message || err) };
+  }
+});
+
+ipcMain.handle("veo3:add-account", () => {
+  try {
+    veo3Adapter.accounts.add({});
+    return { ok: true, accounts: veo3Adapter.accounts.list() };
+  } catch (err) { return { ok: false, error: String(err?.message || err) }; }
+});
+
+ipcMain.handle("veo3:remove-account", async (e, accountId) => {
+  try {
+    await veo3Adapter.closeAccountBrowser(accountId);
+    veo3Adapter.accounts.remove(accountId);
+    return { ok: true, accounts: veo3Adapter.accounts.list() };
+  } catch (err) { return { ok: false, error: String(err?.message || err) }; }
+});
+
+// Nhập cookie đăng nhập Google cho một account (thay cho đăng nhập tay). Giá trị cookie không bao giờ được ghi log.
+ipcMain.handle("veo3:import-cookies", async (e, { accountId, text } = {}) => {
+  try {
+    const acc = veo3Adapter.accounts.get(accountId);
+    if (!acc) return { ok: false, error: "Account không tồn tại." };
+    const browser = await veo3Adapter.ensureBrowserFor(accountId, { headless: true });
+    const r = await importCookiesIntoBrowser({ browser, text: String(text || "").slice(0, 2_000_000) });
+    if (r.ok) veo3Adapter.accounts.update(accountId, { lastLoginStatus: r.loggedIn ? "logged_in" : "logged_out" });
+    await veo3Adapter.closeAccountBrowser(accountId); // đóng để cookie được ghi xuống profile
+    return { ok: r.ok, loggedIn: r.loggedIn, count: r.count, domains: r.summary?.domains, error: r.error, accounts: veo3Adapter.accounts.list() };
+  } catch (err) { return { ok: false, error: String(err?.message || err).slice(0, 200) }; }
+});
+ipcMain.handle("veo3:pool-status", () => ({ ok: true, now: Date.now(), accounts: thumbPool.status() }));
+
+ipcMain.handle("veo3:open-login", async (e, accountId) => {
+  try {
+    await veo3Adapter.openLoginWindow(accountId);
+    return { ok: true };
+  } catch (err) { return { ok: false, error: String(err?.message || err) }; }
+});
+
+ipcMain.handle("veo3:close-browser", async (e, accountId) => {
+  try {
+    await veo3Adapter.closeAccountBrowser(accountId);
+    return { ok: true };
+  } catch (err) { return { ok: false, error: String(err?.message || err) }; }
+});
+
+ipcMain.handle("veo3:save-settings", (e, patch) => {
+  try {
+    if (patch && typeof patch === "object") {
+      if (patch.model) veo3Settings.model = String(patch.model);
+      if (patch.aspectRatio) veo3Settings.aspectRatio = String(patch.aspectRatio);
+      if (patch.parallelJobs !== undefined) veo3Settings.parallelJobs = Math.max(1, Math.min(10, Number(patch.parallelJobs) || 1));
+      if (patch.headless !== undefined) veo3Settings.headless = !!patch.headless;
+      if (patch.outputDir !== undefined) veo3Settings.outputDir = String(patch.outputDir || "");
+    }
+    return { ok: true, settings: veo3Settings };
+  } catch (err) { return { ok: false, error: String(err?.message || err) }; }
+});
+
+ipcMain.handle("veo3:run", async (e, prompts) => {
+  if (veo3Run) return { ok: false, error: "Đang có một lô ảnh chạy. Đợi xong hoặc bấm Dừng." };
+  const list = (Array.isArray(prompts) ? prompts : []).map((x) => String(x ?? "").slice(0, 2000)).filter(Boolean).slice(0, 200);
+  if (!list.length) return { ok: false, error: "Không có prompt nào." };
+  const accounts = veo3Adapter.accounts.list();
+  if (!accounts.length) return { ok: false, error: "Chưa có account nào. Thêm account và đăng nhập trước." };
+
+  const controller = new AbortController();
+  veo3Run = controller;
+  const send = (payload) => { try { mainWindow?.webContents.send("veo3:progress", payload); } catch { /* cửa sổ đã đóng */ } };
+
+  try {
+    const results = await veo3Adapter.generateImages(
+      list,
+      { model: veo3Settings.model, aspectRatio: veo3Settings.aspectRatio, parallelJobs: veo3Settings.parallelJobs, headless: veo3Settings.headless, outputDir: veo3OutputDir() },
+      (ev) => send({ type: "item", ...ev }),
+      { signal: controller.signal }
+    );
+    return { ok: true, results };
+  } catch (err) {
+    if (err.name === "AbortError") return { ok: false, error: "Đã hủy." };
+    return { ok: false, error: String(err?.message || err) };
+  } finally {
+    veo3Run = null;
+    send({ type: "end" });
+  }
+});
+
+ipcMain.handle("veo3:stop", () => {
+  if (veo3Run) { veo3Run.abort(); veo3Run = null; }
+  return { ok: true };
+});
+
+ipcMain.handle("veo3:open-file", (e, p) => {
+  try {
+    const f = String(p || "");
+    if (f && fs.existsSync(f)) { shell.showItemInFolder(f); return { ok: true }; }
+    return { ok: false, error: "Không thấy file." };
+  } catch (err) { return { ok: false, error: String(err?.message || err) }; }
+});
+
+ipcMain.handle("veo3:read-image", (e, p) => {
+  try {
+    const f = path.resolve(String(p || ""));
+    if (!/\.(png|jpe?g|webp)$/i.test(f) || !fs.existsSync(f)) return { ok: false, error: "Không hợp lệ." };
+    const st = fs.statSync(f);
+    if (st.size > 8 * 1024 * 1024) return { ok: false, error: "Ảnh quá lớn để xem trước." };
+    const mime = /\.png$/i.test(f) ? "image/png" : /\.webp$/i.test(f) ? "image/webp" : "image/jpeg";
+    return { ok: true, dataUrl: `data:${mime};base64,${fs.readFileSync(f).toString("base64")}` };
+  } catch (err) { return { ok: false, error: String(err?.message || err) }; }
+});
+
 // Cài đặt yt-dlp dùng chung toàn app (ytdlp-settings.json). Tách khỏi project JSON để
 // YouTube đổi cơ chế thì sửa đúng MỘT chỗ, áp cho cả tải thủ công lẫn chạy theo Sheet.
 ipcMain.handle("ytdlp:get-settings", async () => loadYtdlpSettings(getConfigDir()));
@@ -1649,6 +1870,7 @@ function buildSheetRunner(win) {
   const tgTopicId = parseTopicId(s.gpmTelegramTopicId);
   // Hàng đợi upload GPM (state riêng, log ra cùng luồng sự kiện Sheet).
   const uploadQueue = createUploadQueue({
+    lockProfile,
     // Nguồn sự thật = Sheet cột C: đọc trạng thái upload của kênh → slot đã dùng + url đã lên lịch.
     readChannelUploads: async (sheetName) => {
       const rows = await store.readChannelUrls(sheetName);
@@ -1697,6 +1919,7 @@ function buildSheetRunner(win) {
   });
   return createSheetRunner({
     uploadQueue,
+    aiOptimizer: makeAiOptimizer(emitEvent),
     refreshStats: async () => {
       const r = await refreshChannelStats();
       emitEvent({ type: "stats", ...r });
@@ -1760,6 +1983,8 @@ function buildSheetRunner(win) {
       return downloadOne(url, dir, {
         ...opts,
         cookiePool,
+        // Kênh bật AI thì lấy kèm mô tả gốc (--write-description) để AI viết title mới dựa vào đó.
+        ...(opts?.wantDescription ? { descDir: dir } : {}),
         downloadDrive: dl.downloadDrive,
         driveLanguage: dl.driveLanguage,
         // descDir cố tình bỏ trống: kênh chạy theo Sheet lấy tiêu đề/mô tả từ cột trong
@@ -2154,9 +2379,8 @@ ipcMain.handle("account:get", () => {
   return { loggedIn: sessionMgr.isLoggedIn(), username: u?.username || "", displayName: u?.displayName || u?.username || "", role: u?.role || "" };
 });
 ipcMain.handle("account:logout", async () => {
-  const w = BrowserWindow.getFocusedWindow() || undefined;
-  const { response } = await dialog.showMessageBox(w, { type: "question", title: "Đăng xuất", message: "Đăng xuất khỏi tài khoản trên máy này?", detail: "Các tác vụ đang chạy sẽ bị dừng và ứng dụng sẽ khởi động lại.", buttons: ["Đăng xuất", "Hủy"], defaultId: 1, cancelId: 1 });
-  if (response !== 0) return { ok: false };
+  // Người dùng đã xác nhận ở hộp "Xác nhận đăng xuất" theo style của app trong cửa sổ chính (confirmLogout) nên KHÔNG hỏi lại lần nữa:
+  // trước đây hộp này bị hỏi hai lần (một hộp theo style, một hộp mặc định của hệ điều hành).
   try { taskTracker.abortAll(); monitorAgent.stop(); } catch { /* ignore */ }
   sessionMgr.logout();
   app.relaunch();
@@ -2233,6 +2457,15 @@ ipcMain.handle("sheet:pending-uploads", async (e, sheetName) => {
 });
 
 // Đăng lại thủ công: chỉ đẩy file đã render vào lại hàng đợi upload.
+// Thử lại video lỗi của kênh (lỗi tải/render làm lại từ đầu; lỗi upload đăng lại). Không tự chạy lượt mới: người dùng bấm Chạy sau.
+ipcMain.handle("sheet:retry-failed", async (e, { sheetName, urls } = {}) => {
+  try {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    return await getSheetRunner(win).retryFailed(String(sheetName || "").trim(), Array.isArray(urls) ? urls : undefined);
+  } catch (err) {
+    return { ok: false, reset: 0, uploads: 0, skipped: [], error: String(err?.message || err) };
+  }
+});
 ipcMain.handle("sheet:retry-upload", async (e, { sheetName, urls } = {}) => {
   try {
     const win = BrowserWindow.fromWebContents(e.sender);
@@ -2277,8 +2510,10 @@ ipcMain.handle("gpm:list-channels", async () => {
     const channels = await webChannels();
     // Quota hôm nay: đọc runner-state.json để card hiện "3/8". computeRemaining tự
     // coi quota là 0 khi lastRunDate khác hôm nay, nên không cần reset thủ công.
-    const state = st.channelsRoot ? loadState(path.join(st.channelsRoot, "runner-state.json")) : {};
+    const store = webStore();
     const today = todayStr(new Date());
+    // Nạp danh sách video của từng kênh (server, hoặc bản sao trên đĩa khi mất mạng) rồi mới đếm; chưa nạp thì renderedToday luôn là 0.
+    await Promise.all(channels.map((c) => store.readChannelUrls(c.sheetName).catch(() => null)));
     return {
       ok: true,
       channels: channels.map((c) => {
@@ -2288,7 +2523,8 @@ ipcMain.handle("gpm:list-channels", async () => {
           gpmProfileId: c.gpmProfileId || "",
           videosPerDay: perDay,
           enabled: !!c.enabled,
-          countToday: perDay - computeRemaining(state[c.sheetName], perDay, today),
+          // Đếm từ danh sách video của kênh (server / bản sao khi mất mạng). Chưa nạp được danh sách thì coi như 0.
+          countToday: (() => { try { return store.renderedToday(c.sheetName, today); } catch { return 0; } })(),
         };
       }),
     };
