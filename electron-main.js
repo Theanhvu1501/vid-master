@@ -1435,18 +1435,39 @@ const makeAiOptimizer = (emitEvent) => async ({ channel, title, descriptionPath,
     exists: (p) => fs.existsSync(p), readText: (p) => fs.readFileSync(p, "utf-8"), unlink: (p) => fs.unlinkSync(p),
     rename: (a, b) => fs.renameSync(a, b), copy: (a, b) => fs.copyFileSync(a, b),
     log: (message) => emitEvent({ type: "log", message }),
-    makeThumb: async ({ title: t, referencePath, outPath }) => {
+    makeThumb: async ({ title: t, referencePath, outPath, customRule = "", sampleImages = [] }) => {
       const nm = channel.sheetName || channel.name;
       const say = (m) => emitEvent({ type: "log", message: `[${nm}] ${m}` });
+
+      // Chuẩn bị hình mẫu: chuyển data URI thành buffer
+      const sampleRefs = [];
+      for (let i = 0; i < sampleImages.length && sampleRefs.length < 3; i++) {
+        const uri = sampleImages[i];
+        if (uri && typeof uri === "string" && uri.startsWith("data:image/")) {
+          const m = uri.match(/^data:(image\/[^;]+);base64,(.+)$/);
+          if (m) {
+            const mime = m[1];
+            const ext = mime === "image/png" ? ".png" : mime === "image/webp" ? ".webp" : ".jpg";
+            const buffer = Buffer.from(m[2], "base64");
+            sampleRefs.push({ buffer, mime, filename: `sample${i + 1}${ext}` });
+          }
+        }
+      }
+
       // 1) Xoay vòng các account Veo3 đã đăng nhập (Chrome riêng, ít bị Google chặn hơn profile GPM). Account hết hạn mức thì nghỉ, chuyển account khác.
       const tmpDir = path.join(app.getPath("userData"), "veo3", "thumb-tmp");
       const r = await drawWithAccounts({
         pool: thumbPool, log: say,
         draw: async (acc) => {
           let last = {};
+          const referenceImages = [
+            { filePath: referencePath, mime: "image/jpeg", filename: "reference.jpg" },
+            ...sampleRefs,
+          ];
           const res = await veo3Adapter.generateForAccount(acc.id, {
-            prompt: buildThumbPrompt(t), model: "Nano Banana pro", aspectRatio: "16:9", outputCount: 1,
-            referenceImages: [{ filePath: referencePath, mime: "image/jpeg", filename: "reference.jpg" }],
+            prompt: buildThumbPrompt(t, customRule, sampleRefs.length > 0),
+            model: "Nano Banana pro", aspectRatio: "16:9", outputCount: 1,
+            referenceImages,
           }, (d) => { if (d && (d.step === "need_login" || d.error)) last = d; }, { outputDir: tmpDir, headless: true });
           const f = res && res.ok ? res.images?.[0]?.filePath : null;
           if (f && fs.existsSync(f)) { fs.copyFileSync(f, outPath); try { fs.unlinkSync(f); } catch { /* file tạm */ } return { ok: true }; }
@@ -1458,7 +1479,7 @@ const makeAiOptimizer = (emitEvent) => async ({ channel, title, descriptionPath,
       const release = await lockProfile(profileId);
       try {
         return await makeThumbViaProfile({
-          gpmHost, profileId, title: t, referencePath, outPath,
+          gpmHost, profileId, title: t, referencePath, outPath, customRule, sampleImages,
           deps: {
             startProfile: gpmStartProfile,
             connect: (addr) => puppeteer.connect({ browserURL: `http://${addr}`, defaultViewport: null }),

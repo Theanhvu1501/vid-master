@@ -1,5 +1,5 @@
 import path from "path";
-import { todayStr, computeRemaining, recordRendered } from "./runner-state.js";
+import { todayStr, computeRemaining, recordRendered, remainingFrom } from "./runner-state.js";
 import { decideAction, skipText, ST, MAX_ATTEMPTS } from "./resume-plan.js";
 import { getEntry, setEntry, clearEntry } from "./resume-state.js";
 import { normalizeProxy } from "./proxy.js";
@@ -24,6 +24,15 @@ export function pickDownloadDelay(config = {}, rand = Math.random) {
   return Math.floor(min + rand() * (max - min));
 }
 
+// Cờ AI của kênh đi kèm job upload: bật/tắt + rule + hình mẫu.
+const aiOfChannel = (ch) => ({
+  name: String(ch?.sheetName ?? ch?.name ?? "").slice(0, 100),
+  aiTitle: ch?.aiTitle === true,
+  aiTitleRule: String(ch?.aiTitleRule || ""),
+  aiThumbRule: String(ch?.aiThumbRule || ""),
+  aiThumbSamples: Array.isArray(ch?.aiThumbSamples) ? ch.aiThumbSamples : [],
+});
+
 export function createSheetRunner(deps) {
   const {
     config, sheetsApi, downloader, copyLocalOverlay, listLocalInputs, renderer, listBackgrounds,
@@ -31,6 +40,8 @@ export function createSheetRunner(deps) {
     uploadQueue, refreshStats, resumeStore, fileExists, checkGpm,
     // Chỉ nhánh testRenderNow dùng: cắt clip ngắn, mở file kết quả, tạo folder test/.
     cutClip, openFile, ensureDir,
+    // Step AI title + thumbnail (tuỳ chọn): async ({channel,title,descriptionPath,thumbPath,gpmHost,profileId}) -> {title,thumbChanged}. Không bao giờ chặn flow.
+    aiOptimizer,
   } = deps;
   let timer = null;
   let running = false;
@@ -56,6 +67,8 @@ export function createSheetRunner(deps) {
       locale: config.gpmLocale,
       rowIndex: item.rowIndex,
       sourceUrl: item.url,
+      customTitle: String(info.customTitle || ""),
+      ai: aiOfChannel(ch),
     });
     return "enqueued";
   }
@@ -72,6 +85,11 @@ export function createSheetRunner(deps) {
   // yt-dlp lưu thumb cùng basename với video: <title>.mp4 -> <title>.jpg
   function thumbOf(videoPath) {
     return String(videoPath).replace(/\.[^.]+$/, ".jpg");
+  }
+
+  // yt-dlp --write-description lưu mô tả cùng basename: <title>.mp4 -> <title>.description
+  function descOf(videoPath) {
+    return String(videoPath).replace(/\.[^.]+$/, ".description");
   }
 
   // Tăng biến đếm rồi lưu. load/save đồng bộ, KHÔNG await ở giữa: pLimit chạy
@@ -133,8 +151,12 @@ export function createSheetRunner(deps) {
         if (fresh.length) await sheetsApi.appendUrls(ch.sheetName, fresh);
       }
 
+      // Hạn mức ngày: đếm từ danh sách video của kênh (nguồn server, có bản sao trên đĩa khi mất mạng), không từ file riêng ở máy.
+      // Nguồn không có renderedToday (vd. test/nguồn cũ) thì dùng runner-state.json như trước.
       const state = stateStore.load();
-      const remaining = computeRemaining(state[ch.sheetName], ch.videosPerDay, today);
+      const remaining = typeof sheetsApi.renderedToday === "function"
+        ? (await sheetsApi.readChannelUrls(ch.sheetName), remainingFrom(sheetsApi.renderedToday(ch.sheetName, today), ch.videosPerDay))
+        : computeRemaining(state[ch.sheetName], ch.videosPerDay, today);
 
       const urls = await sheetsApi.readChannelUrls(ch.sheetName);
       const rs = resumeStore.load();
@@ -226,7 +248,7 @@ export function createSheetRunner(deps) {
           continue;
         }
         if (action !== "upload-only" && action !== "upload-wait") continue;
-        const res = enqueueUpload(ch, item, { outputPath: entry.outputPath, title: entry.title }, overlaysDir);
+        const res = enqueueUpload(ch, item, { outputPath: entry.outputPath, title: entry.title, customTitle: entry.aiTitle }, overlaysDir);
         if (res === "enqueued") {
           // upload-wait = lỗi hạ tầng lượt trước, không phải lỗi của video này → không tính lượt.
           if (action === "upload-only") bumpAttempts(ch.sheetName, item.url, "uploadAttempts");
@@ -307,10 +329,24 @@ export function createSheetRunner(deps) {
                 }
               }
               firstDownload = false;
-              return downloader(item.url, overlaysDir, { proxy });
+              return downloader(item.url, overlaysDir, { proxy, wantDescription: ch.aiTitle === true });
             });
             patchEntry(ch.sheetName, item.url, { stage: "downloaded", filePath: dl.filePath, title: dl.title });
             await sheetsApi.setUrlStatus(ch.sheetName, item.rowIndex, ST.DOWNLOADED);
+          }
+
+          // Step AI title + thumbnail: chỉ chạy một lần cho mỗi video (lưu kết quả vào resume để retry không tốn thêm hạn mức).
+          let aiTitle = String(entry?.aiTitle || "");
+          if (ch.aiTitle === true && aiOptimizer && !entry?.aiDone) {
+            emit({ type: "channel-status", channel: ch.sheetName, status: "AI tối ưu title + thumbnail", url: item.url });
+            try {
+              const r = await aiOptimizer({ channel: ch, title: dl.title, descriptionPath: descOf(dl.filePath), thumbPath: thumbOf(dl.filePath), gpmHost: config.gpmHost, profileId: ch.gpmProfileId });
+              aiTitle = String(r?.title || "");
+              if (!aiTitle) emit({ type: "log", message: `[${ch.sheetName}] AI bỏ qua (${r?.skipped || "không đổi"}) → dùng title/thumbnail gốc.` });
+            } catch (e) {
+              emit({ type: "log", message: `[${ch.sheetName}] AI lỗi (${String(e?.message || e).slice(0, 120)}) → dùng title/thumbnail gốc.` });
+            }
+            patchEntry(ch.sheetName, item.url, { aiDone: true, aiTitle });
           }
 
           stage = "render";
@@ -350,10 +386,10 @@ export function createSheetRunner(deps) {
           const s = stateStore.load();
           recordRendered(s, ch.sheetName, today);
           stateStore.save(s);
-          patchEntry(ch.sheetName, item.url, { stage: "rendered", outputPath, title: dl.title });
+          patchEntry(ch.sheetName, item.url, { stage: "rendered", outputPath, title: dl.title, aiTitle });
           try { unlink(dl.filePath); } catch { /* ignore */ }
           emit({ type: "video-rendered", channel: ch.sheetName, outputPath, sourceUrl: item.url, title: dl.title });
-          if (enqueueUpload(ch, item, { outputPath, title: dl.title }, overlaysDir) === "gpm-down") {
+          if (enqueueUpload(ch, item, { outputPath, title: dl.title, customTitle: aiTitle }, overlaysDir) === "gpm-down") {
             await markUploadWaiting(ch.sheetName, item.rowIndex, gpmDownReason);
           }
         } catch (e) {
@@ -552,6 +588,8 @@ export function createSheetRunner(deps) {
           locale: config.gpmLocale,
           rowIndex: row.rowIndex,
           sourceUrl: url,
+          customTitle: String(entry.aiTitle || ""),
+          ai: aiOfChannel(ch),
         });
       }
       // Để tin báo riêng của kênh (ảnh + kết quả) vẫn chạy như một lượt bình thường.
@@ -619,5 +657,51 @@ export function createSheetRunner(deps) {
   }
   function stop() { if (timer) { clearInterval(timer); timer = null; } }
 
-  return { runNow, testRenderNow, start, stop, retryUploads, isRunning: () => running, isWatching: () => !!timer };
+  /**
+   * Thử lại các video lỗi của một kênh theo yêu cầu của người dùng.
+   *  - Lỗi tải/render hoặc "bỏ qua sau N lần": đưa về "làm lại từ đầu" (xóa cột B + số lần thử + file dở) để lượt chạy sau nhặt lại.
+   *  - Lỗi upload (cột C ❌, video đã render): chuyển sang retryUploads có sẵn (chỉ upload lại, không tải/render lại).
+   * Không tự chạy lượt mới và không động tới video đang chạy/đang upload. Trả { ok, reset, uploads, skipped, error? }.
+   * @param {string} sheetName
+   * @param {string[]=} urls  rỗng/thiếu = mọi video lỗi của kênh
+   */
+  async function retryFailed(sheetName, urls) {
+    const name = String(sheetName ?? "").trim();
+    const fail = (error) => ({ ok: false, reset: 0, uploads: 0, skipped: [], error });
+    if (!name) return fail("Thiếu tên kênh.");
+    if (running) return fail("Đang chạy một lượt — đợi lượt xong rồi bấm lại.");
+    let rows;
+    try { rows = await sheetsApi.readChannelUrls(name); }
+    catch (e) { return fail(`Không đọc được danh sách video: ${String(e?.message || e).slice(0, 160)}`); }
+    const want = Array.isArray(urls) && urls.length ? new Set(urls.map((u) => String(u ?? "").trim()).filter(Boolean)) : null;
+    const skipped = [], toReset = [], toUpload = [];
+    for (const row of rows) {
+      const url = String(row.url ?? "").trim();
+      if (!url || (want && !want.has(url))) continue;
+      const b = String(row.status ?? "").trim(), c = String(row.uploadStatus ?? "").trim();
+      if (c.startsWith("⏳")) { skipped.push({ url, reason: "đang upload" }); continue; }
+      if (uploadQueue?.hasPending?.(name, url)) { skipped.push({ url, reason: "đang trong hàng đợi" }); continue; }
+      if (b.startsWith(ST.ERR_DL) || b.startsWith(ST.ERR_RENDER) || b.startsWith(ST.SKIP)) toReset.push(row);
+      else if (b === ST.DONE && c.startsWith("❌")) toUpload.push(url);
+      else if (want) skipped.push({ url, reason: "video này không ở trạng thái lỗi" });
+    }
+    for (const row of toReset) {
+      const rs = resumeStore.load();
+      const e = getEntry(rs, name, row.url);
+      if (e?.filePath) for (const f of [e.filePath, thumbOf(e.filePath)]) { if (fileExists(f)) { try { unlink(f); } catch { /* file dở: lượt sau tải lại */ } } }
+      clearEntry(rs, name, row.url); // xóa attempts/uploadAttempts/AI: làm lại như video mới
+      resumeStore.save(rs);
+      try { await sheetsApi.setUrlStatus(name, row.rowIndex, ""); } catch { /* ghi lại ở lượt sau */ }
+      try { await sheetsApi.setUploadStatus(name, row.rowIndex, ""); } catch { /* ignore */ }
+    }
+    let uploads = 0;
+    if (toUpload.length) {
+      const r = await retryUploads(name, toUpload);
+      if (r.ok) { uploads = r.queued; skipped.push(...r.skipped); } else skipped.push(...toUpload.map((url) => ({ url, reason: r.error })));
+    }
+    emit({ type: "log", message: `[${name}] thử lại: ${toReset.length} video làm lại từ đầu, ${uploads} video đăng lại` });
+    return { ok: true, reset: toReset.length, uploads, skipped };
+  }
+
+  return { runNow, testRenderNow, start, stop, retryUploads, retryFailed, isRunning: () => running, isWatching: () => !!timer };
 }

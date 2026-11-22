@@ -293,7 +293,7 @@
     const modeBox = el("div", { class: "ccu-modebox" });
     const drawMode = () => {
       const md = (schema.modes || []).find((x) => x.id === mode());
-      const fs = schema.fields.filter((f) => f.section === "mode" && f.modes.includes(mode()));
+      const fs = schema.fields.filter((f) => f.section === "mode" && f.modes.includes(mode()) && f.key !== "aiTitle");
       modeBox.replaceChildren(
         md ? el("div", { class: "ccu-help", text: md.help }) : null,
         mode() === "composer" ? group(core("presetName"), false) : null,
@@ -302,6 +302,114 @@
     };
     form.append(group(core("renderMode"), false), modeBox);
     drawMode();
+
+    // ─── AI tối ưu title + thumbnail ────────────────────────────────────────────────────────────
+    let saveAiKey = null; // gán khi form có ô khóa AI
+    const aiField = schema.fields.find((f) => f.key === "aiTitle");
+    if (aiField) {
+      const aiSection = el("div", { class: "ccu-ai-section" });
+      const aiToggleRow = el("div", { class: "ccu-ai-toggle-row" });
+      aiToggleRow.append(group(aiField, true));
+
+      // Panel cấu hình AI (ẩn khi tắt)
+      const aiConfigPanel = el("div", { class: "ccu-ai-config", id: "ccu-ai-config" });
+
+      // Rule viết title
+      const titleRuleIn = el("textarea", { id: "ccu-aiTitleRule", "data-k": "aiTitleRule", rows: "3", spellcheck: "false", placeholder: "VD: Ngắn gọn, gây tò mò, dùng số nếu có (5 bí mật...), không dùng emoji" });
+      titleRuleIn.value = raw.aiTitleRule || "";
+
+      // Rule vẽ thumbnail
+      const thumbRuleIn = el("textarea", { id: "ccu-aiThumbRule", "data-k": "aiThumbRule", rows: "3", spellcheck: "false", placeholder: "VD: Màu nổi bật, tương phản cao, có khuôn mặt thể hiện cảm xúc, text lớn dễ đọc trên mobile" });
+      thumbRuleIn.value = raw.aiThumbRule || "";
+
+      // Hình mẫu thumbnail
+      const thumbSamples = el("div", { class: "ccu-thumb-samples" });
+      let samples = Array.isArray(raw.aiThumbSamples) ? [...raw.aiThumbSamples] : [];
+      const MAX_SAMPLES = 3;
+
+      const renderSamples = () => {
+        thumbSamples.replaceChildren();
+        for (let i = 0; i < samples.length; i++) {
+          const wrap = el("div", { class: "ccu-thumb-item" });
+          const img = el("img", { src: samples[i], alt: "Hình mẫu " + (i + 1) });
+          const del = el("button", { type: "button", class: "ccu-thumb-del", text: "×", title: "Xóa hình này" });
+          del.addEventListener("click", () => { samples.splice(i, 1); renderSamples(); });
+          wrap.append(img, del);
+          thumbSamples.append(wrap);
+        }
+        if (samples.length < MAX_SAMPLES) {
+          const addBtn = el("label", { class: "ccu-thumb-add", title: "Thêm hình mẫu" });
+          addBtn.append(el("span", { text: "+" }), el("input", { type: "file", accept: "image/*", hidden: true }));
+          addBtn.querySelector("input").addEventListener("change", async (ev) => {
+            const file = ev.target.files[0];
+            if (!file) return;
+            if (file.size > 400000) { window.appToast && window.appToast("Ảnh quá lớn (tối đa ~400KB)", { kind: "error" }); return; }
+            const reader = new FileReader();
+            reader.onload = () => {
+              if (samples.length < MAX_SAMPLES) { samples.push(reader.result); renderSamples(); }
+            };
+            reader.readAsDataURL(file);
+          });
+          thumbSamples.append(addBtn);
+        }
+      };
+      renderSamples();
+
+      // Getter để đọc samples khi submit
+      const getSamples = () => samples;
+
+      aiConfigPanel.append(
+        el("div", { class: "ccu-group" }, el("label", { for: "ccu-aiTitleRule", text: "📝 Rule viết title" }), titleRuleIn, el("div", { class: "ccu-help", text: "Để trống = AI tự quyết định cách viết." })),
+        el("div", { class: "ccu-group" }, el("label", { for: "ccu-aiThumbRule", text: "🖼️ Rule vẽ thumbnail" }), thumbRuleIn, el("div", { class: "ccu-help", text: "Để trống = AI tự quyết định phong cách." })),
+        el("div", { class: "ccu-group" }, el("label", { text: "📸 Hình mẫu thumbnail (CTR tốt)" }), thumbSamples, el("div", { class: "ccu-help", text: "Tải lên tối đa 3 hình. AI sẽ vẽ thumbnail mới theo phong cách tương tự." })),
+      );
+
+      // Hiện/ẩn panel theo toggle
+      const updateAiPanel = () => {
+        const chk = form.querySelector('[data-k="aiTitle"]');
+        aiConfigPanel.style.display = chk && chk.checked ? "block" : "none";
+      };
+      aiToggleRow.addEventListener("change", updateAiPanel);
+
+      // Khóa AI của kênh: lưu tại máy này (mã hóa), KHÔNG gửi lên server
+      const aiApi = window.electronAPI && window.electronAPI.ai;
+      if (aiApi && !creating) {
+        const keyBox = el("div", { class: "ccu-group" }), keyMsg = el("div", { class: "ccu-help" });
+        const keyIn = el("input", { type: "text", id: "ccu-aikey", autocomplete: "off", spellcheck: "false", placeholder: "Dán khóa Gemini API (lấy miễn phí ở Google AI Studio)" });
+        let masked = "";
+        const showMask = () => { keyIn.value = masked; keyIn.classList.toggle("ccu-masked", !!masked); };
+        keyIn.addEventListener("focus", () => { if (masked && keyIn.value === masked) { keyIn.value = ""; keyIn.classList.remove("ccu-masked"); } });
+        const paintKey = (v) => {
+          masked = v && v.hasKey ? "••••••••" + String(v.keyHint || "").replace(/^…/, "") : "";
+          showMask();
+          keyMsg.textContent = masked ? "Đã lưu khóa trên máy này. Bấm vào ô để thay khóa mới, xóa trắng rồi lưu để gỡ khóa." : "Chưa có khóa: AI sẽ tự bỏ qua, video vẫn dùng title và thumbnail gốc.";
+        };
+        aiApi.keyGet(c.name).then(paintKey).catch(() => {});
+        saveAiKey = async () => {
+          const typedKey = keyIn.value.trim();
+          if (typedKey === masked) return { ok: true };
+          if (!typedKey) { await aiApi.keyClear(c.name); paintKey(await aiApi.keyGet(c.name)); return { ok: true }; }
+          const r = await aiApi.keySet(c.name, typedKey).catch((er) => ({ ok: false, error: er.message }));
+          if (r && r.ok) { paintKey(await aiApi.keyGet(c.name)); return { ok: true }; }
+          return { ok: false, error: (r && r.error) || "Không lưu được khóa AI" };
+        };
+        keyBox.append(el("label", { for: "ccu-aikey", text: "🔑 Khóa Gemini API" }), keyIn, keyMsg);
+        aiConfigPanel.append(keyBox);
+      }
+      aiConfigPanel.append(el("div", { class: "ccu-help", text: "Thumbnail mới được vẽ bằng Google Flow. Cần đăng nhập Google Flow trong profile GPM của kênh một lần; chưa đăng nhập thì chỉ đổi title, thumbnail giữ nguyên." }));
+
+      aiSection.append(el("div", { class: "ccu-sep", text: "AI tối ưu title + thumbnail" }), aiToggleRow, aiConfigPanel);
+      form.append(aiSection);
+      setTimeout(updateAiPanel, 0);
+
+      // Override readAll để bao gồm samples
+      const origReadAll = readAll;
+      readAll = (f) => {
+        const data = origReadAll(f);
+        data.aiThumbSamples = getSamples();
+        return data;
+      };
+    }
     form.append(el("div", { class: "ccu-note", text: creating ? "Kênh được tạo cho máy này. Một GPM Profile chỉ dùng cho một kênh hoặc một mẻ." : "Cấu hình kênh chỉ sửa trong app; web chỉ để theo dõi." }));
 
     const msg = el("div", { class: "ccu-msg", role: "alert", "aria-live": "polite" });
@@ -342,6 +450,11 @@
         const w = await api().gpmSetProfileProxy(pid, gpmWrite).catch((er) => ({ ok: false, error: er.message }));
         if (!w || !w.ok) { save.disabled = false; save.textContent = "Lưu thay đổi"; msg.className = "ccu-msg err"; msg.textContent = "Không ghi được proxy vào GPM: " + ((w && w.error) || "lỗi"); return; }
         out.proxy = w.addr; // chỉ scheme://host:port
+      }
+      // Lưu khóa AI (nếu có đổi) trước; khóa sai/không lưu được thì dừng và báo ngay, không lưu kênh nửa vời.
+      if (saveAiKey) {
+        const kr = await saveAiKey();
+        if (!kr.ok) { save.disabled = false; save.textContent = creating ? "Tạo kênh" : "Lưu thay đổi"; msg.className = "ccu-msg err"; msg.textContent = kr.error; return; }
       }
       const r = creating
         ? await api().channelsCreate(out).catch((er) => ({ ok: false, error: er.message }))

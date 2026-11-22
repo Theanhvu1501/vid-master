@@ -2380,6 +2380,53 @@ input[type="date"] { height: 36.5px; padding-top: 0; padding-bottom: 0; }
 input[type="date"]::-webkit-calendar-picker-indicator { margin: 0; padding: 0; }
 input[type="date"]::-webkit-calendar-picker-indicator { cursor: pointer; opacity: .75; filter: invert(.7); }
 input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
+
+/* ===== Menu AI viết title ===== */
+
+#ccu-aikey.ccu-masked { letter-spacing: 1px; color: var(--text-muted); font-family: Consolas, Monaco, monospace; }
+
+/* AI config panel */
+.ccu-ai-section { margin-top: 4px; }
+.ccu-ai-toggle-row { margin-bottom: 4px; }
+.ccu-ai-config { padding: 12px 14px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--bg-tertiary); margin-top: 8px; display: none; }
+.ccu-ai-config .ccu-group { margin-bottom: 12px; }
+.ccu-ai-config textarea { width: 100%; resize: vertical; min-height: 60px; padding: 8px 10px; font-size: 13px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--bg-primary); color: var(--text-primary); font-family: inherit; }
+.ccu-ai-config textarea:focus { border-color: var(--accent-primary); outline: none; }
+
+/* Hình mẫu thumbnail */
+.ccu-thumb-samples { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.ccu-thumb-item { position: relative; width: 120px; height: 68px; border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--border-default); background: var(--bg-primary); }
+.ccu-thumb-item img { width: 100%; height: 100%; object-fit: cover; }
+.ccu-thumb-del { position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; border: none; border-radius: 50%; background: rgba(255,107,107,.9); color: #fff; font-size: 14px; font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity .15s; }
+.ccu-thumb-item:hover .ccu-thumb-del { opacity: 1; }
+.ccu-thumb-add { width: 120px; height: 68px; border: 2px dashed var(--border-default); border-radius: var(--radius-md); display: flex; align-items: center; justify-content: center; cursor: pointer; transition: border-color .15s, background .15s; }
+.ccu-thumb-add:hover { border-color: var(--accent-primary); background: rgba(var(--accent-primary-rgb), .05); }
+.ccu-thumb-add span { font-size: 28px; color: var(--text-muted); }
+
+/* ===== Menu Tạo ảnh Veo3 ===== */
+.veo3-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.veo3-msg { margin-top: 10px; font-size: 13px; color: var(--text-secondary); min-height: 18px; overflow-wrap: anywhere; }
+.veo3-msg.ok { color: var(--accent-success); } .veo3-msg.err { color: var(--accent-danger); } .veo3-msg.warn { color: var(--accent-warning); }
+.veo3-account-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--bg-primary); margin-bottom: 8px; flex-wrap: wrap; }
+.veo3-account-info { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 200px; }
+.veo3-account-name { font-weight: 500; font-size: 14px; }
+.veo3-account-status { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--bg-tertiary); }
+.veo3-account-status.ok { background: rgba(81,207,102,.15); color: var(--accent-success); }
+.veo3-account-status.err { background: rgba(255,107,107,.15); color: var(--accent-danger); }
+.veo3-account-status.warn { background: rgba(255,193,7,.15); color: var(--accent-warning); }
+.veo3-account-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.veo3-account-actions .btn-sm { padding: 4px 10px; font-size: 12px; min-width: 0; }
+.veo3-results { display: flex; flex-direction: column; gap: 8px; }
+.veo3-row { border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--bg-primary); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.veo3-row-head { display: flex; align-items: center; gap: 10px; }
+.veo3-prompt { flex: 1; font-size: 13px; overflow-wrap: anywhere; }
+.veo3-badge { display: inline-flex; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--bg-tertiary); color: var(--text-secondary); white-space: nowrap; }
+.veo3-badge.ok { background: rgba(81,207,102,.15); color: var(--accent-success); } .veo3-badge.err { background: rgba(255,107,107,.15); color: var(--accent-danger); }
+.veo3-badge.run { background: rgba(34,211,238,.15); color: var(--accent-cyan); } .veo3-badge.warn { background: rgba(255,193,7,.15); color: var(--accent-warning); }
+.veo3-thumb { width: 160px; height: 90px; object-fit: cover; border-radius: var(--radius-md); border: 1px solid var(--border-default); background: var(--bg-tertiary); }
+.veo3-file { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
+.veo3-file .btn { min-width: 0; padding: 4px 10px; font-size: 12px; }
+.veo3-err { font-size: 12px; color: var(--accent-danger); overflow-wrap: anywhere; }
 </style>
   </head>
   <body>
@@ -2429,6 +2476,7 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
           <button class="tab-button" data-tab="sheet-watch"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2" ry="2" /> <line x1="3" x2="21" y1="9" y2="9" /> <line x1="3" x2="21" y1="15" y2="15" /> <line x1="9" x2="9" y1="9" y2="21" /> <line x1="15" x2="15" y1="9" y2="21" /></svg><span class="tab-label">Kênh</span></button>
           <button class="tab-button" data-tab="channel-stats"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v16a2 2 0 0 0 2 2h16" /><path d="M18 17V9" /><path d="M13 17V5" /><path d="M8 17v-3" /></svg><span class="tab-label">Thống kê kênh</span></button>
           <button class="tab-button" data-tab="batches"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" /></svg><span class="tab-label">Mẻ</span></button>
+          <button class="tab-button" data-tab="veo3-image"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg><span class="tab-label">Tạo ảnh Veo3</span></button>
         </div>
 
         <div class="tab-group" data-group="create">
@@ -4493,6 +4541,7 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
           </details>
         </div>
         <div id="batches" class="tab-content"><div id="bt-root"></div></div>
+        <div id="veo3-image" class="tab-content"><div id="veo3-root"></div></div>
         <div id="composer" class="tab-content"></div>
 
         <!-- Tab Tự động hóa: chạy trên profile GPM đã chọn (danh sách lấy từ GPM local) -->
@@ -4918,6 +4967,7 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
     <script src="sheet/batch-actions.cjs"></script>
   <script src="sheet/batch-local.cjs"></script>
     <script src="batch-ui.js"></script>
+    <script src="veo3-ui.js"></script>
     <script src="renderer.js"></script>
     <!-- Giai đoạn 2B: hàm thuần tính anchor cho canvas kéo thả (sheet/composer-geometry.cjs) —
          PHẢI nạp trước composer-ui.js vì nó gắn vào window.ComposerGeometry, composer-ui.js đọc
