@@ -277,6 +277,7 @@ export async function uploadAndSchedule({
   scheduleISO,
   locale = "vi",
   monetized = false, // kênh đã bật kiếm tiền (BKT): hộp thoại có thêm bước
+  customTitle = "", // tiêu đề riêng (vd AI viết); rỗng = giữ tiêu đề YouTube tự điền theo tên file
   log = () => {},
   onUploaded = () => {}, // gọi khi video đã bắt đầu upload (để queue biết KHÔNG retry — tránh trùng)
   onStep = () => {},     // gọi ở mỗi mốc (để ghi ngược trạng thái vào Sheet)
@@ -338,9 +339,15 @@ export async function uploadAndSchedule({
   log("b2: upload xong.");
   await onStep("b2: upload xong");
 
-  // Điền tiêu đề (gõ kiểu người). YouTube tự điền tiêu đề = tên file,
-  // nên nếu muốn giữ nguyên tên file thì có thể bỏ dòng này.
-  // await humanType(page, SEL.title, title);
+  // Tiêu đề: YouTube tự điền = tên file. Chỉ gõ đè khi có tiêu đề riêng (vd do AI viết) khác tên file.
+  // Lỗi ở bước này KHÔNG được làm hỏng upload: video đã lên rồi, cùng lắm giữ tiêu đề mặc định.
+  if (customTitle) {
+    try {
+      const okTitle = await clearAndType(page, SEL.title, customTitle, { log, label: "ô tiêu đề", maxTries: 20 });
+      if (!okTitle) log("⚠ Không đặt được tiêu đề riêng → giữ tiêu đề mặc định của YouTube.");
+      else await onStep("đã đặt tiêu đề");
+    } catch (e) { log(`⚠ Lỗi khi đặt tiêu đề (${String(e?.message || e).slice(0, 100)}) → giữ tiêu đề mặc định.`); }
+  }
   // Điền mô tả nếu có.
   // if (description) {
   //   await humanPause();

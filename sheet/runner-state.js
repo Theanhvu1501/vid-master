@@ -19,6 +19,26 @@ export function computeRemaining(channelState, videosPerDay, today) {
   return Math.max(0, n - count);
 }
 
+/**
+ * Số video đã render hôm nay của một kênh, tính từ danh sách video (nguồn: server, có bản sao trên đĩa khi mất mạng).
+ * Mỗi hàng có renderedAt (ms) = lúc app báo render xong. "Hôm nay" theo giờ máy (todayStr), khớp cách runner chia ngày.
+ * Hàng không có mốc (0/thiếu) không được đếm: nhập hàng loạt hoặc video chưa render không tính vào hạn mức.
+ */
+export function countRenderedToday(rows, today, toDay = (ms) => todayStr(new Date(ms))) {
+  let n = 0;
+  for (const r of Array.isArray(rows) ? rows : []) {
+    const at = Number(r && r.renderedAt);
+    if (Number.isFinite(at) && at > 0 && toDay(at) === today) n++;
+  }
+  return n;
+}
+
+/** Hạn mức còn lại từ số đã làm (thay cho computeRemaining khi nguồn là danh sách video). */
+export function remainingFrom(done, videosPerDay) {
+  const n = parseInt(videosPerDay, 10) || 0;
+  return Math.max(0, n - Math.max(0, Math.trunc(Number(done)) || 0));
+}
+
 export function recordRendered(state, sheetName, today) {
   const cur = state[sheetName];
   if (!cur || cur.lastRunDate !== today) {

@@ -46,3 +46,21 @@ test("loadState returns {} when missing or corrupt, saveState round-trips", () =
   saveState(p, state);
   assert.deepEqual(loadState(p), state);
 });
+
+import { countRenderedToday, remainingFrom, todayStr as _today } from "../sheet/runner-state.js";
+test("countRenderedToday: chỉ đếm video có mốc render thuộc hôm nay; không mốc/hôm qua thì không đếm", () => {
+  const now = new Date(2026, 10, 22, 15, 0), today = _today(now);
+  const at = (d, h) => new Date(2026, 10, d, h, 0).getTime();
+  const rows = [{ renderedAt: at(22, 1) }, { renderedAt: at(22, 14) }, { renderedAt: at(21, 23) }, { renderedAt: 0 }, {}, null, { renderedAt: "x" }];
+  assert.equal(countRenderedToday(rows, today), 2);
+  assert.equal(countRenderedToday(null, today), 0); assert.equal(countRenderedToday([], today), 0);
+});
+test("countRenderedToday: ranh giới ngày theo giờ máy (00:00 tính hôm nay, 23:59 hôm trước thì không)", () => {
+  const today = _today(new Date(2026, 10, 22, 12, 0));
+  assert.equal(countRenderedToday([{ renderedAt: new Date(2026, 10, 22, 0, 0, 0).getTime() }], today), 1);
+  assert.equal(countRenderedToday([{ renderedAt: new Date(2026, 10, 21, 23, 59, 59).getTime() }], today), 0);
+});
+test("remainingFrom: không âm, kẹp đầu vào rác", () => {
+  assert.equal(remainingFrom(3, 7), 4); assert.equal(remainingFrom(10, 7), 0); assert.equal(remainingFrom(0, "7"), 7);
+  assert.equal(remainingFrom("x", 7), 7); assert.equal(remainingFrom(-4, 7), 7); assert.equal(remainingFrom(2, "abc"), 0);
+});

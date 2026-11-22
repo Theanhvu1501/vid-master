@@ -10,7 +10,6 @@
       "opacity": "0.4",
       "chromaKeyMode": "color",
       "chromaKeyColor": "4D82EB",
-      "chromaKeySimilarity": "0.1",
       "keepColorColors": "F6FF00",
       "keepColorCrop": true,
       "keepColorHeight": "150",
@@ -21,6 +20,22 @@
       "gpuVideoCodec": "h264_nvenc",
       "height": "220",
       "y_offset": "490",
+      "personEnabled": false,
+      "personPath": null,
+      "personPos": "center",
+      "personScale": "0.9",
+      "bgBlurEnabled": false,
+      "bgBlur": "20",
+      "mainScale": "0.85",
+      "mainOpacity": "0.85",
+      "frameEnabled": false,
+      "framePath": null,
+      "frameScale": "1",
+      "effectEnabled": false,
+      "effectPath": null,
+      "effectOpacity": "0.15",
+      "effectBlend": "normal",
+      "effectKeyThreshold": "0.15",
       "overlayFolder": "D:\\VidMaster\\01.2ch_BKT\\overlays",
       "backgroundFolder": "D:\\VidMaster\\01.2ch_BKT\\backgrounds",
       "outputFolder": "D:\\VidMaster\\01.2ch_BKT\\done",
@@ -35,6 +50,9 @@
       "overlayImagesFolder": null,
       "thumbsFolder": null,
       "cookiesFile": null,
+      "cookiesFolder": null,
+      "batchSize": "30",
+      "batchBreakSeconds": "120",
       "maxConcurrent": "2",
       "proxy": null,
       "downloadDrive": false,
@@ -78,9 +96,7 @@
     },
     "cutBg": {
       "inputFolder": "D:\\test\\line\\bgs",
-      "outputFolder": "D:\\test\\line\\backgrounds",
-      "darken": "",
-      "blur": ""
+      "outputFolder": "D:\\test\\line\\backgrounds"
     },
     "thumb": {
       "inputFolder": "D:\\test\\line\\overlays",
@@ -103,5 +119,5 @@
       "outputFolder": "D:\\test\\line\\output"
     }
   },
-  "updatedAt": "2026-05-07T14:39:12.670Z"
+  "updatedAt": "2026-11-20T12:59:43.775Z"
 }

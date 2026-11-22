@@ -22,3 +22,11 @@ sheet-settings.json
 .web-cache/
 presets/
 .channel-stats.json
+
+# Cài đặt AI tại máy (khóa Gemini mã hóa) - không bao giờ commit
+.web-ai-*.json
+.web-flow-*.json
+
+# Profile Chrome + cookie đăng nhập Google của tab Veo3 (dữ liệu nhạy cảm, không bao giờ commit)
+/veo3/
+.web-ai-channel-keys.json

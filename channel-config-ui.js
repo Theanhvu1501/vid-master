@@ -291,9 +291,10 @@
     // cách render: đổi kiểu thì dựng lại phần thông số
     form.append(el("div", { class: "ccu-sep", text: "Cách render" }));
     const modeBox = el("div", { class: "ccu-modebox" });
+    const AI_KEYS = new Set(["aiTitle", "aiTitleRule", "aiThumbRule", "aiThumbSamples"]);
     const drawMode = () => {
       const md = (schema.modes || []).find((x) => x.id === mode());
-      const fs = schema.fields.filter((f) => f.section === "mode" && f.modes.includes(mode()) && f.key !== "aiTitle");
+      const fs = schema.fields.filter((f) => f.section === "mode" && f.modes.includes(mode()) && !AI_KEYS.has(f.key));
       modeBox.replaceChildren(
         md ? el("div", { class: "ccu-help", text: md.help }) : null,
         mode() === "composer" ? group(core("presetName"), false) : null,
@@ -305,73 +306,12 @@
 
     // ─── AI tối ưu title + thumbnail ────────────────────────────────────────────────────────────
     let saveAiKey = null; // gán khi form có ô khóa AI
+    let getSamplesFn = null; // gán khi form có phần hình mẫu
     const aiField = schema.fields.find((f) => f.key === "aiTitle");
     if (aiField) {
       const aiSection = el("div", { class: "ccu-ai-section" });
-      const aiToggleRow = el("div", { class: "ccu-ai-toggle-row" });
-      aiToggleRow.append(group(aiField, true));
 
-      // Panel cấu hình AI (ẩn khi tắt)
-      const aiConfigPanel = el("div", { class: "ccu-ai-config", id: "ccu-ai-config" });
-
-      // Rule viết title
-      const titleRuleIn = el("textarea", { id: "ccu-aiTitleRule", "data-k": "aiTitleRule", rows: "3", spellcheck: "false", placeholder: "VD: Ngắn gọn, gây tò mò, dùng số nếu có (5 bí mật...), không dùng emoji" });
-      titleRuleIn.value = raw.aiTitleRule || "";
-
-      // Rule vẽ thumbnail
-      const thumbRuleIn = el("textarea", { id: "ccu-aiThumbRule", "data-k": "aiThumbRule", rows: "3", spellcheck: "false", placeholder: "VD: Màu nổi bật, tương phản cao, có khuôn mặt thể hiện cảm xúc, text lớn dễ đọc trên mobile" });
-      thumbRuleIn.value = raw.aiThumbRule || "";
-
-      // Hình mẫu thumbnail
-      const thumbSamples = el("div", { class: "ccu-thumb-samples" });
-      let samples = Array.isArray(raw.aiThumbSamples) ? [...raw.aiThumbSamples] : [];
-      const MAX_SAMPLES = 3;
-
-      const renderSamples = () => {
-        thumbSamples.replaceChildren();
-        for (let i = 0; i < samples.length; i++) {
-          const wrap = el("div", { class: "ccu-thumb-item" });
-          const img = el("img", { src: samples[i], alt: "Hình mẫu " + (i + 1) });
-          const del = el("button", { type: "button", class: "ccu-thumb-del", text: "×", title: "Xóa hình này" });
-          del.addEventListener("click", () => { samples.splice(i, 1); renderSamples(); });
-          wrap.append(img, del);
-          thumbSamples.append(wrap);
-        }
-        if (samples.length < MAX_SAMPLES) {
-          const addBtn = el("label", { class: "ccu-thumb-add", title: "Thêm hình mẫu" });
-          addBtn.append(el("span", { text: "+" }), el("input", { type: "file", accept: "image/*", hidden: true }));
-          addBtn.querySelector("input").addEventListener("change", async (ev) => {
-            const file = ev.target.files[0];
-            if (!file) return;
-            if (file.size > 400000) { window.appToast && window.appToast("Ảnh quá lớn (tối đa ~400KB)", { kind: "error" }); return; }
-            const reader = new FileReader();
-            reader.onload = () => {
-              if (samples.length < MAX_SAMPLES) { samples.push(reader.result); renderSamples(); }
-            };
-            reader.readAsDataURL(file);
-          });
-          thumbSamples.append(addBtn);
-        }
-      };
-      renderSamples();
-
-      // Getter để đọc samples khi submit
-      const getSamples = () => samples;
-
-      aiConfigPanel.append(
-        el("div", { class: "ccu-group" }, el("label", { for: "ccu-aiTitleRule", text: "📝 Rule viết title" }), titleRuleIn, el("div", { class: "ccu-help", text: "Để trống = AI tự quyết định cách viết." })),
-        el("div", { class: "ccu-group" }, el("label", { for: "ccu-aiThumbRule", text: "🖼️ Rule vẽ thumbnail" }), thumbRuleIn, el("div", { class: "ccu-help", text: "Để trống = AI tự quyết định phong cách." })),
-        el("div", { class: "ccu-group" }, el("label", { text: "📸 Hình mẫu thumbnail (CTR tốt)" }), thumbSamples, el("div", { class: "ccu-help", text: "Tải lên tối đa 3 hình. AI sẽ vẽ thumbnail mới theo phong cách tương tự." })),
-      );
-
-      // Hiện/ẩn panel theo toggle
-      const updateAiPanel = () => {
-        const chk = form.querySelector('[data-k="aiTitle"]');
-        aiConfigPanel.style.display = chk && chk.checked ? "block" : "none";
-      };
-      aiToggleRow.addEventListener("change", updateAiPanel);
-
-      // Khóa AI của kênh: lưu tại máy này (mã hóa), KHÔNG gửi lên server
+      // Khóa AI của kênh: LUÔN hi��n (không phụ thuộc toggle bật/tắt AI)
       const aiApi = window.electronAPI && window.electronAPI.ai;
       if (aiApi && !creating) {
         const keyBox = el("div", { class: "ccu-group" }), keyMsg = el("div", { class: "ccu-help" });
@@ -394,21 +334,94 @@
           return { ok: false, error: (r && r.error) || "Không lưu được khóa AI" };
         };
         keyBox.append(el("label", { for: "ccu-aikey", text: "🔑 Khóa Gemini API" }), keyIn, keyMsg);
-        aiConfigPanel.append(keyBox);
+        aiSection.append(el("div", { class: "ccu-sep", text: "AI tối ưu title + thumbnail" }), keyBox);
+      } else {
+        aiSection.append(el("div", { class: "ccu-sep", text: "AI tối ưu title + thumbnail" }));
       }
-      aiConfigPanel.append(el("div", { class: "ccu-help", text: "Thumbnail mới được vẽ bằng Google Flow. Cần đăng nhập Google Flow trong profile GPM của kênh một lần; chưa đăng nhập thì chỉ đổi title, thumbnail giữ nguyên." }));
 
-      aiSection.append(el("div", { class: "ccu-sep", text: "AI tối ưu title + thumbnail" }), aiToggleRow, aiConfigPanel);
+      // Toggle bật/tắt AI
+      const aiToggleRow = el("div", { class: "ccu-ai-toggle-row" });
+      aiToggleRow.append(group(aiField, true));
+      aiSection.append(aiToggleRow);
+
+      // Panel cấu hình AI (ẩn khi tắt) - chỉ có rule và hình mẫu
+      const aiConfigPanel = el("div", { class: "ccu-ai-config", id: "ccu-ai-config" });
+
+      // Rule viết title
+      const titleRuleIn = el("textarea", { id: "ccu-aiTitleRule", "data-k": "aiTitleRule", rows: "3", spellcheck: "false", placeholder: "VD: Ngắn gọn, gây tò mò, dùng số nếu có (5 bí mật...), không dùng emoji" });
+      titleRuleIn.value = raw.aiTitleRule || "";
+
+      // Rule vẽ thumbnail
+      const thumbRuleIn = el("textarea", { id: "ccu-aiThumbRule", "data-k": "aiThumbRule", rows: "3", spellcheck: "false", placeholder: "VD: Màu nổi bật, tương phản cao, có khuôn mặt thể hiện cảm xúc, text lớn dễ đọc trên mobile" });
+      thumbRuleIn.value = raw.aiThumbRule || "";
+
+      // Hình mẫu thumbnail
+      const thumbSamples = el("div", { class: "ccu-thumb-samples" });
+      // Lấy từ dữ liệu gốc của kênh (raw đã bị rawOf nối thành chuỗi nên không dùng được)
+      let samples = Array.isArray((c.params || {}).aiThumbSamples) ? [...c.params.aiThumbSamples] : [];
+      const MAX_SAMPLES = 3;
+
+      const renderSamples = () => {
+        thumbSamples.replaceChildren();
+        for (let i = 0; i < samples.length; i++) {
+          const wrap = el("div", { class: "ccu-thumb-item" });
+          const img = el("img", { src: samples[i], alt: "Hình mẫu " + (i + 1) });
+          const del = el("button", { type: "button", class: "ccu-thumb-del", text: "×", title: "Xóa hình này" });
+          del.addEventListener("click", () => { samples.splice(i, 1); renderSamples(); });
+          wrap.append(img, del);
+          thumbSamples.append(wrap);
+        }
+        if (samples.length < MAX_SAMPLES) {
+          const addBtn = el("label", { class: "ccu-thumb-add", title: "Thêm hình mẫu" });
+          addBtn.append(el("span", { text: "+" }), el("input", { type: "file", accept: "image/*", hidden: true }));
+          addBtn.querySelector("input").addEventListener("change", async (ev) => {
+            const file = ev.target.files[0];
+            if (!file) return;
+            ev.target.value = "";
+            if (!/^image\//.test(file.type)) { window.appToast && window.appToast("Chọn file ảnh (jpg, png, webp)", { kind: "error" }); return; }
+            // Thu nhỏ về tối đa 480px rộng + JPEG 70%: mẫu chỉ để AI học phong cách, không cần ảnh gốc nặng.
+            const reader = new FileReader();
+            reader.onload = () => {
+              const im = new Image();
+              im.onload = () => {
+                const k = Math.min(1, 480 / im.width), cv = document.createElement("canvas");
+                cv.width = Math.max(1, Math.round(im.width * k)); cv.height = Math.max(1, Math.round(im.height * k));
+                cv.getContext("2d").drawImage(im, 0, 0, cv.width, cv.height);
+                const url = cv.toDataURL("image/jpeg", 0.7);
+                if (samples.length < MAX_SAMPLES) { samples.push(url); renderSamples(); }
+              };
+              im.onerror = () => { window.appToast && window.appToast("Không đọc được ảnh này", { kind: "error" }); };
+              im.src = reader.result;
+            };
+            reader.readAsDataURL(file);
+          });
+          thumbSamples.append(addBtn);
+        }
+      };
+      renderSamples();
+
+      // Getter để đọc samples khi submit
+      const getSamples = () => samples;
+
+      aiConfigPanel.append(
+        el("div", { class: "ccu-group" }, el("label", { for: "ccu-aiTitleRule", text: "📝 Rule viết title" }), titleRuleIn, el("div", { class: "ccu-help", text: "Để trống = AI tự quyết định cách viết." })),
+        el("div", { class: "ccu-group" }, el("label", { for: "ccu-aiThumbRule", text: "🖼️ Rule vẽ thumbnail" }), thumbRuleIn, el("div", { class: "ccu-help", text: "Để trống = AI tự quyết định phong cách." })),
+        el("div", { class: "ccu-group" }, el("label", { text: "📸 Hình mẫu thumbnail (CTR tốt)" }), thumbSamples, el("div", { class: "ccu-help", text: "Tải lên tối đa 3 hình. AI sẽ vẽ thumbnail mới theo phong cách tương tự." })),
+        el("div", { class: "ccu-help", text: "Thumbnail mới được vẽ bằng Google Flow. Cần đăng nhập Google Flow trong profile GPM của kênh một lần; chưa đăng nhập thì chỉ đổi title, thumbnail giữ nguyên." }),
+      );
+
+      // Hiện/ẩn panel theo toggle
+      const updateAiPanel = () => {
+        const chk = form.querySelector('[data-k="aiTitle"]');
+        aiConfigPanel.style.display = chk && chk.value === "1" ? "block" : "none";
+      };
+      aiToggleRow.addEventListener("change", updateAiPanel);
+
+      aiSection.append(aiConfigPanel);
       form.append(aiSection);
       setTimeout(updateAiPanel, 0);
 
-      // Override readAll để bao gồm samples
-      const origReadAll = readAll;
-      readAll = (f) => {
-        const data = origReadAll(f);
-        data.aiThumbSamples = getSamples();
-        return data;
-      };
+      getSamplesFn = getSamples; // submit sẽ lấy hình mẫu từ đây (readAll chỉ đọc các ô có data-k)
     }
     form.append(el("div", { class: "ccu-note", text: creating ? "Kênh được tạo cho máy này. Một GPM Profile chỉ dùng cho một kênh hoặc một mẻ." : "Cấu hình kênh chỉ sửa trong app; web chỉ để theo dõi." }));
 
@@ -428,8 +441,9 @@
       if (st.offline) return;
       raw = { ...raw, ...readAll(form) };
       const out = typed(schema, raw);
+      if (getSamplesFn) out.aiThumbSamples = getSamplesFn(); // mảng ảnh (không đi qua ô chữ)
       // chỉ gửi tham số của kiểu đang chọn (tham số kiểu khác giữ nguyên trên máy chủ); các khóa không sửa được thì bỏ
-      const keep = new Set([...schema.coreKeys, ...schema.fields.filter((f) => f.section === "mode" && f.modes.includes(mode())).map((f) => f.key)]);
+      const keep = new Set([...schema.coreKeys, ...AI_KEYS, ...schema.fields.filter((f) => f.section === "mode" && f.modes.includes(mode())).map((f) => f.key)]);
       for (const k of Object.keys(out)) if (!keep.has(k)) delete out[k];
       delete out.name; if (mode() !== "composer") delete out.presetName;
       if (creating) out.name = (nameInput.value || "").trim();
@@ -462,6 +476,7 @@
       if (r && r.ok && creating) { close(); await load(); listeners.forEach((cb) => { try { cb(r.channel); } catch { /* ignore */ } }); return; }
       if (r && r.ok) {
         msg.textContent = "Đã lưu"; msg.className = "ccu-msg ok";
+        window.appToast && window.appToast("Đã lưu cấu hình kênh", { kind: "success" });
         listeners.forEach((cb) => { try { cb(r.channel); } catch { /* ignore */ } });
         // nạp lại để hiện cảnh báo/hạn proxy mới nhất, giữ hộp thoại mở
         const again = await load(); const nc = again.ok && st.byName.get(c.name);

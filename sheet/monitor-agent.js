@@ -4,6 +4,7 @@
 // Mật khẩu proxy và tài khoản Gmail/2FA (cột tk) KHÔNG BAO GIỜ rời máy: proxy chỉ gửi dạng
 // scheme://host:port + user + một mã băm ngắn để nhận dạng.
 
+import { countRenderedToday } from "./runner-state.js";
 import crypto from "crypto";
 import WebSocket from "ws";
 import { normalizeProxy } from "./proxy.js";
@@ -62,7 +63,8 @@ export function buildChannelEntry(ch, rows, { state, resume, today, fileExists =
     videoSource: ch.videoSource || "download",
     sourceHandle: ch.sourceHandle || "",
     channelUrl: ch.channelUrl || "",
-    todayDone: cs && cs.lastRunDate === today ? cs.countToday || 0 : 0,
+    // Đếm từ danh sách video (nguồn server) nếu các hàng có mốc renderedAt; nếu không (nguồn cũ) dùng runner-state như trước.
+    todayDone: Array.isArray(rows) && rows.some((r) => r && "renderedAt" in r) ? countRenderedToday(rows, today) : (cs && cs.lastRunDate === today ? cs.countToday || 0 : 0),
     proxyKey: px?.key || null,
     proxyHostPort: px?.hostPort || "",
     proxyUser: "", // chỉ gửi địa chỉ ip:port lên web, không gửi cả tên user proxy

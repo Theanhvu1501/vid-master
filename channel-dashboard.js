@@ -132,7 +132,26 @@
           <button type="button" class="btn btn-secondary cd-btn" id="cd-yt" title="Lấy lại lượt xem và sub từ YouTube (tốn một ít quota API)" ${st.yt ? "disabled" : ""}>${st.yt ? "⏳ Đang cập nhật…" : "▶ Cập nhật view/sub"}</button>
           <button type="button" class="btn btn-secondary cd-btn" id="cd-refresh" title="Nạp lại từ web">⟳ Làm mới</button></div></div>`;
       if (st.err && !st.data) { root.innerHTML = `${head}<div class="cd-empty"><strong>Chưa tải được thống kê</strong>${esc(st.err)}</div>`; return; }
-      if (!st.data) { root.innerHTML = `${head}<div class="cd-skel">${'<div class="cd-card"></div>'.repeat(3)}</div>`; return; }
+      if (!st.data) {
+        root.innerHTML = `${head}<div class="cd-skel">
+          <div class="cd-skel-spinner"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>Đang tải thống kê...</div>
+          <div class="cd-skel-row">
+            <div class="cd-skel-card cd-skel-kpi"><div class="cd-skel-line title"></div><div class="cd-skel-line value"></div><div class="cd-skel-line bar"></div></div>
+            <div class="cd-skel-card cd-skel-kpi"><div class="cd-skel-line title"></div><div class="cd-skel-line value"></div><div class="cd-skel-line bar"></div></div>
+            <div class="cd-skel-card cd-skel-kpi"><div class="cd-skel-line title"></div><div class="cd-skel-line value"></div><div class="cd-skel-line bar"></div></div>
+            <div class="cd-skel-card cd-skel-kpi"><div class="cd-skel-line title"></div><div class="cd-skel-line value"></div><div class="cd-skel-line bar"></div></div>
+            <div class="cd-skel-card cd-skel-kpi"><div class="cd-skel-line title"></div><div class="cd-skel-line value"></div><div class="cd-skel-line bar"></div></div>
+            <div class="cd-skel-card cd-skel-kpi"><div class="cd-skel-line title"></div><div class="cd-skel-line value"></div><div class="cd-skel-line bar"></div></div>
+          </div>
+          <div class="cd-skel-row">
+            <div class="cd-skel-card cd-skel-chart"></div>
+            <div class="cd-skel-card cd-skel-chart"></div>
+            <div class="cd-skel-card cd-skel-chart"></div>
+          </div>
+          <div class="cd-skel-row"><div class="cd-skel-card cd-skel-table"></div></div>
+        </div>`;
+        return;
+      }
       const d = st.data, chans = d.channels;
       if (!chans.length) { root.innerHTML = `${head}<div class="cd-empty"><strong>Chưa có kênh nào được gán cho máy này</strong>Vào trang web để thêm kênh và gán máy.</div>`; return; }
 

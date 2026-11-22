@@ -51,5 +51,11 @@
     return [b && b !== "done" && b !== "đã tải" ? b : "", c].filter(Boolean).join(" · ");
   }
 
-  window.UrlList = { FILTERS, LABEL, TONE, stateOf, summarize, filterRows, detailOf };
+  /** Video ở trạng thái lỗi mà nút "Thử lại" xử lý được: lỗi tải/render, bỏ qua sau N lần, lỗi upload. Đang upload/đang chờ/đã xong thì không. */
+  const RETRYABLE = new Set(["failed", "skipped", "upload-error"]);
+  const canRetry = (row) => RETRYABLE.has(stateOf(row));
+  /** Các url lỗi có thể thử lại trong danh sách. */
+  const retryableUrls = (rows) => (rows || []).filter((r) => String(r?.url ?? "").trim() && canRetry(r)).map((r) => String(r.url).trim());
+
+  window.UrlList = { FILTERS, LABEL, TONE, stateOf, summarize, filterRows, detailOf, canRetry, retryableUrls };
 })();

@@ -650,3 +650,78 @@ test("channel-summary: hết slot hôm sau (⏸ chờ) đếm là CHỜ ĐĂNG, 
   assert.equal(s.length, 1);
   assert.deepEqual([s[0].ok, s[0].uploadErr, s[0].waiting], [0, 0, 1]);
 });
+
+// ---------------------------------------------------------------- AI viết title (tuỳ chọn, không bao giờ chặn upload)
+const aiJob = (extra = {}) => ({ sheetName: "K", gpmHost: "h", profileId: "p", videoPath: "/o/v1.mp4", overlaysDir: "/ov", title: "v1", postTimes: "8:00", sourceUrl: "http://u/1", ...extra });
+
+test("queue + AI: có titleProvider thì upload nhận customTitle do nó trả về; provider nhận đúng dữ liệu của job", async () => {
+  const calls = [], seen = [];
+  const q = createUploadQueue({
+    readChannelUploads: emptyUploads, connect: async () => ({ page: {} }), now: () => NOW, listFiles: () => [],
+    runUpload: async (a) => { calls.push({ title: a.title, customTitle: a.customTitle }); },
+    titleProvider: async (j) => { seen.push({ sheetName: j.sheetName, title: j.title, ai: j.ai }); return { title: "Tiêu đề AI", usedAi: true }; },
+  });
+  q.enqueue(aiJob({ ai: { aiTitle: true, aiTopic: "t" } }));
+  await q.drain();
+  assert.deepEqual(calls, [{ title: "v1", customTitle: "Tiêu đề AI" }]);
+  assert.deepEqual(seen, [{ sheetName: "K", title: "v1", ai: { aiTitle: true, aiTopic: "t" } }]);
+});
+
+test("queue + AI: provider trả title gốc (AI tắt/lỗi) thì KHÔNG gõ đè (customTitle rỗng)", async () => {
+  const calls = [];
+  const q = createUploadQueue({
+    readChannelUploads: emptyUploads, connect: async () => ({ page: {} }), now: () => NOW, listFiles: () => [],
+    runUpload: async (a) => { calls.push(a.customTitle); },
+    titleProvider: async (j) => ({ title: j.title, usedAi: false }),
+  });
+  q.enqueue(aiJob()); await q.drain();
+  assert.deepEqual(calls, [""]);
+});
+
+test("queue + AI: provider ném lỗi hoặc treo quá lâu thì upload VẪN chạy bình thường với title gốc", async () => {
+  const calls = [], logs = [];
+  const q = createUploadQueue({
+    readChannelUploads: emptyUploads, connect: async () => ({ page: {} }), now: () => NOW, listFiles: () => [], log: (m) => logs.push(m),
+    runUpload: async (a) => { calls.push({ customTitle: a.customTitle, schedule: a.scheduleISO }); },
+    titleProvider: async () => { throw new Error("Gemini sập"); },
+  });
+  q.enqueue(aiJob()); await q.drain();
+  assert.deepEqual(calls, [{ customTitle: "", schedule: "2026-07-09T08:00:00" }]);
+  assert.match(logs.join("\n"), /AI/);
+  const slow = [];
+  const q2 = createUploadQueue({
+    readChannelUploads: emptyUploads, connect: async () => ({ page: {} }), now: () => NOW, listFiles: () => [], titleTimeoutMs: 30,
+    runUpload: async (a) => { slow.push(a.customTitle); },
+    titleProvider: () => new Promise((r) => setTimeout(() => r({ title: "quá muộn", usedAi: true }), 500)),
+  });
+  q2.enqueue(aiJob()); await q2.drain();
+  assert.deepEqual(slow, [""], "quá thời gian chờ thì bỏ AI, không đợi mãi");
+});
+
+test("queue + AI: không có titleProvider thì hành vi cũ y nguyên (customTitle rỗng)", async () => {
+  const calls = [];
+  const q = createUploadQueue({ readChannelUploads: emptyUploads, connect: async () => ({ page: {} }), now: () => NOW, listFiles: () => [], runUpload: async (a) => { calls.push(a.customTitle); } });
+  q.enqueue(aiJob()); await q.drain();
+  assert.deepEqual(calls, [""]);
+});
+
+test("queue + AI: AI chỉ được gọi MỘT lần cho một video dù upload phải thử lại (không tốn hạn mức)", async () => {
+  let ai = 0, tries = 0;
+  const q = createUploadQueue({
+    readChannelUploads: emptyUploads, connect: async () => ({ page: {} }), now: () => NOW, listFiles: () => [], retries: 3, retryDelayMs: 0, sleepFn: async () => {},
+    runUpload: async () => { if (++tries < 3) throw new Error("lỗi tạm"); },
+    titleProvider: async (j) => { ai++; return { title: "AI", usedAi: true }; },
+  });
+  q.enqueue(aiJob()); await q.drain();
+  assert.equal(tries, 3); assert.equal(ai, 1);
+});
+
+test("queue + AI: video đã lên lịch rồi thì không gọi AI (tránh tốn hạn mức vô ích)", async () => {
+  let ai = 0;
+  const q = createUploadQueue({
+    readChannelUploads: async () => ({ scheduledUrls: new Set(["http://u/1"]), usedSlots: [] }), connect: async () => ({ page: {} }), now: () => NOW, listFiles: () => [],
+    runUpload: async () => {}, titleProvider: async () => { ai++; return { title: "AI", usedAi: true }; },
+  });
+  q.enqueue(aiJob()); await q.drain();
+  assert.equal(ai, 0);
+});

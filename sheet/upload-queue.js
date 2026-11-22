@@ -48,6 +48,9 @@ export function createUploadQueue({
   notifyChannel = null,                // async (sheetName, results[], image: Buffer|null) — tin của 1 kênh
   capture = captureContentPage,        // (page, opts) → Buffer PNG (tiêm để test)
   setUploadStatus = async () => {},    // async (sheetName, rowIndex, status) — ghi ngược vào Sheet
+  lockProfile = async () => () => {},   // async (profileId) -> release. Chặn việc mở lại profile khi bước AI đang dùng nó
+  titleProvider = null,                // async (job) → { title, usedAi } — AI viết title (tuỳ chọn). Lỗi/treo thì dùng title gốc, KHÔNG chặn upload
+  titleTimeoutMs = 45_000,             // chờ AI tối đa bấy lâu rồi bỏ qua
   retries = 3,                         // số lần thử lại khi lỗi (chỉ khi CHƯA bắt đầu upload)
   retryDelayMs = 3000,
   flushMs = 3000,                      // chờ rảnh bao lâu trước khi gửi digest
@@ -90,8 +93,10 @@ export function createUploadQueue({
   async function getConn(gpmHost, profileId) {
     if (closing) await closing;
     if (conns.has(profileId)) return conns.get(profileId);
-    // connectProfile tự đóng phiên đang mở của profile trước khi start (gpm-client).
-    const c = await connect(gpmHost, profileId);
+    // connectProfile tự đóng phiên đang mở của profile trước khi start (gpm-client): phải đợi bước AI trả profile xong.
+    const release = await lockProfile(profileId);
+    let c;
+    try { c = await connect(gpmHost, profileId); } finally { release(); }
     conns.set(profileId, { ...c, gpmHost });
     return conns.get(profileId);
   }
@@ -229,7 +234,7 @@ export function createUploadQueue({
   }
 
   async function runJob(job) {
-    const { sheetName, gpmHost, profileId, videoPath, overlaysDir, title, postTimes, locale, rowIndex, sourceUrl, monetized = false } = job;
+    const { sheetName, gpmHost, profileId, videoPath, overlaysDir, title, postTimes, locale, rowIndex, sourceUrl, monetized = false, customTitle: jobCustomTitle = "" } = job;
     lastProfile.set(sheetName, { gpmHost, profileId });
 
     // ── Giai đoạn CHUẨN BỊ ────────────────────────────────────────────────────
@@ -267,6 +272,18 @@ export function createUploadQueue({
       return;
     }
 
+    // AI viết title: gọi MỘT lần cho video này (retry upload không gọi lại → không tốn hạn mức). Mọi lỗi/treo → title gốc.
+    let customTitle = String(jobCustomTitle || "");
+    if (titleProvider) {
+      try {
+        const r = await Promise.race([
+          Promise.resolve(titleProvider(job)),
+          new Promise((_, rej) => { const t = setTimeout(() => rej(new Error("AI quá thời gian chờ")), titleTimeoutMs); t.unref?.(); }),
+        ]);
+        if (r && r.usedAi && typeof r.title === "string" && r.title.trim() && r.title.trim() !== String(title ?? "").trim()) customTitle = r.title.trim();
+      } catch (e) { log(`[${sheetName}] AI không viết được title (${String(e?.message || e).slice(0, 120)}) → dùng title gốc.`); }
+    }
+
     // Mỗi bước: cập nhật cả bảng UI lẫn Sheet.
     const onStep = (msg) => { emitUpload(sheetName, msg, { title, url: sourceUrl }); return writeStatus(sheetName, rowIndex, msg); };
 
@@ -276,7 +293,7 @@ export function createUploadQueue({
     for (let attempt = 1; attempt <= retries; attempt++) {
       try {
         await runUpload({
-          page, videoPath, title, thumbnailPath, scheduleISO, locale, monetized, log,
+          page, videoPath, title, customTitle, thumbnailPath, scheduleISO, locale, monetized, log,
           onUploaded: () => { uploaded = true; },
           onStep,
         });

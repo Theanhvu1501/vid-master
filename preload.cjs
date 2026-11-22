@@ -49,6 +49,28 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.removeAllListeners("script-output");
   },
   detectGpuCodec: () => ipcRenderer.invoke("detect-gpu-codec"),
+  // Khóa AI theo từng kênh (lưu tại máy, mã hóa; giao diện không bao giờ nhận lại khóa).
+  ai: {
+    keyGet: (name) => ipcRenderer.invoke("ai:key-get", name),
+    keySet: (name, key) => ipcRenderer.invoke("ai:key-set", { name, key }),
+    keyClear: (name) => ipcRenderer.invoke("ai:key-clear", name),
+  },
+  // Sinh ảnh bằng Veo3 (Google Flow API qua Puppeteer): quản lý account, chạy song song.
+  veo3: {
+    get: () => ipcRenderer.invoke("veo3:get"),
+    addAccount: () => ipcRenderer.invoke("veo3:add-account"),
+    removeAccount: (id) => ipcRenderer.invoke("veo3:remove-account", id),
+    openLogin: (id) => ipcRenderer.invoke("veo3:open-login", id),
+    importCookies: (accountId, text) => ipcRenderer.invoke("veo3:import-cookies", { accountId, text }),
+    poolStatus: () => ipcRenderer.invoke("veo3:pool-status"),
+    closeBrowser: (id) => ipcRenderer.invoke("veo3:close-browser", id),
+    saveSettings: (s) => ipcRenderer.invoke("veo3:save-settings", s),
+    run: (prompts) => ipcRenderer.invoke("veo3:run", prompts),
+    stop: () => ipcRenderer.invoke("veo3:stop"),
+    openFile: (p) => ipcRenderer.invoke("veo3:open-file", p),
+    readImage: (p) => ipcRenderer.invoke("veo3:read-image", p),
+    onProgress: (cb) => { const h = (_e, d) => cb(d); ipcRenderer.on("veo3:progress", h); return () => ipcRenderer.removeListener("veo3:progress", h); },
+  },
   // Cài đặt yt-dlp dùng chung toàn app (không thuộc project nào).
   ytdlp: {
     getSettings: () => ipcRenderer.invoke("ytdlp:get-settings"),
@@ -90,6 +112,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     pendingUploads: (sheetName) => ipcRenderer.invoke("sheet:pending-uploads", sheetName),
     // Đăng lại thủ công — chỉ upload lại file đã render, không tải/render lại.
     retryUpload: ({ sheetName, urls } = {}) => ipcRenderer.invoke("sheet:retry-upload", { sheetName, urls }),
+    retryFailed: ({ sheetName, urls } = {}) => ipcRenderer.invoke("sheet:retry-failed", { sheetName, urls }),
     listStatsChannels: () => ipcRenderer.invoke("yt:list-channels"),
     refreshStats: () => ipcRenderer.invoke("yt:refresh-stats"),
     fetchSourceUrls: (sheetName, sortBy) => ipcRenderer.invoke("yt:fetch-source-urls", { sheetName, sortBy }),

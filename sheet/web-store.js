@@ -16,6 +16,8 @@ const REQ_TIMEOUT = 20_000;
 const MAX_BATCH = 1500;
 const MAX_QUEUE = 20_000;
 
+import { countRenderedToday } from "./runner-state.js";
+
 export class WebStoreError extends Error {
   constructor(message, { status = 0, reason = "", offline = false, code = "" } = {}) { super(message); this.status = status; this.reason = reason; this.offline = offline; this.code = code; }
 }
@@ -156,7 +158,13 @@ export function createWebStore({ fetchImpl = fetch, getBase, getToken, disk, get
   const overlay = (rows) => {
     if (!mem.queue.length) return rows;
     const byId = new Map(mem.queue.map((q) => [q.id, q]));
-    return rows.map((r) => { const q = byId.get(r.rowIndex); return q ? { ...r, status: q.b !== undefined ? q.b : r.status, uploadStatus: q.c !== undefined ? q.c : r.uploadStatus } : r; });
+    return rows.map((r) => {
+      const q = byId.get(r.rowIndex); if (!q) return r;
+      const status = q.b !== undefined ? q.b : r.status;
+      // 'done' còn nằm trong hàng đợi (chưa lên server): server chưa có mốc, lấy mốc của hàng đợi (lúc app thật sự render xong).
+      const renderedAt = status === "done" && !(r.renderedAt > 0) && q.b === "done" ? (q.at || 0) : (status === "done" ? r.renderedAt : 0);
+      return { ...r, status, uploadStatus: q.c !== undefined ? q.c : r.uploadStatus, renderedAt };
+    });
   };
 
   async function readChannelUrls(name) {
@@ -182,13 +190,26 @@ export function createWebStore({ fetchImpl = fetch, getBase, getToken, disk, get
   }
   async function setUrlStatus(name, rowIndex, status) {
     load(); webIdOf(name);
-    patchLocal(name, rowIndex, "status", String(status ?? ""));
+    const val = String(status ?? "");
+    patchLocal(name, rowIndex, "status", val);
+    // Mốc render (đếm hạn mức ngày): ghi NGAY trên bản sao để mất mạng vẫn đếm đúng. Giống server: chỉ đặt ở lần đầu sang "done",
+    // và bỏ mốc khi video quay về trạng thái khác (làm lại) để render lại được tính một lần mới.
+    const e = mem.rows.get(name), row = e && e.rows.find((r) => r.rowIndex === rowIndex);
+    if (row) {
+      if (val === "done") { if (!(row.renderedAt > 0)) { row.renderedAt = now(); saveVideos(); } }
+      else if (row.renderedAt) { row.renderedAt = 0; saveVideos(); }
+    }
     enqueue(rowIndex, "b", String(status ?? "")); scheduleFlush();
   }
   async function setUploadStatus(name, rowIndex, status) {
     load(); webIdOf(name);
     patchLocal(name, rowIndex, "uploadStatus", String(status ?? ""));
     enqueue(rowIndex, "c", String(status ?? "")); scheduleFlush();
+  }
+  /** Số video đã render hôm nay của kênh, từ danh sách video (server hoặc bản sao trên đĩa). */
+  function renderedToday(name, today) {
+    load();
+    return countRenderedToday((mem.rows.get(name) || {}).rows || [], today);
   }
   async function appendUrls(name, urls) {
     load();
@@ -314,7 +335,7 @@ export function createWebStore({ fetchImpl = fetch, getBase, getToken, disk, get
   const webId = (name) => mem.webIds.get(name) || null;
 
   return {
-    readConfigSheet, readChannelUrls, setUrlStatus, setUploadStatus, appendUrls, flush, listChannelConfigs, updateChannelConfig, channelStats, youtubeStats, fetchSourceUrls,
+    readConfigSheet, readChannelUrls, setUrlStatus, setUploadStatus, appendUrls, renderedToday, flush, listChannelConfigs, updateChannelConfig, channelStats, youtubeStats, fetchSourceUrls,
     createChannelConfig, deleteChannelConfig, importChannelConfigs, listBatches, createBatch, updateBatch, deleteBatch, addBatchChannel, removeBatchChannel, markBatchRendered, reportBatchAction,
     webId, pending: () => { load(); return mem.queue.length; }, isOnline: () => lastOnline,
     // Dùng cho test và chẩn đoán

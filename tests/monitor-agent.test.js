@@ -148,3 +148,10 @@ test("channel-summary: một thông báo mỗi kênh với số video thành cô
   assert.equal(e({ ok: -5, uploadErr: "abc" }), null, "số liệu rác không thành thông báo sai");
   assert.equal(sheetEventToMonitor({ type: "channel-summary", ok: 1 }).channel, null, "thiếu tên kênh không làm hỏng");
 });
+
+test("buildChannelEntry: todayDone đếm theo mốc renderedAt của từng video khi nguồn có mốc (không phụ thuộc runner-state)", () => {
+  const now = new Date(); const t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 1, 0).getTime();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  const rows = [{ url: "a", status: "done", uploadStatus: "", renderedAt: t0 }, { url: "b", status: "done", uploadStatus: "", renderedAt: t0 - 3 * 86400000 }, { url: "c", status: "", uploadStatus: "", renderedAt: 0 }];
+  assert.equal(buildChannelEntry(ch(), rows, { state: { k1: { lastRunDate: today, countToday: 99 } }, today }).todayDone, 1);
+});

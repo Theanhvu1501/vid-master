@@ -1711,24 +1711,14 @@ document.addEventListener("DOMContentLoaded", async () => {
   await loadSettings();
   await initYtdlpExtractorArgs();
 
-  document.querySelectorAll(".tab-button").forEach((button) => {
-    button.addEventListener("click", () => {
-      const tabId = button.getAttribute("data-tab");
-
-      document
-        .querySelectorAll(".tab-button")
-        .forEach((btn) => btn.classList.remove("active"));
-      document
-        .querySelectorAll(".tab-content")
-        .forEach((content) => content.classList.remove("active"));
-
-      button.classList.add("active");
-      const tabEl = document.getElementById(tabId);
-      if (tabEl) tabEl.classList.add("active");
-      if (tabId === "channel-stats") openChannelStats();
-      if (tabId === "batches") openBatches();
-    });
-  });
+  // Tab "Tạo ảnh Veo3": dựng một lần, các lần sau nạp lại cài đặt
+  let veo3View = null;
+  function openVeo3Image() {
+    const root = document.getElementById("veo3-root");
+    if (!root || !window.Veo3UI) return;
+    if (!veo3View) veo3View = window.Veo3UI.mount(root);
+    else veo3View.reload();
+  }
 
   // Tab "Mẻ": dựng một lần khi mở lần đầu, các lần sau nạp lại
   let batchView = null;
@@ -1749,6 +1739,31 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
   // Web hoặc app đổi cấu hình/trạng thái kênh: biểu đồ đang mở thì nạp lại ngay (tab ẩn sẽ nạp khi mở)
   window.electronAPI?.sheet?.onChannelsChanged?.(() => { try { channelStatsView?.reload(); } catch { /* ignore */ } });
+
+  document.querySelectorAll(".tab-button").forEach((button) => {
+    button.addEventListener("click", () => {
+      const tabId = button.getAttribute("data-tab");
+
+      document
+        .querySelectorAll(".tab-button")
+        .forEach((btn) => btn.classList.remove("active"));
+      document
+        .querySelectorAll(".tab-content")
+        .forEach((content) => content.classList.remove("active"));
+
+      button.classList.add("active");
+      const tabEl = document.getElementById(tabId);
+      if (tabEl) tabEl.classList.add("active");
+      if (tabId === "channel-stats") openChannelStats();
+      if (tabId === "batches") openBatches();
+      if (tabId === "veo3-image") openVeo3Image();
+    });
+  });
+
+  // Mở tab mặc định khi app khởi động: Thống kê kênh
+  openChannelStats();
+  // Bỏ focus khỏi input (tránh browser tự focus vào ô đầu tiên như "Video mỗi ngày")
+  document.activeElement?.blur?.();
 
   // Add event listeners to save settings on change
   const inputsToWatch = [
@@ -5230,7 +5245,8 @@ async function runConcat() {
     // Sub text giống web: owner · máy · hôm nay x/y · z lỗi · đã đăng a/b video
     const subParts = [
       wc?.proxy ? (wc.proxyDaysLeft == null ? "Proxy chưa rõ hạn" : wc.proxyDaysLeft <= 0 ? "Proxy hết hạn" : "Proxy còn " + wc.proxyDaysLeft + " ngày") : "",
-      "hôm nay " + (vs.today || 0) + "/" + (vs.perDay ?? c.videosPerDay ?? 0),
+      // Hai con số khác nghĩa: "đã làm" = đã render hôm nay (đúng thứ chặn việc tải thêm), "đã up" = đã lên lịch hôm nay.
+      "hôm nay: đã làm " + (c.countToday || 0) + "/" + (vs.perDay ?? c.videosPerDay ?? 0) + ", đã up " + (vs.today || 0),
       vs.errors ? vs.errors + " lỗi" : "",
       "đã đăng " + (vs.posted || 0) + "/" + (vs.total || 0) + " video"
     ].filter(Boolean).join(" · ");
@@ -5287,6 +5303,20 @@ async function runConcat() {
     if (!urlView.has(name)) urlView.set(name, { rows: null, f: "all", q: "", page: 0, loading: false, err: null });
     return urlView.get(name);
   }
+  // Bấm "Thử lại": chỉ đặt lại trạng thái (không tự chạy lượt mới, tránh bất ngờ tốn tài nguyên), rồi nhắc người dùng bấm Chạy.
+  async function retryFailedVideos(c, urls, btn, host) {
+    const old = btn.textContent; btn.disabled = true; btn.textContent = "⏳ đang xử lý…";
+    try {
+      const r = await api.retryFailed({ sheetName: c.name, urls });
+      if (!r?.ok) { appToast(r?.error || "Không thử lại được", { kind: "error" }); log(`[${c.name}] ❌ thử lại thất bại: ${r?.error || "lỗi"}`); return; }
+      const parts = [r.reset ? r.reset + " video làm lại từ đầu" : "", r.uploads ? r.uploads + " video đang đăng lại" : ""].filter(Boolean);
+      log(`[${c.name}] ↻ thử lại: ${parts.join(", ") || "không có gì để đổi"}${r.skipped?.length ? `, bỏ qua ${r.skipped.length}` : ""}.`);
+      for (const s of r.skipped ?? []) log(`   • ${shortUrl(s.url)}: ${s.reason}`);
+      appToast(parts.length ? "Đã thử lại: " + parts.join(", ") + (r.reset ? ". Bấm Chạy để làm tiếp." : "") : "Không có video nào thử lại được", { kind: parts.length ? "success" : "warn" });
+    } catch (e) { appToast(e?.message || "Không thử lại được", { kind: "error" }); }
+    finally { btn.disabled = false; btn.textContent = old; loadUrlList(c, host || null); }
+  }
+
   async function loadUrlList(c, host) {
     const v = urlStateOf(c.name);
     if (v.loading) return;
@@ -5330,6 +5360,15 @@ async function runConcat() {
     const reload = document.createElement("button"); reload.type = "button"; reload.className = "sw-mini-btn"; reload.textContent = "⟳"; reload.title = "Nạp lại danh sách từ web";
     reload.addEventListener("click", () => loadUrlList(c, host));
     head.append(reload);
+    // Thử lại video lỗi: đưa về làm lại (lỗi tải/render) hoặc đăng lại (lỗi upload). Chỉ đặt lại trạng thái; bấm Chạy để chạy tiếp.
+    const failedUrls = VL().retryableUrls(v.rows);
+    if (failedUrls.length) {
+      const rb = document.createElement("button"); rb.type = "button"; rb.className = "sw-mini-btn"; rb.id = "vl-retry-all";
+      rb.textContent = "↻ Thử lại " + failedUrls.length + " video lỗi";
+      rb.title = "Làm lại video lỗi tải/render và đăng lại video lỗi upload. Sau đó bấm Chạy để tiếp tục.";
+      rb.addEventListener("click", () => retryFailedVideos(c, failedUrls, rb, host));
+      head.append(rb);
+    }
 
     const bar = document.createElement("div"); bar.className = "vl-bar";
     const q = document.createElement("input"); q.type = "text"; q.placeholder = "Tìm trong danh sách…"; q.value = v.q; q.autocomplete = "off"; q.setAttribute("aria-label", "Tìm video");
@@ -5357,7 +5396,12 @@ async function runConcat() {
         const tdU = document.createElement("td"); tdU.className = "vl-url"; tdU.textContent = r.url; tdU.title = r.url;
         const tdS = document.createElement("td"); const chip = document.createElement("span"); chip.className = "vl-chip " + (VL().TONE[key] || ""); chip.textContent = VL().LABEL[key]; tdS.append(chip);
         const det = VL().detailOf(r), tdD = document.createElement("td"); tdD.className = "vl-det"; tdD.textContent = det; tdD.title = det;
-        tr.append(tdU, tdS, tdD); tb.append(tr);
+        if (VL().canRetry(r)) {
+          const tdA = document.createElement("td"); const one = document.createElement("button"); one.type = "button"; one.className = "sw-mini-btn"; one.textContent = "Thử lại";
+          one.addEventListener("click", () => retryFailedVideos(c, [r.url], one, host));
+          tdA.append(one); tr.append(tdU, tdS, tdD, tdA);
+        } else tr.append(tdU, tdS, tdD);
+        tb.append(tr);
       }
       table.append(tb); box.append(table);
     }
@@ -6019,17 +6063,46 @@ function renderAutomationProfiles() {
   if (!list) return;
   const groupName = new Map(automationGroups.map((g) => [String(g.id), g.name]));
   const shown = getFilteredAutomationProfiles();
-  list.innerHTML = shown.length
-    ? shown.map((p) => `
-        <label class="auto-profile-item">
-          <input type="checkbox" data-id="${escapeHtml(p.id)}" ${automationSelected.has(p.id) ? "checked" : ""} />
-          <span class="nm" title="${escapeHtml(`Profile ID: ${p.id}\n${p.proxyMasked || "Chưa có proxy"}`)}">${escapeHtml(profileLabel(p))}${p.hasProxy ? "" : " ⚠"}</span>
-          <span class="grp">${escapeHtml(groupName.get(String(p.groupId)) || "Chung")}</span>
-        </label>`).join("")
-    : `<div class="auto-profile-empty">${automationProfiles.length ? "Không có profile nào khớp." : "Không có profile GPM."}</div>`;
+
+  if (!shown.length) {
+    list.innerHTML = `<div class="auto-profile-empty">${automationProfiles.length ? "Không có profile nào khớp." : "Không có profile GPM."}</div>`;
+  } else {
+    // Nhóm profiles theo group và render với headers
+    const byGroup = new Map();
+    for (const p of shown) {
+      const gk = p.groupId === undefined || p.groupId === null || p.groupId === "" ? "__none" : String(p.groupId);
+      if (!byGroup.has(gk)) byGroup.set(gk, []);
+      byGroup.get(gk).push(p);
+    }
+
+    // Sắp xếp groups theo tên
+    const sortedGroups = [...byGroup.entries()].sort((a, b) => {
+      const na = a[0] === "__none" ? "zzz" : (groupName.get(a[0]) || a[0]).toLowerCase();
+      const nb = b[0] === "__none" ? "zzz" : (groupName.get(b[0]) || b[0]).toLowerCase();
+      return na.localeCompare(nb, "vi");
+    });
+
+    let html = "";
+    for (const [gk, profiles] of sortedGroups) {
+      const gn = gk === "__none" ? "Chung" : (groupName.get(gk) || gk);
+      html += `<div class="auto-profile-group">${escapeHtml(gn)}</div>`;
+      for (const p of profiles) {
+        const isSelected = automationSelected.has(p.id);
+        html += `
+          <label class="auto-profile-item${isSelected ? " selected" : ""}">
+            <input type="checkbox" data-id="${escapeHtml(p.id)}" ${isSelected ? "checked" : ""} />
+            <span class="nm">${escapeHtml(profileLabel(p))}${p.hasProxy ? "" : '<span class="warn-icon" title="Chưa có proxy"> ⚠</span>'}</span>
+          </label>`;
+      }
+    }
+    list.innerHTML = html;
+  }
+
   list.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
     cb.addEventListener("change", () => {
+      const item = cb.closest(".auto-profile-item");
       cb.checked ? automationSelected.add(cb.dataset.id) : automationSelected.delete(cb.dataset.id);
+      item?.classList.toggle("selected", cb.checked);
       updateAutomationSelectionUi();
     });
   });

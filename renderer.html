@@ -1364,9 +1364,24 @@ small {
 .cd-spark { display: block; }
 .cd-chip { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 11px; font-weight: 600; color: var(--c, var(--text-secondary)); border: 1px solid var(--c, var(--border-default)); background: color-mix(in srgb, var(--c, transparent) 12%, transparent); white-space: nowrap; }
 .cd-chip.warn { --c: var(--accent-warning); }
-.cd-skel { display: grid; gap: var(--space-md); }
-.cd-skel .cd-card { height: 120px; animation: cd-shimmer 1.4s linear infinite; background: linear-gradient(90deg, var(--bg-secondary) 25%, var(--bg-tertiary) 50%, var(--bg-secondary) 75%); background-size: 200% 100%; }
-@keyframes cd-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+/* Loading skeleton đẹp hơn */
+.cd-skel { display: flex; flex-direction: column; gap: var(--space-lg); padding: var(--space-lg); animation: cd-fadein 0.3s ease; }
+.cd-skel-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: var(--space-md); }
+.cd-skel-card { background: var(--bg-secondary); border-radius: var(--radius-lg); padding: var(--space-lg); position: relative; overflow: hidden; }
+.cd-skel-card::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.04), transparent); animation: cd-shimmer 1.5s ease-in-out infinite; }
+.cd-skel-kpi { height: 90px; }
+.cd-skel-chart { height: 200px; grid-column: span 2; }
+.cd-skel-table { height: 280px; grid-column: span 6; }
+.cd-skel-line { background: var(--bg-tertiary); border-radius: var(--radius-sm); margin-bottom: var(--space-sm); }
+.cd-skel-line.title { width: 60%; height: 16px; margin-bottom: var(--space-md); }
+.cd-skel-line.value { width: 40%; height: 28px; }
+.cd-skel-line.bar { width: 100%; height: 8px; margin-top: var(--space-sm); }
+.cd-skel-spinner { display: flex; align-items: center; justify-content: center; gap: var(--space-sm); color: var(--text-muted); font-size: 13px; padding: var(--space-md) 0; }
+.cd-skel-spinner svg { width: 20px; height: 20px; animation: cd-spin 1s linear infinite; }
+@keyframes cd-shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
+@keyframes cd-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes cd-fadein { from { opacity: 0; } to { opacity: 1; } }
 
 /* màn hình hẹp: xếp dọc và cho cả trang cuộn thay vì ép vào một khung */
 @media (max-width: 1100px) {
@@ -1913,22 +1928,42 @@ input.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
   border-radius: var(--radius-md);
   background: var(--bg-primary);
 }
+/* Group header trong danh sách profile - style giống hình mẫu */
+.auto-profile-group {
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--accent-primary);
+  background: var(--bg-primary);
+  border-bottom: 1px solid var(--border-default);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
 .auto-profile-item {
   display: flex;
   align-items: center;
   gap: 10px;
   margin: 0;
-  padding: 8px 12px;
+  padding: 10px 12px;
   font-size: 13px;
   color: var(--text-primary);
   cursor: pointer;
-  border-bottom: 1px solid var(--border-default);
+  border-bottom: 1px solid var(--border-subtle);
+  transition: var(--transition-fast);
 }
 .auto-profile-item:last-child { border-bottom: 0; }
 .auto-profile-item:hover { background: var(--bg-hover); }
-.auto-profile-item .nm { flex: 1; font-weight: 500; min-width: 0; overflow-wrap: anywhere; }
-.auto-profile-item .grp { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
-.auto-profile-empty { padding: 12px; text-align: center; color: var(--text-muted); font-size: 12px; }
+.auto-profile-item.selected { background: rgba(var(--accent-rgb), 0.08); }
+.auto-profile-item input[type="checkbox"] {
+  width: 16px; height: 16px; flex-shrink: 0; accent-color: var(--accent-primary); cursor: pointer;
+}
+.auto-profile-item .nm { flex: 1; font-weight: 500; min-width: 0; overflow-wrap: anywhere; line-height: 1.3; }
+.auto-profile-item .nm small { display: block; font-size: 11px; font-weight: 400; color: var(--text-muted); margin-top: 2px; }
+.auto-profile-item .warn-icon { color: var(--accent-warning); margin-left: 4px; }
+.auto-profile-empty { padding: 16px; text-align: center; color: var(--text-muted); font-size: 12px; }
 /* Chân hộp chọn: dòng đếm + hai nút, dùng chung kiểu với hộp "Thêm kênh" của mẻ */
 .pick-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 .pick-count { font-size: 12px; color: var(--text-muted); }
@@ -2473,15 +2508,15 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
       <div class="tabs">
         <div class="tab-group" data-group="overview">
           <button type="button" class="tab-group-title" aria-expanded="true"><span class="grp-icon"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="7" height="9" x="3" y="3" rx="1" /> <rect width="7" height="5" x="14" y="3" rx="1" /> <rect width="7" height="9" x="14" y="12" rx="1" /> <rect width="7" height="5" x="3" y="16" rx="1" /></svg></span><span class="grp-label">Tổng quan</span><span class="chev" aria-hidden="true">▾</span></button>
+          <button class="tab-button active" data-tab="channel-stats"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v16a2 2 0 0 0 2 2h16" /><path d="M18 17V9" /><path d="M13 17V5" /><path d="M8 17v-3" /></svg><span class="tab-label">Thống kê kênh</span></button>
           <button class="tab-button" data-tab="sheet-watch"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2" ry="2" /> <line x1="3" x2="21" y1="9" y2="9" /> <line x1="3" x2="21" y1="15" y2="15" /> <line x1="9" x2="9" y1="9" y2="21" /> <line x1="15" x2="15" y1="9" y2="21" /></svg><span class="tab-label">Kênh</span></button>
-          <button class="tab-button" data-tab="channel-stats"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v16a2 2 0 0 0 2 2h16" /><path d="M18 17V9" /><path d="M13 17V5" /><path d="M8 17v-3" /></svg><span class="tab-label">Thống kê kênh</span></button>
           <button class="tab-button" data-tab="batches"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" /></svg><span class="tab-label">Mẻ</span></button>
           <button class="tab-button" data-tab="veo3-image"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg><span class="tab-label">Tạo ảnh Veo3</span></button>
         </div>
 
         <div class="tab-group" data-group="create">
           <button type="button" class="tab-group-title" aria-expanded="true"><span class="grp-icon"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3Z" /> <path d="m6.2 5.3 3.1 3.9" /> <path d="m12.4 3.4 3.1 4" /> <path d="M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></svg></span><span class="grp-label">Tạo nội dung</span><span class="chev" aria-hidden="true">▾</span></button>
-          <button class="tab-button active" data-tab="render"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2" /> <path d="M7 3v18" /> <path d="M3 7.5h4" /> <path d="M3 12h18" /> <path d="M3 16.5h4" /> <path d="M17 3v18" /> <path d="M17 7.5h4" /> <path d="M17 16.5h4" /></svg><span class="tab-label">Render Video</span></button>
+          <button class="tab-button" data-tab="render"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2" /> <path d="M7 3v18" /> <path d="M3 7.5h4" /> <path d="M3 12h18" /> <path d="M3 16.5h4" /> <path d="M17 3v18" /> <path d="M17 7.5h4" /> <path d="M17 16.5h4" /></svg><span class="tab-label">Render Video</span></button>
           <button class="tab-button" data-tab="composer"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="7" x="3" y="3" rx="1" /> <rect width="9" height="7" x="3" y="14" rx="1" /> <rect width="5" height="7" x="16" y="14" rx="1" /></svg><span class="tab-label">Bố cục (Composer)</span></button>
           <button class="tab-button" data-tab="video-snow"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 22H4a2 2 0 0 1-2-2V6" /> <path d="m22 13-1.296-1.296a2.41 2.41 0 0 0-3.408 0L11 18" /> <circle cx="12" cy="8" r="2" /> <rect width="16" height="16" x="6" y="2" rx="2" /></svg><span class="tab-label">Tạo video từ ảnh</span></button>
           <button class="tab-button" data-tab="bg-video"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 3 4 8 5-5 5 15H2L8 3z" /></svg><span class="tab-label">Tạo video nền</span></button>
@@ -2516,7 +2551,7 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 
       <div class="content">
         <!-- Render Video Tab -->
-        <div id="render" class="tab-content active">
+        <div id="render" class="tab-content">
           <div class="tab-header">
             <h2>Render Video</h2>
             <span class="help-icon" onclick="showHelp('render')" title="Hướng dẫn">?</span>
@@ -4506,7 +4541,7 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 
         <!-- Theo dõi Sheet Tab -->
         <!-- Thống kê kênh của máy này (channel-dashboard.js) -->
-        <div id="channel-stats" class="tab-content">
+        <div id="channel-stats" class="tab-content active">
           <div id="cd-root"></div>
         </div>
         <div id="sheet-watch" class="tab-content">

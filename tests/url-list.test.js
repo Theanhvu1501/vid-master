@@ -55,3 +55,14 @@ test("mọi bộ lọc có nhãn, và mọi trạng thái (trừ all) đều có
   for (const [k, label] of FILTERS) assert.ok(label, k);
   for (const [k] of FILTERS) if (k !== "all") assert.ok(Object.prototype.hasOwnProperty.call(TONE, k), "thiếu màu cho " + k);
 });
+
+test("canRetry / retryableUrls: chỉ lỗi tải-render, bỏ qua, lỗi upload; đang upload/chờ/xong/chưa làm thì không", () => {
+  const L = globalThis.window?.UrlList || globalThis.UrlList;
+  const rows = [
+    { url: "a", status: "lỗi tải: x", uploadStatus: "" }, { url: "b", status: "bỏ qua: y", uploadStatus: "" }, { url: "c", status: "done", uploadStatus: "❌ lỗi: z" },
+    { url: "d", status: "done", uploadStatus: "⏳ đang upload" }, { url: "e", status: "done", uploadStatus: "⏸ chờ: hết slot" }, { url: "f", status: "done", uploadStatus: "✅ lên lịch" },
+    { url: "g", status: "", uploadStatus: "" }, { url: "  ", status: "lỗi tải: x", uploadStatus: "" },
+  ];
+  assert.deepEqual(L.retryableUrls(rows), ["a", "b", "c"]);
+  assert.equal(L.canRetry({ status: "done", uploadStatus: "✅ x" }), false); assert.deepEqual(L.retryableUrls(null), []);
+});
