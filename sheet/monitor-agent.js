@@ -425,7 +425,8 @@ export function createMonitorAgent({
     reconfigure() {
       const s = getSettings() || {};
       this.stop();
-      if (s.monitorEnabled) this.start();
+      // Mặc định LUÔN đồng bộ lên web; chỉ tắt khi settings nói rõ monitorEnabled === false.
+      if (s.monitorEnabled !== false) this.start();
     },
     onSheetEvent(evt) {
       if (stopped) return;
