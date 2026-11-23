@@ -92,7 +92,23 @@ export function createUploadQueue({
   // close đang bay dở hạ luôn tiến trình Chrome vừa mở.
   async function getConn(gpmHost, profileId) {
     if (closing) await closing;
-    if (conns.has(profileId)) return conns.get(profileId);
+    // Kiểm tra connection còn sống không (browser/page có thể bị đóng bởi user hoặc crash)
+    const existing = conns.get(profileId);
+    if (existing) {
+      try {
+        // Kiểm tra browser còn kết nối không
+        if (existing.browser?.isConnected?.() === false) {
+          log(`Browser của profile ${profileId} đã mất kết nối, mở lại...`);
+          conns.delete(profileId);
+        } else {
+          return existing;
+        }
+      } catch {
+        // Lỗi khi kiểm tra → connection chết, xóa và mở lại
+        log(`Connection của profile ${profileId} không còn hợp lệ, mở lại...`);
+        conns.delete(profileId);
+      }
+    }
     // connectProfile tự đóng phiên đang mở của profile trước khi start (gpm-client): phải đợi bước AI trả profile xong.
     const release = await lockProfile(profileId);
     let c;
@@ -292,6 +308,12 @@ export function createUploadQueue({
     let lastErr = null;
     for (let attempt = 1; attempt <= retries; attempt++) {
       try {
+        // Kiểm tra page còn sống không, nếu không thì lấy lại connection mới
+        if (page.isClosed?.() || conns.get(profileId)?.browser?.isConnected?.() === false) {
+          log(`[${sheetName}] Page/browser đã đóng, đang kết nối lại...`);
+          conns.delete(profileId);
+          ({ page } = await getConn(gpmHost, profileId));
+        }
         await runUpload({
           page, videoPath, title, customTitle, thumbnailPath, scheduleISO, locale, monetized, log,
           onUploaded: () => { uploaded = true; },
@@ -302,6 +324,10 @@ export function createUploadQueue({
       } catch (e) {
         lastErr = e;
         if (uploaded) break; // đã bắt đầu upload → không retry
+        // Browser/page bị đóng giữa chừng: bỏ connection chết để lần thử sau mở lại từ đầu
+        if (/Target page, context or browser has been closed|Target closed|browser has been closed/i.test(String(e?.message || e))) {
+          conns.delete(profileId);
+        }
         if (attempt < retries) {
           log(`[${sheetName}] lỗi (thử ${attempt}/${retries}): ${e?.message || e}`);
           await sleepFn(retryDelayMs * attempt);
