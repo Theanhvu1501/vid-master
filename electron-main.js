@@ -2250,6 +2250,63 @@ ipcMain.handle("channels:videos", async (e, { sheetName } = {}) => {
     return { ok: true, rows: await webUrls(name) };
   } catch (err) { return { ok: false, offline: !!err?.offline, error: String(err?.message || err) }; }
 });
+// Nhập link video bằng tay vào kênh (server tự bỏ trùng với video đã có; link đã được giao diện lọc http(s), server kiểm lại).
+const videoFail = (err, name) => (err?.status === 404
+  ? { ok: false, error: `Không thấy kênh "${name}" trên web (hoặc kênh chưa được gán cho máy này).` }
+  : { ok: false, offline: !!err?.offline, error: String(err?.message || err) });
+ipcMain.handle("channels:add-urls", async (e, { sheetName, urls } = {}) => {
+  const name = String(sheetName || "").trim();
+  try {
+    if (!webConfigured()) return { ok: false, error: "Chưa đăng nhập." };
+    if (!name) return { ok: false, error: "Thiếu tên kênh" };
+    const list = (Array.isArray(urls) ? urls : []).map((u) => String(u ?? "").trim()).filter(Boolean);
+    if (!list.length) return { ok: false, error: "Chưa có link nào." };
+    await webChannels(); // làm mới bản đồ tên kênh -> id trên web
+    const added = await webStore().appendUrls(name, list);
+    return { ok: true, added, sent: list.length };
+  } catch (err) { return videoFail(err, name); }
+});
+// Làm lại / Đăng lại / Xóa video của kênh, theo danh sách id đã chọn hoặc theo nhóm lọc (cùng logic với web).
+ipcMain.handle("channels:videos-action", async (e, { sheetName, action, ids, filter } = {}) => {
+  const name = String(sheetName || "").trim();
+  try {
+    if (!webConfigured()) return { ok: false, error: "Chưa đăng nhập." };
+    if (!name) return { ok: false, error: "Thiếu tên kênh" };
+    await webChannels();
+    const changed = await webStore().videosAction(name, { action: String(action || ""), ids: Array.isArray(ids) ? ids.map(Number).filter(Number.isInteger) : undefined, filter: typeof filter === "string" ? filter : undefined });
+    return { ok: true, changed };
+  } catch (err) { return videoFail(err, name); }
+});
+// Chọn file Excel của kênh: trả danh sách tab và các dòng (A link, B/C trạng thái) của từng tab để giao diện cho chọn tab.
+ipcMain.handle("channels:videos-excel-pick", async (e, { sheetName } = {}) => {
+  try {
+    const r = await dialog.showOpenDialog(mainWindow, { title: "Chọn file Excel danh sách video", properties: ["openFile"], filters: [{ name: "Excel", extensions: ["xlsx", "xls", "csv"] }] });
+    if (r.canceled || !r.filePaths?.[0]) return { ok: false, canceled: true };
+    const wb = XLSX.readFile(r.filePaths[0]);
+    const want = String(sheetName || "").trim().toLowerCase();
+    const tabs = wb.SheetNames.map((n) => ({
+      name: n,
+      rows: XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, defval: "", raw: false })
+        .filter((x) => Array.isArray(x) && String(x[0] ?? "").trim())
+        .map((x) => [String(x[0]).trim(), String(x[1] ?? ""), String(x[2] ?? "")]),
+    }));
+    const best = (tabs.find((t) => t.name.toLowerCase() === want) || tabs[0] || {}).name || "";
+    return { ok: true, file: path.basename(r.filePaths[0]), tabs, best };
+  } catch (err) { return { ok: false, error: "Không đọc được file: " + String(err?.message || err) }; }
+});
+// Nhập các dòng đã chọn từ Excel (giữ hoặc bỏ trạng thái đã làm).
+ipcMain.handle("channels:videos-import-rows", async (e, { sheetName, rows, keepStatus } = {}) => {
+  const name = String(sheetName || "").trim();
+  try {
+    if (!webConfigured()) return { ok: false, error: "Chưa đăng nhập." };
+    if (!name) return { ok: false, error: "Thiếu tên kênh" };
+    const src = Array.isArray(rows) ? rows : [];
+    if (!src.length) return { ok: false, error: "Không có dòng nào để nhập." };
+    const clean = src.filter(Array.isArray).map((r) => (keepStatus ? [String(r[0] ?? ""), String(r[1] ?? ""), String(r[2] ?? "")] : [String(r[0] ?? ""), "", ""]));
+    await webChannels();
+    return { ok: true, ...(await webStore().importVideoRows(name, clean)) };
+  } catch (err) { return videoFail(err, name); }
+});
 // ----- App là nơi SỬA cấu hình: tạo/xóa kênh Auto, nhập Excel, quản lý mẻ. Server giữ dữ liệu, web chỉ xem. -----
 const cfgFail = (err) => ({ ok: false, status: err?.status || 0, code: err?.code || "", offline: !!err?.offline, error: String(err?.message || err) });
 const cfgCall = (fn) => async (e, args = {}) => {

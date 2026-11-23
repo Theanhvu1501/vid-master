@@ -4978,6 +4978,100 @@ async function runConcat() {
     body.appendChild(actions);
   }
 
+  // Bảng nhập video gắn ngay dưới danh sách (giống tab web): "Dán danh sách" hoặc "Nhập Excel".
+  // Chỉ dùng textContent (không nội suy HTML) vì link và tên tab đến từ người dùng/file.
+  function buildImportPanel(c, host, v) {
+    if (v.panelMode === "paste") return pastePanel(c, host, v);
+    if (v.panelMode === "excel") return excelPanel(c, host, v);
+    return null;
+  }
+  function pastePanel(c, host, v) {
+    const wrap = document.createElement("div"); wrap.className = "vl-panel";
+    const msg = document.createElement("div"); msg.className = "vl-hint"; msg.textContent = "Mỗi dòng một link (http/https).";
+    const ta = document.createElement("textarea"); ta.rows = 7; ta.spellcheck = false; ta.className = "vl-ta"; ta.placeholder = "https://www.youtube.com/watch?v=...";
+    const infoEl = document.createElement("div"); infoEl.className = "vl-hint"; infoEl.textContent = "Chưa có link nào.";
+    const row = document.createElement("div"); row.className = "vl-imp-row";
+    const go = document.createElement("button"); go.type = "button"; go.className = "sw-mini-btn"; go.textContent = "Thêm vào danh sách";
+    const x = document.createElement("button"); x.type = "button"; x.className = "sw-mini-btn"; x.textContent = "Hủy";
+    row.append(go, x);
+    const refresh = () => {
+      const p = VL().parseUrls(ta.value);
+      const bits = [p.urls.length + " link hợp lệ"];
+      if (p.dup) bits.push(p.dup + " trùng trong ô dán");
+      if (p.invalid) bits.push(p.invalid + " mục không phải link http(s) sẽ bị bỏ qua");
+      infoEl.textContent = (p.urls.length || p.invalid) ? bits.join(" · ") : "Chưa có link nào.";
+      go.disabled = v.busy || !p.urls.length;
+    };
+    ta.addEventListener("input", refresh);
+    x.addEventListener("click", () => { if (v.busy) return; v.panelMode = null; paintUrlList(c, host); });
+    go.addEventListener("click", async () => {
+      const p = VL().parseUrls(ta.value); if (!p.urls.length || v.busy) return;
+      v.busy = true; go.disabled = true; x.disabled = true; go.textContent = "⏳ đang thêm…";
+      try {
+        const r = await window.electronAPI.sheet.addUrls(c.name, p.urls);
+        if (!r || !r.ok) { infoEl.textContent = "❌ " + ((r && r.error) || "Không thêm được"); go.textContent = "Thêm vào danh sách"; go.disabled = false; x.disabled = false; v.busy = false; return; }
+        const skipped = r.sent - r.added;
+        log("[" + c.name + "] ✅ Đã thêm " + r.added + " link" + (skipped > 0 ? ", bỏ qua " + skipped + " trùng video đã có" : "") + (p.invalid ? ", " + p.invalid + " mục không hợp lệ" : "") + ".");
+        appToast(r.added ? ("Đã thêm " + r.added + " link vào " + c.name) : "Tất cả link đã có trong kênh", { kind: r.added ? "success" : "warn" });
+        v.busy = false; v.panelMode = null; loadUrlList(c, host);
+      } catch (e) { infoEl.textContent = "❌ " + ((e && e.message) || e); go.textContent = "Thêm vào danh sách"; go.disabled = false; x.disabled = false; v.busy = false; }
+    });
+    wrap.append(msg, ta, infoEl, row);
+    refresh();
+    return wrap;
+  }
+  function excelPanel(c, host, v) {
+    const wrap = document.createElement("div"); wrap.className = "vl-panel";
+    const pickBtn = document.createElement("button"); pickBtn.type = "button"; pickBtn.className = "sw-mini-btn"; pickBtn.textContent = "📂 Chọn file Excel…";
+    const note = document.createElement("div"); note.className = "vl-hint"; note.textContent = "Lấy tab trùng tên \"" + c.name + "\" (cột A: link, B/C: trạng thái).";
+    const tabRow = document.createElement("div"); tabRow.className = "vl-imp-row"; tabRow.style.display = "none";
+    const tabLbl = document.createElement("span"); tabLbl.textContent = "Tab:";
+    const tabSel = document.createElement("select"); tabSel.setAttribute("aria-label", "Chọn tab Excel");
+    tabRow.append(tabLbl, tabSel);
+    const keepLbl = document.createElement("label"); keepLbl.className = "vl-chk"; keepLbl.style.display = "none";
+    const keep = document.createElement("input"); keep.type = "checkbox"; keep.checked = true;
+    keepLbl.append(keep, document.createTextNode(" Giữ trạng thái đã làm (video đã render/đã lên lịch không bị làm lại)"));
+    const infoEl = document.createElement("div"); infoEl.className = "vl-hint"; infoEl.textContent = "Chưa chọn file Excel.";
+    const row = document.createElement("div"); row.className = "vl-imp-row";
+    const go = document.createElement("button"); go.type = "button"; go.className = "sw-mini-btn"; go.textContent = "Nhập"; go.disabled = true;
+    const x = document.createElement("button"); x.type = "button"; x.className = "sw-mini-btn"; x.textContent = "Hủy";
+    row.append(go, x);
+    let book = null;
+    const curTab = () => (book ? book.tabs.find((t) => t.name === tabSel.value) : null);
+    const refresh = () => {
+      const t = curTab();
+      infoEl.textContent = t ? (t.rows.length + " dòng có link trong tab \"" + t.name + "\" (file " + book.file + ").") : "Chưa chọn file Excel.";
+      go.disabled = v.busy || !t || !t.rows.length;
+    };
+    tabSel.addEventListener("change", refresh);
+    pickBtn.addEventListener("click", async () => {
+      if (v.busy) return; pickBtn.disabled = true;
+      try {
+        const r = await window.electronAPI.sheet.videosExcelPick(c.name);
+        if (r && r.canceled) return;
+        if (!r || !r.ok) { infoEl.textContent = "❌ " + ((r && r.error) || "Không đọc được file"); return; }
+        book = { file: r.file, tabs: r.tabs || [] };
+        tabSel.replaceChildren(...book.tabs.map((t) => { const o = document.createElement("option"); o.value = t.name; o.textContent = t.name + " (" + t.rows.length + ")"; return o; }));
+        tabSel.value = r.best; tabRow.style.display = ""; keepLbl.style.display = ""; note.textContent = "Đã chọn: " + r.file; refresh();
+      } finally { pickBtn.disabled = false; }
+    });
+    x.addEventListener("click", () => { if (v.busy) return; v.panelMode = null; paintUrlList(c, host); });
+    go.addEventListener("click", async () => {
+      const t = curTab(); if (!t || !t.rows.length || v.busy) return;
+      v.busy = true; go.disabled = true; x.disabled = true; go.textContent = "⏳ đang nhập…";
+      try {
+        const r = await window.electronAPI.sheet.videosImportRows({ sheetName: c.name, rows: t.rows, keepStatus: keep.checked });
+        if (!r || !r.ok) { infoEl.textContent = "❌ " + ((r && r.error) || "Không nhập được"); go.textContent = "Nhập"; go.disabled = false; x.disabled = false; v.busy = false; return; }
+        log("[" + c.name + "] ✅ Đã nhập " + r.added + " video" + (r.existing ? ", bỏ qua " + r.existing + " đã có" : "") + (r.invalid ? ", " + r.invalid + " dòng không hợp lệ" : "") + ".");
+        appToast(r.added ? ("Đã nhập " + r.added + " video vào " + c.name) : "Tất cả đã có trong kênh", { kind: r.added ? "success" : "warn" });
+        v.busy = false; v.panelMode = null; loadUrlList(c, host);
+      } catch (e) { infoEl.textContent = "❌ " + ((e && e.message) || e); go.textContent = "Nhập"; go.disabled = false; x.disabled = false; v.busy = false; }
+    });
+    wrap.append(pickBtn, note, tabRow, keepLbl, infoEl, row);
+    refresh();
+    return wrap;
+  }
+
   // ===== Chờ đăng: video đã render nhưng chưa lên lịch =====
 
   const PENDING_LABEL = {
@@ -5300,8 +5394,33 @@ async function runConcat() {
   const VL = () => window.UrlList;
   const fmtNum = (n) => Number(n || 0).toLocaleString("vi-VN");
   function urlStateOf(name) {
-    if (!urlView.has(name)) urlView.set(name, { rows: null, f: "all", q: "", page: 0, loading: false, err: null });
+    if (!urlView.has(name)) urlView.set(name, { rows: null, f: "all", q: "", page: 0, loading: false, err: null, sel: new Set(), busy: false, panelMode: null });
     return urlView.get(name);
+  }
+  // Làm lại / Đăng lại / Xóa: theo video đã tick, hoặc theo nhóm đang lọc khi không tick gì. Hỏi xác nhận trước (xóa là hành động nguy hiểm).
+  async function runVideosAction(c, action, host) {
+    const v = urlStateOf(c.name);
+    if (v.busy || !v.rows) return;
+    const ids = [...v.sel];
+    const total = ids.length || VL().filterRows(v.rows, v.f, "").length;
+    if (!total) { appToast("Không có video nào để thao tác", { kind: "warn" }); return; }
+    const W = {
+      reset: ["Làm lại từ đầu", "Trạng thái tải, render và upload sẽ bị xóa: app sẽ tải và render lại video này.", false],
+      "retry-upload": ["Đăng lại", "Chỉ áp cho video đã render mà upload bị lỗi.", false],
+      delete: ["Xóa khỏi danh sách", "Video bị xóa khỏi danh sách của kênh (không xóa trên YouTube).", true],
+    }[action];
+    if (!W) return;
+    const ok = await window.appConfirm({ title: `${W[0]} ${total} video?`, message: ids.length ? `${ids.length} video đã chọn trong kênh ${c.name}.` : `Cả nhóm đang lọc của kênh ${c.name}.`, detail: W[1], confirmText: W[0], danger: W[2] });
+    if (!ok) return;
+    v.busy = true; paintUrlList(c, host);
+    try {
+      const r = await window.electronAPI.sheet.videosAction({ sheetName: c.name, action, ids: ids.length ? ids : undefined, filter: ids.length ? undefined : v.f });
+      if (!r?.ok) { appToast(r?.error || "Không thao tác được", { kind: "error" }); log(`[${c.name}] ❌ ${W[0]} thất bại: ${r?.error || "lỗi"}`); return; }
+      log(`[${c.name}] ✅ ${W[0]}: ${r.changed} video.`);
+      appToast(r.changed ? `${W[0]}: ${r.changed} video` : "Không có video nào phù hợp để xử lý", { kind: r.changed ? "success" : "warn" });
+      v.sel.clear();
+    } catch (e) { appToast(e?.message || "Không thao tác được", { kind: "error" }); }
+    finally { v.busy = false; loadUrlList(c, host); }
   }
   // Bấm "Thử lại": chỉ đặt lại trạng thái (không tự chạy lượt mới, tránh bất ngờ tốn tài nguyên), rồi nhắc người dùng bấm Chạy.
   async function retryFailedVideos(c, urls, btn, host) {
@@ -5326,6 +5445,7 @@ async function runConcat() {
       const r = await window.electronAPI.sheet.channelVideos(c.name);
       if (!r?.ok) throw new Error(r?.error || "Không tải được danh sách video");
       v.rows = r.rows || [];
+      { const live = new Set(v.rows.map((x) => x.rowIndex)); for (const id of [...v.sel]) if (!live.has(id)) v.sel.delete(id); }
     } catch (e) { v.err = e?.message || String(e); }
     finally { v.loading = false; }
     // chỉ vẽ lại nếu người dùng vẫn đang xem đúng kênh này ở tab Video
@@ -5352,7 +5472,7 @@ async function runConcat() {
       const b = document.createElement("button"); b.type = "button"; b.className = "vl-pill" + (v.f === key ? " on" : "");
       const strong = document.createElement("b"); strong.textContent = String(n);
       b.append(strong, " " + label);
-      b.addEventListener("click", () => { v.f = key; v.page = 0; paintUrlList(c, host); });
+      b.addEventListener("click", () => { v.f = key; v.page = 0; v.sel.clear(); paintUrlList(c, host); });
       return b;
     };
     head.append(pill("Tất cả", sum.total, "all"));
@@ -5379,6 +5499,31 @@ async function runConcat() {
     });
     bar.append(q);
 
+    // Thanh thao tác: có tick video thì áp cho video đã chọn; không tick thì áp cho cả nhóm đang lọc (hỏi lại vì có thể rất nhiều).
+    const acts = document.createElement("div"); acts.className = "vl-acts";
+    const mkAct = (label, title, action, cls) => {
+      const b = document.createElement("button"); b.type = "button"; b.className = "sw-mini-btn" + (cls ? " " + cls : ""); b.textContent = label; b.title = title; b.disabled = v.busy;
+      b.addEventListener("click", () => runVideosAction(c, action, host));
+      return b;
+    };
+    const mkImp = (label, title, mode) => {
+      const b = document.createElement("button"); b.type = "button"; b.className = "sw-mini-btn" + (v.panelMode === mode ? " on" : ""); b.textContent = label; b.title = title; b.disabled = v.busy;
+      b.addEventListener("click", () => { v.panelMode = v.panelMode === mode ? null : mode; paintUrlList(c, host); });
+      return b;
+    };
+    const sp = document.createElement("span"); sp.className = "vl-sp";
+    acts.append(
+      mkImp("+ Dán danh sách", "Dán nhiều link, mỗi dòng một link", "paste"),
+      mkImp("⬆ Nhập Excel", "Nhập từ file Excel (cột A link, B/C trạng thái)", "excel"),
+      sp,
+      mkAct("Làm lại", "Xóa trạng thái để tải và render lại từ đầu", "reset"),
+      mkAct("Đăng lại", "Đăng lại các video đã render nhưng lỗi upload", "retry-upload"),
+      mkAct("🗑 Xóa", "Xóa khỏi danh sách của kênh (không xóa trên YouTube)", "delete", "vl-danger"),
+    );
+    const scope = document.createElement("div"); scope.className = "vl-scope";
+    const fLabel = (VL().FILTERS.find((x) => x[0] === v.f) || [])[1] || "";
+    scope.textContent = v.sel.size ? `Thao tác áp cho ${v.sel.size} video đã chọn.` : v.f === "all" ? "Chưa chọn video: thao tác sẽ áp cho TOÀN BỘ danh sách." : `Chưa chọn video: thao tác áp cho nhóm “${fLabel}”.`;
+
     const list = VL().filterRows(v.rows, v.f, v.q);
     const pages = Math.max(1, Math.ceil(list.length / URL_PER_PAGE));
     v.page = Math.min(v.page, pages - 1);
@@ -5387,12 +5532,22 @@ async function runConcat() {
     const box = document.createElement("div"); box.className = "vl-tbl";
     if (!slice.length) {
       const d = document.createElement("div"); d.className = "vl-note";
-      d.textContent = sum.total ? "Không có video phù hợp bộ lọc." : "Kênh chưa có video nào. Thêm URL ở trang web (Dán danh sách, Nhập Excel hoặc Lấy URL nguồn).";
+      d.textContent = sum.total ? "Không có video phù hợp bộ lọc." : "Kênh chưa có video nào. Bấm “Nhập link” để dán danh sách, hoặc “Lấy URL nguồn” / Nhập Excel.";
       box.append(d);
     } else {
       const table = document.createElement("table"); const tb = document.createElement("tbody");
+      const allOn = slice.length > 0 && slice.every((r) => v.sel.has(r.rowIndex)), someOn = slice.some((r) => v.sel.has(r.rowIndex));
+      const selAll = document.createElement("label"); selAll.className = "vl-selall";
+      const allCb = document.createElement("input"); allCb.type = "checkbox"; allCb.checked = allOn; allCb.indeterminate = !allOn && someOn; allCb.setAttribute("aria-label", "Chọn cả trang");
+      allCb.addEventListener("change", () => { for (const r of slice) allCb.checked ? v.sel.add(r.rowIndex) : v.sel.delete(r.rowIndex); paintUrlList(c, host); });
+      selAll.append(allCb, " Chọn cả trang (" + slice.length + ")");
+      box.append(selAll);
       for (const r of slice) {
         const key = VL().stateOf(r), tr = document.createElement("tr");
+        const tdC = document.createElement("td"); tdC.className = "vl-sel";
+        const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = v.sel.has(r.rowIndex); cb.setAttribute("aria-label", "Chọn video");
+        cb.addEventListener("change", () => { cb.checked ? v.sel.add(r.rowIndex) : v.sel.delete(r.rowIndex); paintUrlList(c, host); });
+        tdC.append(cb); tr.append(tdC);
         const tdU = document.createElement("td"); tdU.className = "vl-url"; tdU.textContent = r.url; tdU.title = r.url;
         const tdS = document.createElement("td"); const chip = document.createElement("span"); chip.className = "vl-chip " + (VL().TONE[key] || ""); chip.textContent = VL().LABEL[key]; tdS.append(chip);
         const det = VL().detailOf(r), tdD = document.createElement("td"); tdD.className = "vl-det"; tdD.textContent = det; tdD.title = det;
@@ -5414,7 +5569,9 @@ async function runConcat() {
     const info = document.createElement("span");
     info.textContent = list.length ? (v.page * URL_PER_PAGE + 1) + "–" + (v.page * URL_PER_PAGE + slice.length) + " / " + fmtNum(list.length) : "0";
     pager.append(prev, info, next);
-    host.append(head, bar, box, pager);
+    const panel = v.panelMode ? buildImportPanel(c, host, v) : null;
+    host.append(head, bar, acts, scope, box, pager);
+    if (panel) { host.append(panel); if (v.panelMode === "paste") { const t = panel.querySelector("textarea"); if (t) t.focus(); } }
   }
   // Web thêm/xóa/làm lại video hoặc app vừa ghi trạng thái: danh sách đang mở phải nạp lại
   function refreshUrlListIfOpen() {

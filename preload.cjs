@@ -116,6 +116,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
     listStatsChannels: () => ipcRenderer.invoke("yt:list-channels"),
     refreshStats: () => ipcRenderer.invoke("yt:refresh-stats"),
     fetchSourceUrls: (sheetName, sortBy) => ipcRenderer.invoke("yt:fetch-source-urls", { sheetName, sortBy }),
+    addUrls: (sheetName, urls) => ipcRenderer.invoke("channels:add-urls", { sheetName, urls }),
+    videosAction: ({ sheetName, action, ids, filter } = {}) => ipcRenderer.invoke("channels:videos-action", { sheetName, action, ids, filter }),
+    videosExcelPick: (sheetName) => ipcRenderer.invoke("channels:videos-excel-pick", { sheetName }),
+    videosImportRows: ({ sheetName, rows, keepStatus } = {}) => ipcRenderer.invoke("channels:videos-import-rows", { sheetName, rows, keepStatus }),
     onEvent: (cb) => ipcRenderer.on("sheet:event", (e, data) => cb(data)),
     removeEventListener: () => ipcRenderer.removeAllListeners("sheet:event"),
     // Giám sát trên web: trạng thái kết nối tới server (chỉ đọc).

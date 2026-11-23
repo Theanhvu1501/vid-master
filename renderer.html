@@ -1278,6 +1278,26 @@ small {
 .vl-chip.warn { color: var(--accent-warning); border-color: rgba(252,196,25,.45); background: rgba(252,196,25,.08); }
 .vl-chip.brand { color: var(--accent-primary); border-color: rgba(var(--accent-rgb), .45); background: rgba(var(--accent-rgb), .08); }
 .vl-pager { display: flex; align-items: center; justify-content: center; gap: var(--space-md); margin-top: var(--space-sm); font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.vl-acts { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.vl-acts .vl-sp { flex: 1; }
+.vl-acts .sw-mini-btn:disabled { opacity: .5; cursor: not-allowed; }
+.vl-danger { color: var(--accent-danger); border-color: rgba(255,107,107,.45); }
+.vl-danger:hover:not(:disabled) { background: rgba(255,107,107,.12); }
+.vl-scope { font-size: 11px; color: var(--text-muted); margin-bottom: var(--space-sm); }
+.vl-selall { display: flex; align-items: center; gap: 6px; padding: 5px 10px; font-size: 11px; color: var(--text-secondary); border-bottom: 1px solid var(--border-default); background: var(--bg-secondary); position: sticky; top: 0; z-index: 1; cursor: pointer; }
+.vl-sel { width: 28px; padding-right: 0 !important; }
+.vl-sel input, .vl-selall input, .vl-chk input { accent-color: var(--accent-primary); cursor: pointer; }
+.vl-panel { margin-top: var(--space-sm); padding: var(--space-md); border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--bg-secondary); display: flex; flex-direction: column; gap: var(--space-sm); }
+.sw-mini-btn.on { background: rgba(var(--accent-rgb), .15); border-color: var(--accent-primary); color: var(--text-primary); }
+.vl-seg { display: inline-flex; border: 1px solid var(--border-default); border-radius: var(--radius-md); overflow: hidden; margin-bottom: var(--space-md); }
+.vl-seg button { padding: 6px 14px; font-size: 12px; background: transparent; color: var(--text-secondary); border: 0; cursor: pointer; }
+.vl-seg button.on { background: rgba(var(--accent-rgb), .15); color: var(--text-primary); font-weight: 600; }
+.vl-imp { display: flex; flex-direction: column; gap: var(--space-sm); }
+.vl-imp-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.vl-imp-row select { flex: 1; padding: 6px 8px; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-default); border-radius: var(--radius-md); }
+.vl-ta { width: 100%; box-sizing: border-box; resize: vertical; font-family: ui-monospace, Consolas, monospace; font-size: 12px; padding: 8px; border-radius: 8px; border: 1px solid var(--border-default); background: var(--bg-primary); color: var(--text-primary); }
+.vl-hint { font-size: 11px; color: var(--text-muted); }
+.vl-chk { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
 .vl-note { padding: var(--space-md); font-size: 12px; color: var(--text-muted); border: 1px dashed var(--border-default); border-radius: var(--radius-md); text-align: center; }
 
 /* ===== Tab Thống kê kênh (channel-dashboard.js) ===== */

@@ -66,3 +66,19 @@ test("canRetry / retryableUrls: chỉ lỗi tải-render, bỏ qua, lỗi upload
   assert.deepEqual(L.retryableUrls(rows), ["a", "b", "c"]);
   assert.equal(L.canRetry({ status: "done", uploadStatus: "✅ x" }), false); assert.deepEqual(L.retryableUrls(null), []);
 });
+
+test("parseUrls: tách theo dòng/khoảng trắng, bỏ trùng, đếm mục không hợp lệ", () => {
+  const { parseUrls } = globalThis.window.UrlList;
+  const r = parseUrls("https://youtu.be/a\n  https://youtu.be/b \r\nhttps://youtu.be/a\nkhong-phai-link\nftp://x.y/z\n\n");
+  assert.deepEqual(r.urls, ["https://youtu.be/a", "https://youtu.be/b"]);
+  assert.equal(r.dup, 1);
+  assert.equal(r.invalid, 2);
+});
+
+test("parseUrls: rỗng/null -> không có link; link quá 500 ký tự bị loại", () => {
+  const { parseUrls } = globalThis.window.UrlList;
+  assert.deepEqual(parseUrls(""), { urls: [], invalid: 0, dup: 0 });
+  assert.deepEqual(parseUrls(null), { urls: [], invalid: 0, dup: 0 });
+  const long = "https://a.b/" + "x".repeat(500);
+  assert.equal(parseUrls(long).invalid, 1);
+});

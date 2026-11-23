@@ -334,8 +334,33 @@ export function createWebStore({ fetchImpl = fetch, getBase, getToken, disk, get
   // Tên kênh -> id trên web (cho chỗ khác trong app cần gọi API)
   const webId = (name) => mem.webIds.get(name) || null;
 
+  // Thao tác hàng loạt trên video của kênh: action = reset | retry-upload | delete; chọn theo { ids } hoặc theo { filter } (nhóm lọc / "all").
+  // Cùng logic với web (server dùng chung một hàm). Không xếp hàng khi mất mạng: thao tác này cần xác nhận kết quả ngay.
+  async function videosAction(name, { action, ids, filter } = {}) {
+    load();
+    const id = webIdOf(name);
+    const body = Array.isArray(ids) ? { action, ids } : { action, filter };
+    const r = await call("POST", `/api/app/channels/${id}/videos/action`, body);
+    mem.rows.delete(name); // danh sách đã đổi: lần đọc sau lấy bản mới
+    return r.data?.changed || 0;
+  }
+  // Nhập từ bảng Excel: rows = [[link, trạng thái tải/render, trạng thái upload], ...]. Chia lô 5000 dòng (giới hạn của server).
+  async function importVideoRows(name, rows) {
+    load();
+    const id = webIdOf(name);
+    const list = Array.isArray(rows) ? rows : [];
+    let added = 0, existing = 0, invalid = 0, duplicateInList = 0;
+    for (let i = 0; i < list.length; i += 5000) {
+      const r = await call("POST", `/api/app/channels/${id}/videos/import`, { rows: list.slice(i, i + 5000) });
+      added += r.data?.added || 0; existing += r.data?.existing || 0; invalid += r.data?.invalid || 0; duplicateInList += r.data?.duplicateInList || 0;
+    }
+    mem.rows.delete(name);
+    return { added, existing, invalid, duplicateInList };
+  }
+
+
   return {
-    readConfigSheet, readChannelUrls, setUrlStatus, setUploadStatus, appendUrls, renderedToday, flush, listChannelConfigs, updateChannelConfig, channelStats, youtubeStats, fetchSourceUrls,
+    readConfigSheet, readChannelUrls, setUrlStatus, setUploadStatus, appendUrls, renderedToday, flush, listChannelConfigs, updateChannelConfig, channelStats, youtubeStats, fetchSourceUrls, videosAction, importVideoRows,
     createChannelConfig, deleteChannelConfig, importChannelConfigs, listBatches, createBatch, updateBatch, deleteBatch, addBatchChannel, removeBatchChannel, markBatchRendered, reportBatchAction,
     webId, pending: () => { load(); return mem.queue.length; }, isOnline: () => lastOnline,
     // Dùng cho test và chẩn đoán

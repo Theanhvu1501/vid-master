@@ -57,5 +57,21 @@
   /** Các url lỗi có thể thử lại trong danh sách. */
   const retryableUrls = (rows) => (rows || []).filter((r) => String(r?.url ?? "").trim() && canRetry(r)).map((r) => String(r.url).trim());
 
-  window.UrlList = { FILTERS, LABEL, TONE, stateOf, summarize, filterRows, detailOf, canRetry, retryableUrls };
+  /** Tách ô dán thành danh sách link: mỗi link cách nhau bằng xuống dòng/khoảng trắng. Chỉ nhận http(s), tối đa 500 ký tự (khớp giới hạn server).
+   *  Trả { urls (đã bỏ trùng, giữ thứ tự), invalid (số mục không hợp lệ), dup (số mục trùng trong ô dán) }. */
+  const MAX_URL = 500;
+  function parseUrls(text) {
+    const seen = new Set(), urls = [];
+    let invalid = 0, dup = 0;
+    for (const tok of String(text ?? "").split(/\s+/)) {
+      const u = tok.trim();
+      if (!u) continue;
+      if (u.length > MAX_URL || !/^https?:\/\/\S+$/i.test(u)) { invalid++; continue; }
+      if (seen.has(u)) { dup++; continue; }
+      seen.add(u); urls.push(u);
+    }
+    return { urls, invalid, dup };
+  }
+
+  window.UrlList = { FILTERS, LABEL, TONE, stateOf, summarize, filterRows, detailOf, canRetry, retryableUrls, parseUrls };
 })();
