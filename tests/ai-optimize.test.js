@@ -52,8 +52,24 @@ test("optimizeVideo: treo thì hết giờ và bỏ qua; ngoại lệ bất ng�
   assert.ok(!logs.join("\n").includes("KHOA-BI-MAT-1"));
 });
 
-test("buildThumbPrompt: yêu cầu giữ phong cách ảnh mẫu và đổi nội dung theo title mới", () => {
+test("buildThumbPrompt: không có ảnh mẫu -> giữ phong cách ảnh gốc, đổi nội dung theo title", () => {
   const p = buildThumbPrompt('Title "mới"'); assert.match(p, /same art style/i); assert.ok(p.includes("mới"));
+});
+test("buildThumbPrompt: có ảnh mẫu -> dùng làm gợi ý bố cục/phong cách, nhân vật từ ảnh gốc, không copy y hệt", () => {
+  const p = buildThumbPrompt("Tiêu đề", "", true);
+  assert.match(p, /GUIDE for the overall layout/i);
+  assert.match(p, /FIRST reference image/i);
+  assert.match(p, /not an exact duplicate/i);
+});
+test("buildThumbPrompt: luôn cấm thêm chữ tiếng Anh/bản dịch/phụ đề ngoài title", () => {
+  for (const p of [buildThumbPrompt("T", "", true), buildThumbPrompt("T", "", false)]) {
+    assert.match(p, /do NOT add any English text/i);
+    assert.match(p, /same language as the title/i);
+  }
+});
+test("buildThumbPrompt: rule riêng của kênh luôn được chèn vào", () => {
+  assert.match(buildThumbPrompt("T", "chữ bên trái, nhân vật bên phải", true), /chữ bên trái, nhân vật bên phải/);
+  assert.match(buildThumbPrompt("T", "ít chữ", false), /ít chữ/);
 });
 
 // ---- khóa theo kênh

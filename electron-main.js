@@ -32,10 +32,9 @@ import { createNoticeService } from "./sheet/notice-window.js";
 import puppeteer from "puppeteer-core";
 import { createChannelKeyStore } from "./sheet/ai-keys.js";
 import { optimizeVideo, buildThumbPrompt } from "./sheet/ai-optimize.js";
-import { makeThumbViaProfile } from "./sheet/ai-thumb.js";
 import { importCookiesIntoBrowser } from "./sheet/veo3/cookies-import.js";
 import { createThumbAccountPool, drawWithAccounts, classifyDrawError } from "./sheet/ai-thumb-pool.js";
-import { generateTitle } from "./sheet/ai-title.js";
+import { generateTitle, buildPrompt as buildTitlePromptPreview } from "./sheet/ai-title.js";
 import { handleVeo3Generate } from "./sheet/veo3/image-generation.js";
 import { startProfile as gpmStartProfile } from "./sheet/gpm-client.js";
 import { sendTelegram, sendTelegramPhoto, buildDigest, buildChannelReport, parseTopicId } from "./sheet/telegram-notify.js";
@@ -756,7 +755,8 @@ app.whenReady().then(async () => {
     checkAndShowUpdateSuccess();
 
     // Kết nối giám sát (chỉ khi người dùng đã bật + nhập token)
-    try { if (loadSheetSettings().monitorEnabled) monitorAgent.start(); } catch (err) { console.error("monitor start:", err); }
+    // Mặc định LUÔN đồng bộ lên web; chỉ bỏ qua khi người dùng đã tắt rõ ràng (monitorEnabled === false).
+    try { if (loadSheetSettings().monitorEnabled !== false) monitorAgent.start(); } catch (err) { console.error("monitor start:", err); }
 
     // Làm nóng server PO token ngay lúc mở app: lần đầu trên máy mới, antivirus quét
     // node.exe nên server lên chậm — dựng sẵn ở đây thì lúc bấm tải là đã có token.
@@ -1475,21 +1475,11 @@ const makeAiOptimizer = (emitEvent) => async ({ channel, title, descriptionPath,
         },
       });
       if (r.ok) { say(`AI vẽ thumbnail bằng account Veo3 "${veo3Adapter.accounts.get(r.accountId)?.name || r.accountId.slice(0, 8)}".`); return outPath; }
-      // 2) Hết cách: thử ngay trong profile GPM của kênh (cần đã đăng nhập Flow trong profile đó).
-      const release = await lockProfile(profileId);
-      try {
-        return await makeThumbViaProfile({
-          gpmHost, profileId, title: t, referencePath, outPath, customRule, sampleImages,
-          deps: {
-            startProfile: gpmStartProfile,
-            connect: (addr) => puppeteer.connect({ browserURL: `http://${addr}`, defaultViewport: null }),
-            generate: handleVeo3Generate, writeFile: (f, b) => fs.writeFileSync(f, b), log: say,
-          },
-        });
-      } catch (profileErr) {
-        const why = r.tried.length ? r.tried.map((x) => x.message).join("; ") : "chưa có account Veo3 nào đăng nhập";
-        throw new Error(`${why}; profile kênh: ${String(profileErr?.message || profileErr).slice(0, 120)}`);
-      } finally { release(); }
+      // Chỉ dùng account Veo3 để vẽ thumbnail (KHÔNG dùng profile GPM). Veo3 trượt thì báo đúng lý do.
+      const why = r.tried.length
+        ? r.tried.map((x) => x.message).filter(Boolean).join("; ")
+        : "chưa có account Veo3 nào đăng nhập. Vào tab “Tạo ảnh Veo3”, thêm account và đăng nhập Google Flow.";
+      throw new Error(why);
     },
   },
 });
@@ -2254,6 +2244,74 @@ ipcMain.handle("channels:videos", async (e, { sheetName } = {}) => {
 const videoFail = (err, name) => (err?.status === 404
   ? { ok: false, error: `Không thấy kênh "${name}" trên web (hoặc kênh chưa được gán cho máy này).` }
   : { ok: false, offline: !!err?.offline, error: String(err?.message || err) });
+// TEST AI: chạy đúng pipeline optimizeVideo của kênh với 1 ảnh gốc do người dùng chọn.
+// mode "title": chỉ viết title (nhanh, không cần Veo3). mode "full": viết title + vẽ lại thumbnail.
+// Trả prompt title + prompt thumbnail (để xem rule có vào không), title mới, và đường dẫn ảnh gốc/ảnh mới. KHÔNG upload.
+ipcMain.handle("ai:test-optimize", async (e, { sheetName, mode } = {}) => {
+  const name = String(sheetName || "").trim();
+  const win = BrowserWindow.fromWebContents(e.sender);
+  const emitEvent = (evt) => { try { if (win && !win.isDestroyed()) win.webContents.send("sheet:event", evt); } catch { /* ignore */ } };
+  const say = (m) => emitEvent({ type: "log", message: "[TEST-AI][" + name + "] " + m });
+  try {
+    if (!webConfigured()) return { ok: false, error: "Chưa đăng nhập." };
+    if (!name) return { ok: false, error: "Thiếu tên kênh" };
+    if (!channelKeys.get(name)) return { ok: false, error: "Kênh chưa có khóa AI. Vào Cấu hình kênh, bật AI và dán khóa Gemini." };
+
+    const cfg = await webStore().listChannelConfigs();
+    if (!cfg.ok) return { ok: false, error: "Không tải được cấu hình kênh." };
+    const ch = (cfg.channels || []).find((c) => (c.name || c.sheetName) === name);
+    if (!ch) return { ok: false, error: "Không thấy kênh \"" + name + "\" (chưa gán cho máy này?)." };
+    const p = ch.params || {};
+    const samples = Array.isArray(p.aiThumbSamples) ? p.aiThumbSamples.filter((x) => typeof x === "string" && x.trim()) : [];
+    const channel = { sheetName: name, name, gpmProfileId: ch.gpmProfileId || p.gpmProfileId || "", aiTitleRule: p.aiTitleRule || "", aiThumbRule: p.aiThumbRule || "", aiThumbSamples: samples };
+
+    const pick = await dialog.showOpenDialog(win, { title: "Chọn ảnh gốc để test", properties: ["openFile"], filters: [{ name: "Ảnh", extensions: ["jpg", "jpeg", "png", "webp"] }] });
+    if (pick.canceled || !pick.filePaths || !pick.filePaths[0]) return { ok: false, canceled: true };
+    const srcImg = pick.filePaths[0];
+    const origTitle = path.basename(srcImg).replace(/\.[^.]+$/, "");
+
+    // Prompt để xem trước (title + thumbnail), cho người dùng kiểm rule có vào đúng không.
+    const titlePrompt = buildTitlePromptPreview({ fileTitle: origTitle, channelName: name, customRule: channel.aiTitleRule });
+    const thumbPromptPreview = buildThumbPrompt("(title mới AI sẽ viết)", channel.aiThumbRule, samples.length > 0);
+
+    const testDir = path.join(app.getPath("userData"), "veo3", "test-ai");
+    try { fs.mkdirSync(testDir, { recursive: true }); } catch { /* đã có */ }
+    const stamp = Date.now();
+    const origCopy = path.join(testDir, "orig-" + stamp + path.extname(srcImg));
+    fs.copyFileSync(srcImg, origCopy);
+
+    // mode title: chỉ gọi generateTitle. mode full: chạy optimizeVideo (title + vẽ ảnh).
+    if (mode === "title") {
+      say("Viết title theo rule…");
+      const r = await generateTitle({ apiKey: channelKeys.get(name), fileTitle: origTitle, original: origTitle, channelName: name, retries: 2, customRule: channel.aiTitleRule });
+      const newTitle = r && r.ok && r.title ? r.title.trim() : "";
+      say(newTitle ? ("Title mới: " + newTitle) : ("Không viết được title (" + ((r && (r.error || r.code)) || "lỗi") + ")"));
+      return { ok: true, mode, origTitle, newTitle, titlePrompt, thumbPrompt: thumbPromptPreview, origImage: origCopy, newImage: "", thumbChanged: false, hasSamples: samples.length };
+    }
+
+    const thumbPath = path.join(testDir, "new-" + stamp + ".jpg");
+    fs.copyFileSync(srcImg, thumbPath); // optimizeVideo vẽ đè lên file này (giữ .orig cạnh đó)
+    const gpmHost = gpmHostOf(loadSheetSettings().gpmHost);
+    say("Chạy đầy đủ: viết title + vẽ thumbnail…");
+    const res = await makeAiOptimizer(emitEvent)({ channel, title: origTitle, descriptionPath: "", thumbPath, gpmHost, profileId: channel.gpmProfileId });
+    const newImage = res.thumbChanged && fs.existsSync(thumbPath) ? thumbPath : "";
+    say("Xong. Title: " + (res.title || "(không đổi)") + " | Thumbnail: " + (res.thumbChanged ? "đã vẽ" : "giữ gốc" + (res.skipped ? " (" + res.skipped + ")" : "")));
+    return { ok: true, mode: "full", origTitle, newTitle: res.title || "", titlePrompt, thumbPrompt: thumbPromptPreview, origImage: origCopy, newImage, thumbChanged: !!res.thumbChanged, skipped: res.skipped || "", hasSamples: samples.length };
+  } catch (err) {
+    say("Lỗi: " + String(err && err.message || err));
+    return { ok: false, error: String(err && err.message || err) };
+  }
+});
+// Đọc ảnh test thành data URL để hiện trong cửa sổ (file nằm ngoài thư mục app, renderer không mở trực tiếp được).
+ipcMain.handle("ai:test-image", async (e, { filePath } = {}) => {
+  try {
+    const f = String(filePath || "");
+    if (!f || !fs.existsSync(f)) return { ok: false };
+    const ext = path.extname(f).toLowerCase();
+    const mime = ext === ".png" ? "image/png" : ext === ".webp" ? "image/webp" : "image/jpeg";
+    return { ok: true, dataUrl: "data:" + mime + ";base64," + fs.readFileSync(f).toString("base64") };
+  } catch { return { ok: false }; }
+});
 ipcMain.handle("channels:add-urls", async (e, { sheetName, urls } = {}) => {
   const name = String(sheetName || "").trim();
   try {

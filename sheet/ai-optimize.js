@@ -22,21 +22,35 @@ function withTimeout(promise, ms, label) {
  * @param {string} [customRule] - Rule tùy chỉnh từ người dùng (aiThumbRule)
  * @param {boolean} [hasSamples] - Có hình mẫu thumbnail ngoài reference không
  */
+// AI vẽ hết, title đưa vào để model tự viết chữ trên ảnh. Ảnh mẫu (nếu có) chỉ là GỢI Ý bố cục/phong cách.
+// Lỗi hay gặp: model tự thêm một dòng phụ đề/bản dịch tiếng Anh ở dưới -> cấm rõ, chỉ dùng đúng ngôn ngữ của title.
 export function buildThumbPrompt(newTitle, customRule = "", hasSamples = false) {
   const lines = [
-    "Redraw this YouTube thumbnail as a NEW image for a video with this new title:",
+    "Create a NEW YouTube thumbnail image (16:9) for a video titled:",
     `"${clip(newTitle, 120)}"`,
   ];
-  if (customRule) {
-    lines.push("", "Follow these style requirements from the user:", `"${clip(customRule, 400)}"`);
-  }
   if (hasSamples) {
-    lines.push("", "The additional reference images show thumbnails that performed well. Match their visual style, composition and appeal.");
+    // Có ảnh mẫu: dùng làm gợi ý bố cục + phong cách; nhân vật lấy từ ảnh gốc (first reference). Không copy y hệt.
+    lines.push(
+      "",
+      "Use the sample reference images (all images after the first) only as a GUIDE for the overall layout, composition, color palette and visual style — e.g. where the text block and the character sit. Follow that style but decide the details yourself.",
+      "The FIRST reference image is the original scene: take the main character/subject from it. Do not copy the original's composition; arrange it in the sample style instead.",
+      "Make a fresh thumbnail in the same family as the samples, not an exact duplicate of any image.",
+    );
+  } else {
+    lines.push(
+      "",
+      "Keep the same art style, color palette, character design and lighting as the reference image; re-stage the scene to match the title.",
+    );
   }
+  if (customRule) {
+    lines.push("", "Also follow these style requirements from the user:", `"${clip(customRule, 400)}"`);
+  }
+  // Chữ: để model tự viết theo title, NHƯNG chỉ đúng ngôn ngữ của title. Cấm thêm dòng tiếng Anh/bản dịch/phụ đề.
   lines.push(
     "",
-    "Keep EXACTLY the same art style, color palette, character design, lighting and composition style as the reference image.",
-    "Change the scene and any text so they match the new title. 16:9, high contrast, eye-catching, readable at small size.",
+    "Any on-image text must be ONLY in the same language as the title above. Do NOT add any English text, translation, subtitle, caption line, watermark or extra wording that is not in the title.",
+    "16:9, high contrast, eye-catching, readable at small size.",
   );
   return lines.join("\n");
 }

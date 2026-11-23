@@ -4972,9 +4972,17 @@ async function runConcat() {
     testBtn.title = "Tải 1 video của kênh, cắt 30s, render thử rồi mở lên xem. Không upload, không ghi vào Sheet.";
     testBtn.addEventListener("click", () => runSheetTestRender(c.name, testBtn));
 
+    // Test AI: chọn 1 ảnh gốc -> xem prompt (có rule), title mới, và ảnh gốc vs ảnh mới. Không upload.
+    const aiBtn = document.createElement("button");
+    aiBtn.className = "btn btn-secondary";
+    aiBtn.textContent = "🤖 Test AI";
+    aiBtn.title = "Chọn 1 ảnh gốc, xem title + ảnh AI tạo theo rule/ảnh mẫu của kênh (không upload)";
+    aiBtn.addEventListener("click", () => openAiTest(c));
+
     actions.appendChild(sortSel);
     actions.appendChild(btn);
     actions.appendChild(testBtn);
+    actions.appendChild(aiBtn);
     body.appendChild(actions);
   }
 
@@ -5070,6 +5078,65 @@ async function runConcat() {
     wrap.append(pickBtn, note, tabRow, keepLbl, infoEl, row);
     refresh();
     return wrap;
+  }
+
+  // Hộp Test AI: chọn chế độ (chỉ title / title + vẽ ảnh), chọn ảnh gốc, rồi hiện prompt + title + ảnh gốc/ảnh mới.
+  async function openAiTest(c) {
+    const api = window.electronAPI && window.electronAPI.sheet;
+    if (!api || !api.aiTestOptimize) { appToast("Chưa chạy được, khởi động lại app.", { kind: "error" }); return; }
+    const mk = (t, cls, text) => { const n = document.createElement(t); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
+    const dlg = mk("div", "delete-confirm-dialog active"); dlg.setAttribute("role", "dialog"); dlg.setAttribute("aria-modal", "true");
+    const header = mk("div", "delete-confirm-header"); header.append(mk("span", "icon", "🤖"), mk("h3", "", "Test AI · " + c.name));
+    const body = mk("div", "delete-confirm-body");
+    const hint = mk("div", "vl-hint", "Chọn ảnh gốc làm mẫu. Chế độ “Chỉ title” nhanh, không cần Veo3. “Title + vẽ ảnh” cần account Veo3/Flow đã đăng nhập.");
+    const btns = mk("div", "vl-imp-row");
+    const bTitle = mk("button", "sw-mini-btn on", "Chỉ title"); bTitle.type = "button";
+    const bFull = mk("button", "sw-mini-btn", "Title + vẽ ảnh"); bFull.type = "button";
+    btns.append(bTitle, bFull);
+    let mode = "title";
+    bTitle.addEventListener("click", () => { mode = "title"; bTitle.classList.add("on"); bFull.classList.remove("on"); });
+    bFull.addEventListener("click", () => { mode = "full"; bFull.classList.add("on"); bTitle.classList.remove("on"); });
+    const run = mk("button", "delete-confirm-btn confirm", "Chọn ảnh & chạy"); run.type = "button";
+    run.style.background = "var(--gradient-primary, linear-gradient(135deg,#fa6e03,#e85d04))";
+    const close = mk("button", "delete-confirm-btn cancel", "Đóng"); close.type = "button";
+    const actionsRow = mk("div", "delete-confirm-actions"); actionsRow.append(close, run);
+    const out = mk("div", "ai-test-out"); out.style.display = "none";
+    body.append(hint, mk("div", "vl-imp-row", null), btns, out, actionsRow);
+    const content = mk("div", "delete-confirm-content"); content.style.maxWidth = "900px"; content.style.width = "94%";
+    content.append(header, body); dlg.append(content);
+    const closeDlg = () => { document.removeEventListener("keydown", onKey, true); dlg.remove(); };
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); closeDlg(); } };
+    close.addEventListener("click", closeDlg);
+    dlg.addEventListener("click", (e) => { if (e.target === dlg) closeDlg(); });
+    const imgBox = async (label, filePath) => {
+      const wrap = mk("div", "ai-test-col"); wrap.append(mk("div", "vl-hint", label));
+      if (!filePath) { wrap.append(mk("div", "vl-hint", "(không có)")); return wrap; }
+      const r = await api.aiTestImage(filePath).catch(() => null);
+      if (r && r.ok) { const im = document.createElement("img"); im.src = r.dataUrl; im.className = "ai-test-img"; wrap.append(im); }
+      else wrap.append(mk("div", "vl-hint", filePath));
+      return wrap;
+    };
+    run.addEventListener("click", async () => {
+      run.disabled = true; close.disabled = true; const old = run.textContent; run.textContent = "⏳ đang chạy…";
+      try {
+        const r = await api.aiTestOptimize(c.name, mode);
+        if (r && r.canceled) return;
+        if (!r || !r.ok) { out.style.display = "block"; out.textContent = "❌ " + ((r && r.error) || "lỗi"); return; }
+        out.style.display = "block"; out.replaceChildren();
+        out.append(mk("div", "ai-test-row", "Title gốc: " + (r.origTitle || "")));
+        out.append(mk("div", "ai-test-row ai-test-new", "Title mới: " + (r.newTitle || "(không đổi)")));
+        const imgs = mk("div", "ai-test-imgs");
+        imgs.append(await imgBox("Ảnh gốc", r.origImage), await imgBox(r.thumbChanged ? "Ảnh AI tạo" : "Ảnh mới (giữ gốc)", r.newImage || (mode === "title" ? "" : r.origImage)));
+        out.append(imgs);
+        const det = mk("details", "ai-test-prompt"); det.append(mk("summary", null, "Xem prompt gửi AI (kiểm rule có vào không)"));
+        det.append(mk("div", "vl-hint", "— Prompt title —"), mk("pre", "ai-test-pre", r.titlePrompt || ""), mk("div", "vl-hint", "— Prompt thumbnail —"), mk("pre", "ai-test-pre", r.thumbPrompt || ""));
+        out.append(det);
+        if (!r.hasSamples) out.append(mk("div", "vl-hint", "Kênh chưa có ảnh mẫu — prompt dùng nhánh không mẫu."));
+      } catch (e) { out.style.display = "block"; out.textContent = "❌ " + ((e && e.message) || e); }
+      finally { run.disabled = false; close.disabled = false; run.textContent = old; }
+    });
+    document.addEventListener("keydown", onKey, true);
+    document.body.append(dlg);
   }
 
   // ===== Chờ đăng: video đã render nhưng chưa lên lịch =====
@@ -5882,7 +5949,6 @@ async function runConcat() {
     $("sw-gpm-tg-topic").value = s.gpmTelegramTopicId || "";
     $("sw-gpm-tg-photo").checked = !!s.gpmTelegramPhoto;
     $("sw-gpm-tg-fields").style.display = s.gpmTelegramEnabled ? "" : "none";
-    $("sw-monitor-enabled").checked = !!s.monitorEnabled;
     $("sw-cookies-folder").value = s.cookiesFolder || "";
     // Ô chọn 1 file cookie đã bỏ khỏi UI (chỉ còn thư mục), nhưng giá trị cũ vẫn
     // phải giữ và ghi lại: xoá đi là người đang chạy bằng 1 file cookie mất sạch
@@ -5938,7 +6004,7 @@ async function runConcat() {
       gpmTelegramChatId: $("sw-gpm-tg-chat").value.trim(),
       gpmTelegramTopicId: $("sw-gpm-tg-topic").value.trim(),
       gpmTelegramPhoto: $("sw-gpm-tg-photo").checked,
-      monitorEnabled: $("sw-monitor-enabled").checked,
+      monitorEnabled: true, // app luôn đồng bộ lên web (đã bỏ ô tick bật/tắt)
       // Trống = cố ý lùi về cookie ở tab "Tải video", nên phải ghi xuống chuỗi rỗng
       // chứ không được bỏ khoá đi.
       cookiesFolder: $("sw-cookies-folder").value.trim(),
@@ -5953,7 +6019,7 @@ async function runConcat() {
   function saveDebounced() { clearTimeout(saveTimer); saveTimer = setTimeout(saveNow, 400); }
   ["sw-poll", "sw-video-speed", "sw-gpm-idle-close", "sw-cleanup-days"].forEach((id) =>
     $(id)?.addEventListener("input", saveDebounced));
-  ["sw-auto-open", "sw-use-gpu", "sw-gpm-enabled", "sw-gpm-tg-photo", "sw-monitor-enabled"].forEach((id) =>
+  ["sw-auto-open", "sw-use-gpu", "sw-gpm-enabled", "sw-gpm-tg-photo"].forEach((id) =>
     $(id)?.addEventListener("change", saveNow));
   $("sw-cleanup")?.addEventListener("change", () => { syncCleanupHint(); saveNow(); });
   ["sw-gpm-host", "sw-gpm-tg-token", "sw-gpm-tg-chat", "sw-gpm-tg-topic"].forEach((id) =>

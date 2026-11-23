@@ -117,6 +117,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
     refreshStats: () => ipcRenderer.invoke("yt:refresh-stats"),
     fetchSourceUrls: (sheetName, sortBy) => ipcRenderer.invoke("yt:fetch-source-urls", { sheetName, sortBy }),
     addUrls: (sheetName, urls) => ipcRenderer.invoke("channels:add-urls", { sheetName, urls }),
+    aiTestOptimize: (sheetName, mode) => ipcRenderer.invoke("ai:test-optimize", { sheetName, mode }),
+    aiTestImage: (filePath) => ipcRenderer.invoke("ai:test-image", { filePath }),
     videosAction: ({ sheetName, action, ids, filter } = {}) => ipcRenderer.invoke("channels:videos-action", { sheetName, action, ids, filter }),
     videosExcelPick: (sheetName) => ipcRenderer.invoke("channels:videos-excel-pick", { sheetName }),
     videosImportRows: ({ sheetName, rows, keepStatus } = {}) => ipcRenderer.invoke("channels:videos-import-rows", { sheetName, rows, keepStatus }),
