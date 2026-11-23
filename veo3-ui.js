@@ -135,9 +135,6 @@
       const model = el("select", { id: "veo3-model" }, Object.entries(MODEL).map(([v, t]) => el("option", { value: v, text: t })));
       model.value = s.model || "Nano Banana pro";
       const parallel = el("input", { type: "number", id: "veo3-parallel", min: "1", max: "10", value: s.parallelJobs || 1 });
-      const headless = el("input", { type: "checkbox", id: "veo3-headless" });
-      headless.checked = s.headless !== false;
-
       const outputDir = el("input", { type: "text", id: "veo3-output", value: s.outputDir || "", readonly: true, placeholder: "Mặc định: thư mục veo3/output" });
       const pickOutput = el("button", { class: "btn btn-secondary", type: "button", text: "Chọn", onclick: async () => {
         const p = await window.electronAPI.selectFolder();
@@ -146,14 +143,11 @@
 
       for (const [node, key] of [[aspect, "aspectRatio"], [model, "model"]]) node.addEventListener("change", () => saveSettings({ [key]: node.value }));
       parallel.addEventListener("change", () => saveSettings({ parallelJobs: Number(parallel.value) }));
-      headless.addEventListener("change", () => saveSettings({ headless: headless.checked }));
 
       return el("div", { class: "card-section" },
         el("div", { class: "card-section-title", text: "⚙️ Cài đặt" }),
         el("div", { class: "form-grid cols-2" }, group("Tỉ lệ ảnh", aspect), group("Model", model)),
-        el("div", { class: "form-grid cols-2" },
-          group("Số job song song", parallel, "Tối đa bằng số account"),
-          group("Chạy nền", el("label", { class: "checkbox-label" }, headless, " Ẩn Chrome (headless)"))),
+        group("Số job song song", parallel, "Tối đa bằng số account"),
         group("Thư mục lưu ảnh", el("div", { class: "folder-select" }, el("div", { class: "folder-input-wrap" }, outputDir), pickOutput)));
     }
 

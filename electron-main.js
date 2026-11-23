@@ -1562,7 +1562,6 @@ ipcMain.handle("veo3:save-settings", (e, patch) => {
       if (patch.model) veo3Settings.model = String(patch.model);
       if (patch.aspectRatio) veo3Settings.aspectRatio = String(patch.aspectRatio);
       if (patch.parallelJobs !== undefined) veo3Settings.parallelJobs = Math.max(1, Math.min(10, Number(patch.parallelJobs) || 1));
-      if (patch.headless !== undefined) veo3Settings.headless = !!patch.headless;
       if (patch.outputDir !== undefined) veo3Settings.outputDir = String(patch.outputDir || "");
     }
     return { ok: true, settings: veo3Settings };
@@ -1583,7 +1582,7 @@ ipcMain.handle("veo3:run", async (e, prompts) => {
   try {
     const results = await veo3Adapter.generateImages(
       list,
-      { model: veo3Settings.model, aspectRatio: veo3Settings.aspectRatio, parallelJobs: veo3Settings.parallelJobs, headless: veo3Settings.headless, outputDir: veo3OutputDir() },
+      { model: veo3Settings.model, aspectRatio: veo3Settings.aspectRatio, parallelJobs: veo3Settings.parallelJobs, headless: true, outputDir: veo3OutputDir() },
       (ev) => send({ type: "item", ...ev }),
       { signal: controller.signal }
     );
