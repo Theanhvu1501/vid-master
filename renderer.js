@@ -5800,8 +5800,9 @@ async function runConcat() {
   setInterval(() => syncFromWeb(), 120000);
   window.addEventListener("focus", () => syncFromWeb());
 
-  // Thêm kênh / Nhập Excel: app là nơi tạo kênh Auto (server lưu, web chỉ xem). Xong thì danh sách tự nạp lại qua ChannelConfigUI.onChange.
+  // Thêm kênh / Nhập Excel / Template: app là nơi tạo kênh Auto (server lưu, web chỉ xem). Xong thì danh sách tự nạp lại qua ChannelConfigUI.onChange.
   $("sw-add-channel")?.addEventListener("click", () => window.ChannelConfigUI?.openCreate());
+  $("sw-templates")?.addEventListener("click", () => window.ChannelConfigUI?.openTemplates());
   $("sw-import-channels")?.addEventListener("click", () => window.ChannelConfigUI?.openImport());
 
   // Nút "Tải lại": nạp ngay cấu hình từ server, không phụ thuộc socket. Dùng khi nghi app chưa ăn theo.

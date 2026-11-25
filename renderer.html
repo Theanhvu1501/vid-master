@@ -1191,6 +1191,12 @@ small {
 .ccu-host .ccu-chk { display: flex; align-items: center; gap: 8px; font-size: 12px; margin: 0 0 12px; cursor: pointer; }
 .ccu-host .ccu-err { color: var(--accent-danger); }
 .ccu-host .ccu-muted { color: var(--text-muted); font-size: 12px; }
+/* Template picker */
+.ccu-templates { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.ccu-template-item { padding: 14px 16px; border: 1px solid var(--border-default); border-radius: var(--radius-md); background: var(--bg-tertiary); cursor: pointer; transition: all .15s; }
+.ccu-template-item:hover { border-color: var(--accent-primary); background: var(--bg-hover); transform: translateX(4px); }
+.ccu-template-name { font-size: 14px; font-weight: 600; color: var(--text-primary); margin-bottom: 4px; }
+.ccu-template-desc { font-size: 12px; color: var(--text-secondary); }
 /* GPM Profile dropdown with search */
 .ccu-gpm-wrap { position: relative; }
 .ccu-gpm-input { width: 100%; padding: 8px 32px 8px 10px; background: var(--bg-tertiary); border: 1px solid var(--border-default); border-radius: var(--radius-md); color: var(--text-primary); font-size: 13px; }
@@ -4584,6 +4590,7 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
               <span class="sw-toolbar-sep"></span>
               <button class="btn btn-secondary" id="sw-gpm-connect-all" style="display:none;">🔌 Connect tất cả</button>
               <button class="btn btn-primary" id="sw-add-channel" title="Tạo kênh Auto mới cho máy này">＋ Thêm kênh</button>
+              <button class="btn btn-secondary" id="sw-templates" title="Chọn từ các template có sẵn để tạo kênh nhanh">📋 Template</button>
               <button class="btn btn-secondary" id="sw-import-channels" title="Nhập nhiều kênh từ file Excel (xem trước rồi mới ghi)">📥 Nhập Excel</button>
               <button class="btn btn-secondary" id="sw-reload-web" title="Nạp lại danh sách kênh từ server">⟳ Tải lại</button>
               <button class="btn btn-secondary" id="sw-stats-refresh">🔄 Số liệu</button>

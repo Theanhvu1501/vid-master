@@ -86,11 +86,11 @@
     if (m) return m;
     m = el("div", { id: "ccu-modal", class: "modal ccu-host" });
     document.body.append(m);
-    m.addEventListener("click", (e) => { if (e.target === m) close(); });
+    // Không đóng modal khi click ra ngoài: tránh mất dữ liệu đang nhập
     return m;
   }
   function close() { const m = $("ccu-modal"); if (m) m.classList.remove("active"); }
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("ccu-modal")?.classList.contains("active")) close(); });
+  // Không đóng modal khi bấm Escape: tránh mất dữ liệu đang nhập
 
   function badge(text, cls) { return el("span", { class: `ccu-badge ${cls || ""}`, text }); }
 
@@ -428,8 +428,9 @@
     const msg = el("div", { class: "ccu-msg", role: "alert", "aria-live": "polite" });
     const save = el("button", { class: "btn btn-primary", type: "button", id: "ccu-save", text: creating ? "Tạo kênh" : "Lưu thay đổi", onclick: () => form.requestSubmit() });
     const delBtn = !creating && !st.offline ? el("button", { class: "btn btn-secondary", type: "button", id: "ccu-delete", text: "Xóa kênh", onclick: async () => { const r = await removeChannel(c); if (r && !r.ok && !r.canceled) { msg.className = "ccu-msg err"; msg.textContent = r.error || "Không xóa được"; } } }) : null;
+    const cloneBtn = !creating && !st.offline ? el("button", { class: "btn btn-secondary", type: "button", id: "ccu-clone", text: "Clone", title: "Tạo kênh mới với cấu hình giống kênh này", onclick: () => openClone(c) }) : null;
     if (st.offline) { save.disabled = true; save.title = "Mất kết nối tới máy chủ"; }
-    foot.append(msg, ...(delBtn ? [delBtn] : []), el("button", { class: "btn btn-secondary", type: "button", onclick: close, text: "Đóng" }), save);
+    foot.append(msg, ...(delBtn ? [delBtn] : []), ...(cloneBtn ? [cloneBtn] : []), el("button", { class: "btn btn-secondary", type: "button", onclick: close, text: "Đóng" }), save);
     m.firstChild.append(foot);
     const rerender = (nc) => render(nc, opts);
 
@@ -514,6 +515,64 @@
     return r;
   }
 
+  // ---------------------------------------------------------------- clone kênh
+  function openClone(c) {
+    var cloneDefaults = {
+      enabled: c.enabled,
+      uploadEnabled: c.uploadEnabled,
+      videosPerDay: c.videosPerDay || 1,
+      renderMode: c.renderMode || "topTransparent",
+      videoSource: c.videoSource || "download",
+      sourceHandle: c.sourceHandle || "",
+      channelUrl: "",
+      postTimes: c.postTimes || "",
+      gpmProfileId: "",
+      proxy: "",
+      monetized: c.monetized || false,
+      presetName: c.presetName || "",
+      params: Object.assign({}, c.params || {})
+    };
+    close();
+    setTimeout(function() { openCreate(cloneDefaults); }, 100);
+    if (window.appToast) window.appToast("Sao chep cau hinh. Dat ten va chon GPM Profile cho kenh moi.", { kind: "success" });
+  }
+
+  // ---------------------------------------------------------------- template mau
+  var TEMPLATES = [
+    { id: "lofi", name: "Lofi / Nhac nen", desc: "Kenh nhac lofi, nhac khong loi, nhac thu gian", defaults: { renderMode: "topTransparent", videosPerDay: 2, videoSource: "download" } },
+    { id: "compilation", name: "Compilation / Tong hop", desc: "Kenh video tong hop, ghep clip", defaults: { renderMode: "topTransparent", videosPerDay: 1, videoSource: "download" } },
+    { id: "shorts", name: "Shorts / Video ngan", desc: "Kenh YouTube Shorts doc 9:16", defaults: { renderMode: "topTransparent", videosPerDay: 3, videoSource: "download" } },
+    { id: "podcast", name: "Podcast / Giong noi", desc: "Kenh podcast, audio + hinh nen", defaults: { renderMode: "staticImage", videosPerDay: 1, videoSource: "download" } },
+    { id: "slideshow", name: "Slideshow / Trinh chieu", desc: "Kenh video tu anh + nhac nen", defaults: { renderMode: "topTransparent", videosPerDay: 1, videoSource: "local" } }
+  ];
+
+  async function openTemplates() {
+    var m = ensureModal();
+    m.classList.add("active");
+    var r = await load();
+    if (!r || !r.ok) {
+      m.replaceChildren(el("div", { class: "ccu-card" }, head("Chon template"), el("div", { class: "ccu-body" }, el("p", { class: "ccu-err", text: (r && r.error) || "Khong tai duoc" })), el("div", { class: "ccu-foot" }, el("button", { class: "btn btn-secondary", type: "button", onclick: close, text: "Dong" }))));
+      return;
+    }
+    var body = el("div", { class: "ccu-body" });
+    body.append(el("p", { class: "ccu-help", text: "Chon mot template de tao kenh moi voi cau hinh phu hop. Sau do ban van co the chinh sua cac thong so." }));
+    var list = el("div", { class: "ccu-templates" });
+    TEMPLATES.forEach(function(t) {
+      var item = el("div", { class: "ccu-template-item", "data-id": t.id },
+        el("div", { class: "ccu-template-name", text: t.name }),
+        el("div", { class: "ccu-template-desc", text: t.desc })
+      );
+      item.addEventListener("click", function() {
+        close();
+        setTimeout(function() { openCreate(t.defaults); }, 100);
+        if (window.appToast) window.appToast("Da chon template: " + t.name, { kind: "success" });
+      });
+      list.append(item);
+    });
+    body.append(list);
+    m.replaceChildren(el("div", { class: "ccu-card" }, head("Chon template kenh", "Moi template co cau hinh mac dinh phu hop"), body, el("div", { class: "ccu-foot" }, el("button", { class: "btn btn-secondary", type: "button", onclick: close, text: "Dong" }))));
+  }
+
   // ---------------------------------------------------------------- nhập Excel (xem trước rồi mới ghi)
   async function openImport() {
     const pick = await api().channelsImportPick().catch((e) => ({ ok: false, error: e.message }));
@@ -559,7 +618,7 @@
     render(c, { host }); return true;
   }
   window.ChannelConfigUI = {
-    open, load, close, mount, openCreate, openImport,
+    open, load, close, mount, openCreate, openImport, openTemplates,
     get: (name) => st.byName.get(name) || null,
     isOffline: () => st.offline,
     onChange(cb) { listeners.add(cb); return () => listeners.delete(cb); },
