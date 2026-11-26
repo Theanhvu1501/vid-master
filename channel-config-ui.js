@@ -49,6 +49,10 @@
       if (v === undefined || v === null) v = "";
       raw[f.key] = typeof v === "boolean" ? (v ? "1" : "0") : Array.isArray(v) ? v.join(", ") : String(v);
     }
+    // Concat fields (không nằm trong schema web)
+    raw.concatCount = String(c.concatCount || 0);
+    raw.concatUseThumbs = c.concatUseThumbs ? "1" : "";
+    raw.concatThumbDuration = String(c.concatThumbDuration || 3);
     return raw;
   }
   function control(f, value, withDefault) {
@@ -77,6 +81,10 @@
   const typed = (schema, raw) => {
     const out = {};
     for (const [k, v] of Object.entries(raw)) { const f = schema.fields.find((x) => x.key === k); out[k] = f && f.type === "bool" ? (v === "1" ? true : v === "0" ? false : "") : v; }
+    // Concat fields: convert về đúng kiểu
+    if (raw.concatCount !== undefined) out.concatCount = parseInt(raw.concatCount, 10) || 0;
+    if (raw.concatUseThumbs !== undefined) out.concatUseThumbs = raw.concatUseThumbs === "1";
+    if (raw.concatThumbDuration !== undefined) out.concatThumbDuration = parseInt(raw.concatThumbDuration, 10) || 3;
     return out;
   };
 
@@ -304,6 +312,24 @@
     form.append(group(core("renderMode"), false), modeBox);
     drawMode();
 
+    // ─── Nối video ──────────────────────────────────────────────────────────────
+    // Ghép nhiều video đã render thành 1 video dài hơn trước khi upload
+    form.append(el("div", { class: "ccu-sep", text: "Nối video" }));
+    const concatCountInput = el("input", { id: "ccu-concatCount", "data-k": "concatCount", type: "number", min: "0", max: "10", step: "1", value: raw.concatCount || "0", placeholder: "0 = không nối" });
+    const concatThumbsInput = el("select", { id: "ccu-concatUseThumbs", "data-k": "concatUseThumbs" });
+    concatThumbsInput.append(el("option", { value: "", text: "Không" }), el("option", { value: "1", text: "Có" }));
+    concatThumbsInput.value = raw.concatUseThumbs === "1" || raw.concatUseThumbs === true ? "1" : "";
+    const concatThumbDurInput = el("input", { id: "ccu-concatThumbDuration", "data-k": "concatThumbDuration", type: "number", min: "1", max: "10", step: "1", value: raw.concatThumbDuration || "3", placeholder: "3" });
+    form.append(
+      el("div", { class: "ccu-row" },
+        el("div", { class: "ccu-group" }, el("label", { for: "ccu-concatCount", text: "Số video nối" }), concatCountInput, el("div", { class: "ccu-help", text: "0 hoặc 1 = không nối. VD: 3 = ghép 3 video liên tiếp thành 1." })),
+        el("div", { class: "ccu-group" }, el("label", { for: "ccu-concatUseThumbs", text: "Chèn thumbnail" }), concatThumbsInput, el("div", { class: "ccu-help", text: "Chèn ảnh thumbnail giữa các video." })),
+      ),
+      el("div", { class: "ccu-row" },
+        el("div", { class: "ccu-group" }, el("label", { for: "ccu-concatThumbDuration", text: "Thời lượng thumb (s)" }), concatThumbDurInput, el("div", { class: "ccu-help", text: "Số giây hiện thumbnail (nếu bật chèn)." })),
+      ),
+    );
+
     // ─── AI tối ưu title + thumbnail ────────────────────────────────────────────────────────────
     let saveAiKey = null; // gán khi form có ô khóa AI
     let getSamplesFn = null; // gán khi form có phần hình mẫu
@@ -444,7 +470,8 @@
       const out = typed(schema, raw);
       if (getSamplesFn) out.aiThumbSamples = getSamplesFn(); // mảng ảnh (không đi qua ô chữ)
       // chỉ gửi tham số của kiểu đang chọn (tham số kiểu khác giữ nguyên trên máy chủ); các khóa không sửa được thì bỏ
-      const keep = new Set([...schema.coreKeys, ...AI_KEYS, ...schema.fields.filter((f) => f.section === "mode" && f.modes.includes(mode())).map((f) => f.key)]);
+      const CONCAT_KEYS = ["concatCount", "concatUseThumbs", "concatThumbDuration"];
+      const keep = new Set([...schema.coreKeys, ...AI_KEYS, ...CONCAT_KEYS, ...schema.fields.filter((f) => f.section === "mode" && f.modes.includes(mode())).map((f) => f.key)]);
       for (const k of Object.keys(out)) if (!keep.has(k)) delete out[k];
       delete out.name; if (mode() !== "composer") delete out.presetName;
       if (creating) out.name = (nameInput.value || "").trim();
@@ -505,7 +532,7 @@
     m.replaceChildren(el("div", { class: "ccu-card" }, head("Thêm kênh"), el("div", { class: "ccu-body", text: "Đang tải…" }))); m.classList.add("active");
     const r = await load();
     if (!r || !r.ok) { m.replaceChildren(el("div", { class: "ccu-card" }, head("Thêm kênh"), el("div", { class: "ccu-body" }, el("p", { class: "ccu-err", text: (r && r.error) || "Không tải được" })), el("div", { class: "ccu-foot" }, el("button", { class: "btn btn-secondary", type: "button", onclick: close, text: "Đóng" })))); return; }
-    const blank = { id: 0, name: "", enabled: true, uploadEnabled: true, videosPerDay: 1, renderMode: "topTransparent", videoSource: "download", sourceHandle: "", channelUrl: "", postTimes: "", gpmProfileId: "", proxy: "", monetized: false, presetName: "", params: {}, version: 0, warnings: [], ...defaults };
+    const blank = { id: 0, name: "", enabled: true, uploadEnabled: true, videosPerDay: 1, renderMode: "topTransparent", videoSource: "download", sourceHandle: "", channelUrl: "", postTimes: "", gpmProfileId: "", proxy: "", monetized: false, presetName: "", params: {}, version: 0, warnings: [], concatCount: 0, concatUseThumbs: false, concatThumbDuration: 3, ...defaults };
     render(blank, { create: true });
   }
   async function removeChannel(c) {
@@ -530,7 +557,11 @@
       proxy: "",
       monetized: c.monetized || false,
       presetName: c.presetName || "",
-      params: Object.assign({}, c.params || {})
+      params: Object.assign({}, c.params || {}),
+      // Concat settings
+      concatCount: c.concatCount || 0,
+      concatUseThumbs: c.concatUseThumbs || false,
+      concatThumbDuration: c.concatThumbDuration || 3,
     };
     close();
     setTimeout(function() { openCreate(cloneDefaults); }, 100);

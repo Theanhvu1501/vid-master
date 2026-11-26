@@ -1,6 +1,7 @@
 import path from "path";
 import { todayStr, computeRemaining, recordRendered, remainingFrom } from "./runner-state.js";
 import { decideAction, skipText, ST, MAX_ATTEMPTS } from "./resume-plan.js";
+import { describeDownloadError } from "./download-error.js";
 import { getEntry, setEntry, clearEntry } from "./resume-state.js";
 import { normalizeProxy } from "./proxy.js";
 import { loadPreset, applySlotOverrides } from "./preset-store.js";
@@ -8,6 +9,10 @@ import { validatePreset } from "./layer-compiler.js";
 import { resetGpuState } from "./render-core.js";
 import { planCleanup, formatBytes, CLEAN_EXTS } from "./cleanup-output.js";
 import { testRenderChannel } from "./test-render-channel.js";
+import {
+  CONCAT_WAIT, CONCAT_DONE_SUFFIX, isConcatWaiting, concatWaitText, concatDoneText,
+  processConcatQueue,
+} from "./merge-videos.js";
 
 export function pickRandomBackground(files, rand = Math.random) {
   if (!files.length) return null;
@@ -112,6 +117,102 @@ export function createSheetRunner(deps) {
     const rs = resumeStore.load();
     clearEntry(rs, sheetName, url);
     resumeStore.save(rs);
+  }
+
+  // ─── Xử lý nối video cho kênh sau khi render xong ─────────────────────────────
+  // Gom video đang "chờ nối" (cột C = "⏳ chờ nối ..."), đủ nhóm → nối → upload.
+  async function processConcatForChannel(ch, overlaysDir, outputDir) {
+    const concatCount = ch.concatCount || 0;
+    if (concatCount <= 1) return;
+
+    // Đọc lại danh sách video để lấy những video đang chờ nối
+    const urls = await sheetsApi.readChannelUrls(ch.sheetName);
+    const rs = resumeStore.load();
+
+    // Lọc video: cột B = done, cột C = "⏳ chờ nối..." hoặc trống (vừa render xong chưa kịp đánh dấu)
+    // và có file output
+    const pendingVideos = [];
+    for (const item of urls) {
+      if (item.status !== ST.DONE) continue;
+      const c = String(item.uploadStatus ?? "").trim();
+      // Chỉ lấy video chờ nối hoặc video vừa render (chưa có trạng thái upload)
+      if (!isConcatWaiting(c) && c !== "" && !c.startsWith(concatWaitText(1, concatCount).slice(0, 10))) continue;
+
+      const entry = getEntry(rs, ch.sheetName, item.url);
+      if (!entry?.outputPath || !fileExists(entry.outputPath)) continue;
+
+      pendingVideos.push({
+        url: item.url,
+        rowIndex: item.rowIndex,
+        uploadStatus: item.uploadStatus,
+        outputPath: entry.outputPath,
+        title: entry.title || path.basename(entry.outputPath, ".mp4"),
+        thumbPath: thumbOf(entry.outputPath), // thumbnail cùng tên với video
+        aiTitle: entry.aiTitle || "",
+      });
+    }
+
+    if (!pendingVideos.length) return;
+
+    emit({ type: "log", message: `[${ch.sheetName}] Có ${pendingVideos.length} video chờ nối (cần ${concatCount} video/nhóm)` });
+
+    // Gọi hàm xử lý nối
+    const { concatenated, stillWaiting } = await processConcatQueue({
+      sheetName: ch.sheetName,
+      concatCount,
+      concatUseThumbs: ch.concatUseThumbs || false,
+      concatThumbDuration: ch.concatThumbDuration || 3,
+      pendingVideos,
+      outputDir,
+      tempDir: outputDir,
+      log: (msg) => emit({ type: "log", message: msg }),
+    });
+
+    // Cập nhật trạng thái video chưa đủ nhóm
+    for (const { url, rowIndex, waitIndex } of stillWaiting) {
+      try {
+        await sheetsApi.setUploadStatus(ch.sheetName, rowIndex, concatWaitText(waitIndex, concatCount));
+      } catch { /* ignore */ }
+    }
+
+    // Xử lý các video đã nối xong
+    for (const concat of concatenated) {
+      emit({ type: "log", message: `[${ch.sheetName}] Video nối: ${path.basename(concat.outputPath)} (từ ${concat.sourceVideos.length} video)` });
+
+      // Đánh dấu các video nguồn là "đã nối"
+      for (const src of concat.sourceVideos) {
+        try {
+          // Lấy status hiện tại để giữ thông tin (vd: "✅ 2025-01-15 10:30")
+          const currentItem = urls.find((u) => u.url === src.url);
+          const newStatus = concatDoneText(currentItem?.uploadStatus || "");
+          await sheetsApi.setUploadStatus(ch.sheetName, src.rowIndex, newStatus);
+        } catch { /* ignore */ }
+      }
+
+      // Upload video đã nối (sử dụng thông tin của video đầu tiên)
+      const firstSrc = concat.sourceVideos[0];
+      const fakeItem = { url: firstSrc.url, rowIndex: firstSrc.rowIndex };
+
+      // Lưu thông tin video nối vào resume để retry upload biết
+      patchEntry(ch.sheetName, firstSrc.url, {
+        stage: "concatenated",
+        outputPath: concat.outputPath,
+        title: concat.title,
+        concatSources: concat.sourceVideos.map((s) => s.url),
+      });
+
+      const uploadResult = enqueueUpload(ch, fakeItem, {
+        outputPath: concat.outputPath,
+        title: concat.title,
+        customTitle: pendingVideos.find((v) => v.url === firstSrc.url)?.aiTitle || "",
+      }, overlaysDir);
+
+      if (uploadResult === "gpm-down") {
+        await markUploadWaiting(ch.sheetName, firstSrc.rowIndex, gpmDownReason);
+      } else if (uploadResult === "enqueued") {
+        emit({ type: "video-concatenated", channel: ch.sheetName, outputPath: concat.outputPath, sourceCount: concat.sourceVideos.length });
+      }
+    }
   }
 
   async function runChannel(ch, today) {
@@ -389,11 +490,21 @@ export function createSheetRunner(deps) {
           patchEntry(ch.sheetName, item.url, { stage: "rendered", outputPath, title: dl.title, aiTitle });
           try { unlink(dl.filePath); } catch { /* ignore */ }
           emit({ type: "video-rendered", channel: ch.sheetName, outputPath, sourceUrl: item.url, title: dl.title });
-          if (enqueueUpload(ch, item, { outputPath, title: dl.title, customTitle: aiTitle }, overlaysDir) === "gpm-down") {
-            await markUploadWaiting(ch.sheetName, item.rowIndex, gpmDownReason);
+
+          // Nếu kênh bật nối video (concatCount > 1): đánh dấu "chờ nối" thay vì upload ngay.
+          // Video sẽ được xử lý nối sau khi tất cả video trong lượt render xong.
+          const concatCount = ch.concatCount || 0;
+          if (concatCount > 1) {
+            // Đếm video đang chờ nối để hiện đúng thứ tự (sẽ cập nhật lại sau vòng render)
+            await sheetsApi.setUploadStatus(ch.sheetName, item.rowIndex, concatWaitText(1, concatCount));
+          } else {
+            if (enqueueUpload(ch, item, { outputPath, title: dl.title, customTitle: aiTitle }, overlaysDir) === "gpm-down") {
+              await markUploadWaiting(ch.sheetName, item.rowIndex, gpmDownReason);
+            }
           }
         } catch (e) {
-          const msg = String(e?.message || e).slice(0, 200);
+          // Lấy lý do THẬT: yt-dlp ghi lỗi vào e.stderr, còn e.message thường chỉ là "Command failed..." -> "Unknown error".
+          const msg = (stage === "download" ? describeDownloadError(e) : String(e?.message || e)).slice(0, 200);
           const attempts = bumpAttempts(ch.sheetName, item.url, "attempts");
           if (stage === "download") {
             // Tải hỏng: bỏ mọi dấu vết file (mp4 lẫn thumb) để lượt sau tải lại sạch.
@@ -415,6 +526,12 @@ export function createSheetRunner(deps) {
           emit({ type: "error", channel: ch.sheetName, url: item.url, message: msg });
         }
       })));
+
+      // ─── Xử lý nối video (nếu kênh bật concatCount > 1) ───────────────────────
+      const concatCount = ch.concatCount || 0;
+      if (concatCount > 1) {
+        await processConcatForChannel(ch, overlaysDir, outputDir);
+      }
     } catch (e) {
       emit({ type: "error", channel: ch.sheetName, message: String(e?.message || e).slice(0, 200) });
     } finally {
