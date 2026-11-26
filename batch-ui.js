@@ -74,8 +74,11 @@
   const numInput = (v, min, max, step) => el("input", { type: "number", min, max, step: step || "1", value: v });
 
   function mount(root) {
-    const st = { batches: [], offline: false, loading: false, err: "", sel: null /* id | "new" | null */, schema: null, dirty: false, live: new Map() /* "batchId:kind" -> đang chạy trên máy này */, stopFor: null, machineDefs: {}, actTab: "render", renderCtx: null };
+    const st = { batches: [], offline: false, loading: false, err: "", sel: null /* id | "new" | null */, schema: null, dirty: false, live: new Map() /* "batchId:kind" -> đang chạy trên máy này */, stopFor: null, machineDefs: {}, actTab: "render", renderCtx: null, channelSel: new Map() /* "batchId:kind" -> Set of gpmProfileId */ };
     const byId = (id) => st.batches.find((x) => x.id === id);
+    const channelSelKey = (batchId, kind) => batchId + ":" + kind;
+    const getSelectedChannels = (batchId, kind) => st.channelSel.get(channelSelKey(batchId, kind));
+    const setSelectedChannels = (batchId, kind, set) => st.channelSel.set(channelSelKey(batchId, kind), set);
 
     async function loadSchema() {
       if (st.schema) return st.schema;
@@ -260,6 +263,34 @@
     const drafts = new Map();
     const settingsFor = (b) => { if (!drafts.has(b.id)) drafts.set(b.id, BA().mergeSettings(b.actions, st.machineDefs || {})); return drafts.get(b.id); };
 
+    // Chọn kênh để chạy (thumb / schedule): mặc định chọn tất cả
+    function channelPicker(b, kind) {
+      const channels = (b.channels || []).filter((c) => c && c.gpmProfileId);
+      if (!channels.length) return el("div", { class: "bt-chpick-empty bt-muted", text: "Mẻ chưa có kênh nào." });
+      // Khởi tạo selected = tất cả nếu chưa có
+      let selected = getSelectedChannels(b.id, kind);
+      if (!selected) { selected = new Set(channels.map((c) => c.gpmProfileId)); setSelectedChannels(b.id, kind, selected); }
+      const countEl = el("span", { class: "bt-chpick-count", text: "" });
+      const updateCount = () => { countEl.textContent = selected.size + "/" + channels.length + " kênh"; };
+      updateCount();
+      const list = el("div", { class: "bt-chpick-list" });
+      const drawList = () => {
+        list.replaceChildren(...channels.map((c) => {
+          const cb = el("input", { type: "checkbox", checked: selected.has(c.gpmProfileId) });
+          cb.addEventListener("change", () => { cb.checked ? selected.add(c.gpmProfileId) : selected.delete(c.gpmProfileId); updateCount(); });
+          return el("label", { class: "bt-chpick-item" }, cb, el("span", { text: c.name || c.gpmProfileId }));
+        }));
+      };
+      drawList();
+      const selAll = el("button", { class: "btn btn-secondary btn-sm", type: "button", text: "Chọn tất cả", onclick: () => { for (const c of channels) selected.add(c.gpmProfileId); drawList(); updateCount(); } });
+      const selNone = el("button", { class: "btn btn-secondary btn-sm", type: "button", text: "Bỏ chọn", onclick: () => { selected.clear(); drawList(); updateCount(); } });
+      return el("div", { class: "bt-chpick form-group bt-group" },
+        el("label", { text: "Chọn kênh để chạy" }),
+        el("div", { class: "bt-chpick-head" }, countEl, el("span", { class: "bt-chpick-btns" }, selAll, selNone)),
+        list,
+        el("small", { text: "Bỏ chọn kênh nào thì kênh đó không chạy lần này." }));
+    }
+
     // Tự lưu cài đặt hành động ngay khi gõ/chọn, không cần bấm Chạy:
     //  - đường dẫn thư mục: ghi ngay xuống đĩa của máy này (không bao giờ lên server)
     //  - phần còn lại (số ngày, ngày bắt đầu, giờ đăng, số video): gửi server sau khi ngừng gõ ~0,8 giây
@@ -306,11 +337,13 @@
       } else if (kind === "thumb") {
         pickRow("thumbFolder", "Thư mục ảnh thumbnail", "Dùng cho mọi kênh trong mẻ. Đường dẫn chỉ áp dụng trên máy này.");
         numField("numVideos", "Số video đổi thumbnail mỗi kênh", 1, 200, "Áp cho các video nháp (Draft) bạn đã upload tay.");
+        rows.push(channelPicker(b, kind));
       } else {
         numField("numDays", "Số ngày lên lịch", 1, 60, "Mỗi ngày dùng hết các khung giờ bên dưới.");
         inputs.startDate = el("input", { type: "date", value: set.startDate || "" }); inputs.startDate.addEventListener("input", () => { set.startDate = inputs.startDate.value; touch(); });
         rows.push(field("Ngày bắt đầu (tuỳ chọn)", inputs.startDate, "Để trống = hôm nay. Video đầu tiên được đặt vào ngày kế tiếp."));
         text("postTimes", "Giờ đăng mỗi ngày", "8:00, 12:00, 18:00", "Nhiều khung giờ cách nhau bằng dấu phẩy.");
+        rows.push(channelPicker(b, kind));
       }
 
       const msg = el("div", { class: "bt-msg", role: "alert" });
@@ -353,6 +386,10 @@
       const plan = BA().planAction(kind, fresh, set);
       if (!plan.ok) { msgEl.className = "bt-msg err"; msgEl.textContent = plan.errors.join(". "); return; }
       if (anyLive()) { toast("Đang chạy một hành động, đợi xong hoặc bấm Dừng.", "error"); return; }
+      // Lấy danh sách kênh đã chọn (thumb/schedule); render luôn chạy tất cả
+      const selectedSet = (kind === "thumb" || kind === "schedule") ? getSelectedChannels(fresh.id, kind) : null;
+      const selectedChannels = selectedSet ? [...selectedSet] : null;
+      if (selectedChannels && selectedChannels.length === 0) { msgEl.className = "bt-msg err"; msgEl.textContent = "Chưa chọn kênh nào để chạy."; return; }
       msgEl.textContent = "";
       // lưu cài đặt hành động lên server (web thấy ổ nguồn/đích, số ngày, ngày bắt đầu...). Với render còn lưu ngày hiện tại và cách render
       // vì render lấy chúng từ server: không lưu được thì KHÔNG chạy để khỏi render nhầm ngày hoặc nhầm kiểu.
@@ -365,7 +402,7 @@
       await reportRun(fresh, kind, "running", "");
       let r;
       try {
-        r = kind === "render" ? await window.runBatchRenderAction(fresh, set) : await window.runBatchAutomationAction(kind, fresh, set);
+        r = kind === "render" ? await window.runBatchRenderAction(fresh, set) : await window.runBatchAutomationAction(kind, fresh, set, selectedChannels);
         if (st.stopFor === key && !(r && r.ok)) r = { ok: false, canceled: true, message: "Đã dừng" };
       } catch (e) { r = { ok: false, message: String((e && e.message) || e) }; }
       const out = BA().normalizeOutcome(r);

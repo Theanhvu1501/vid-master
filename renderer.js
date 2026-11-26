@@ -2711,12 +2711,17 @@ async function runBatchRenderAction(batch, settings) {
   return r || { ok: false, message: "Render không có kết quả" };
 }
 // Thay thumbnail / Lên lịch: chạy trên các kênh của mẻ (theo GPM Profile ID), dùng đúng hàm của tab Tự động hóa.
-async function runBatchAutomationAction(kind, batch, settings) {
+// selectedChannels: mảng gpmProfileId muốn chạy; null/undefined = chạy tất cả kênh trong mẻ.
+async function runBatchAutomationAction(kind, batch, settings, selectedChannels) {
   const api = window.electronAPI && window.electronAPI.automation;
   if (!api) return { ok: false, message: "Phiên bản app không hỗ trợ" };
   if (automationRunning) return { ok: false, message: "Tab Tự động hóa đang chạy việc khác, đợi xong rồi chạy lại" };
-  const profiles = (batch.channels || []).filter((c) => c && c.gpmProfileId).map((c) => ({ id: c.gpmProfileId, name: c.name || c.gpmProfileId, label: c.name || c.gpmProfileId }));
-  if (!profiles.length) return { ok: false, message: "Mẻ chưa có kênh nào" };
+  const allChannels = (batch.channels || []).filter((c) => c && c.gpmProfileId);
+  const selected = Array.isArray(selectedChannels) && selectedChannels.length > 0
+    ? allChannels.filter((c) => selectedChannels.includes(c.gpmProfileId))
+    : allChannels;
+  const profiles = selected.map((c) => ({ id: c.gpmProfileId, name: c.name || c.gpmProfileId, label: c.name || c.gpmProfileId }));
+  if (!profiles.length) return { ok: false, message: Array.isArray(selectedChannels) && selectedChannels.length > 0 ? "Chưa chọn kênh nào" : "Mẻ chưa có kênh nào" };
   const base = { gpmHost: autoHost(), profiles, concurrency: parseInt(autoVal("automation-concurrency"), 10) || 1 };
   const opts = kind === "thumb"
     ? { ...base, thumbFolder: settings.thumbFolder, numVideos: settings.numVideos || "8", thumbFolders: {} }
@@ -6205,6 +6210,8 @@ const AUTOMATION_TASKS = {
     desc: "Kiểm tra proxy đang gán trong từng profile GPM: sống hay chết và IP thoát ra. Mật khẩu proxy không bao giờ hiện." },
   createchannel: { title: "Tạo channel", api: "createChannel", btn: "▶ Tạo channel", excel: "plan",
     desc: "Với mỗi profile: cài đặt kênh (tag, mặc định tải lên) rồi tuỳ chỉnh kênh (tên, handle, mô tả) và xuất bản. Thông tin lấy từ file Excel." },
+  changega:      { title: "Đổi GA", noProfile: true, noPreview: true,
+    desc: "Chuyển kênh YouTube sang Google Account khác. Nhập Channel ID và cookies, tool sẽ tạo link xác thực để đổi GA." },
 };
 let automationCurrent = "login";
 let automationProfiles = []; // [{ id, name, groupId, hasProxy, proxyMasked }]
@@ -6226,11 +6233,25 @@ function selectAutomationSubTab(sub) {
   document.getElementById("automation-title").textContent = t.title;
   document.getElementById("automation-desc").textContent = t.desc;
   if (sub === "thumb") renderThumbOverrides();
-  document.getElementById("automation-run-btn").textContent = t.btn;
+
+  // Ẩn/hiện các element dựa vào task type
+  const runBtn = document.getElementById("automation-run-btn");
+  const pvBtn = document.getElementById("automation-preview-btn");
   const cw = document.getElementById("automation-concurrency-wrap");
-  if (cw) cw.querySelector("label").textContent = t.concurrencyLabel || "Số profile chạy cùng lúc";
-  const pv = document.getElementById("automation-preview-btn");
-  if (pv) pv.style.display = t.noPreview ? "none" : "";
+  const sidebar = document.querySelector("#automation .auto-sidebar");
+  const actionBtns = document.querySelector("#automation .action-buttons");
+
+  if (t.noProfile) {
+    // Task không cần profile GPM (như changega)
+    if (sidebar) sidebar.style.display = "none";
+    if (actionBtns) actionBtns.style.display = "none";
+  } else {
+    if (sidebar) sidebar.style.display = "";
+    if (actionBtns) actionBtns.style.display = "";
+    if (runBtn) runBtn.textContent = t.btn;
+    if (cw) cw.querySelector("label").textContent = t.concurrencyLabel || "Số profile chạy cùng lúc";
+    if (pvBtn) pvBtn.style.display = t.noPreview ? "none" : "";
+  }
 }
 document.querySelectorAll('.tab-button[data-tab="automation"]').forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -6449,6 +6470,12 @@ function getAutomationOptions() {
       o.planFile = autoVal("automation-cc-file");
       o.accountsFile = autoVal("automation-cc-accounts") || undefined;
       break;
+    case "changega":
+      o.planFile = autoVal("automation-ga-file");
+      o.accountsFile = autoVal("automation-ga-accounts") || undefined;
+      o.manualTimeout = parseInt(autoVal("automation-ga-timeout"), 10) || 300;
+      o.headless = document.getElementById("automation-ga-headless")?.checked || false;
+      break;
   }
   return o;
 }
@@ -6468,6 +6495,7 @@ function checkAutomationInputs(o) {
       if (!o.postTimes) return "Hãy nhập giờ đăng.";
       break;
     case "createchannel": if (!o.planFile) return "Hãy chọn file Excel tạo channel."; break;
+    case "changega": if (!o.planFile) return "Hãy chọn file Excel đổi GA."; break;
   }
   return "";
 }
@@ -6514,7 +6542,7 @@ async function previewAutomation() {
       }
       return;
     }
-    if (t.excel && (t.excel === "login" || t.excel === "plan")) {
+    if (t.excel && (t.excel === "login" || t.excel === "plan" || t.excel === "changega")) {
       const r = await window.electronAPI.automation.previewExcel({
         ...o, kind: t.excel,
       });
@@ -6524,6 +6552,10 @@ async function previewAutomation() {
       for (const n of r.missing) showAutomationOutput(`⏭ ${n}: không có dòng nào trong Excel khớp (cột A)`);
       for (const n of r.ambiguous) showAutomationOutput(`⏭ ${n}: Excel có nhiều dòng cùng khoá ở cột A`);
       for (const n of r.duplicated || []) showAutomationOutput(`⏭ ${n}: tên profile trùng với profile khác trong GPM — ghi Profile ID vào cột A`);
+      if (t.excel === "changega") {
+        showAutomationOutput(`\n⚠ LƯU Ý: Đổi GA CẦN THAO TÁC THỦ CÔNG trong browser (2FA, chọn account đích, xác nhận).`);
+        showAutomationOutput(`   Khuyến nghị chạy từng profile một (Số profile chạy cùng lúc = 1).`);
+      }
       return;
     }
     showAutomationOutput(`👁 XEM TRƯỚC (chưa chạy gì)\n\nSẽ chạy ${o.profiles.length} profile: ${o.profiles.map((p) => p.name).join(", ")}`);
@@ -6567,6 +6599,149 @@ async function stopAutomationRun() {
   if (!checkElectronAPI()) return;
   await window.electronAPI.automation.stop();
   showAutomationOutput("⏹ Đã yêu cầu dừng — các profile đang chạy sẽ dừng ở bước kế tiếp.");
+}
+
+// ============================================================================
+// CHANGE GA - Đổi Google Account cho kênh YouTube (không cần GPM profile)
+// ============================================================================
+let changeGAState = { channelId: '', cookies: '', loginUrl: '', rapt: '' };
+
+function showChangeGALog(msg) {
+  const out = document.getElementById("changega-output");
+  if (!out) return;
+  out.style.display = "block";
+  out.textContent += msg + "\n";
+  out.scrollTop = out.scrollHeight;
+}
+
+function clearChangeGALog() {
+  const out = document.getElementById("changega-output");
+  if (out) { out.textContent = ""; out.style.display = "none"; }
+}
+
+async function changeGAStep1() {
+  if (!checkElectronAPI()) return;
+
+  clearChangeGALog();
+
+  const channelIdInput = document.getElementById("changega-channel-id")?.value?.trim() || "";
+  const cookiesInput = document.getElementById("changega-cookies")?.value?.trim() || "";
+
+  if (!channelIdInput) {
+    alert("Vui lòng nhập Channel ID (UC...)");
+    return;
+  }
+  if (!cookiesInput) {
+    alert("Vui lòng paste cURL hoặc cookies từ YouTube Studio");
+    return;
+  }
+
+  showChangeGALog("🔄 Đang xử lý...");
+
+  try {
+    const result = await window.electronAPI.changeGA.generateLoginLink({
+      channelId: channelIdInput,
+      cookies: cookiesInput,
+    });
+
+    if (!result.success) {
+      showChangeGALog(`❌ Lỗi: ${result.error}`);
+      return;
+    }
+
+    changeGAState.channelId = result.channelId;
+    changeGAState.cookies = cookiesInput;
+    changeGAState.loginUrl = result.loginUrl;
+
+    // Hiện kết quả bước 1
+    document.getElementById("changega-login-url").value = result.loginUrl;
+    document.getElementById("changega-step1-result").style.display = "";
+    document.getElementById("changega-step2").style.display = "";
+
+    showChangeGALog(`✅ Đã tạo link xác thực cho kênh ${result.channelId}`);
+    showChangeGALog(`📋 Mở link ở ô "Link xác thực", đăng nhập và xác nhận mật khẩu`);
+    showChangeGALog(`📋 Sau đó copy phần rapt=AE... từ URL và paste vào Bước 3`);
+
+  } catch (error) {
+    showChangeGALog(`❌ Lỗi: ${error.message || error}`);
+  }
+}
+
+function copyChangeGAUrl() {
+  const url = document.getElementById("changega-login-url")?.value;
+  if (url) {
+    navigator.clipboard.writeText(url);
+    showChangeGALog("📋 Đã copy link xác thực");
+  }
+}
+
+function openChangeGAUrl() {
+  const url = document.getElementById("changega-login-url")?.value;
+  if (url && window.electronAPI?.shell?.openExternal) {
+    window.electronAPI.shell.openExternal(url);
+  } else if (url) {
+    window.open(url, "_blank");
+  }
+}
+
+async function changeGAStep2() {
+  if (!checkElectronAPI()) return;
+
+  const raptInput = document.getElementById("changega-rapt")?.value?.trim() || "";
+
+  if (!raptInput) {
+    alert("Vui lòng paste mã rapt (từ AE...) hoặc URL chứa rapt");
+    return;
+  }
+
+  if (!changeGAState.channelId || !changeGAState.cookies) {
+    alert("Vui lòng thực hiện Bước 1 trước");
+    return;
+  }
+
+  showChangeGALog("🔄 Đang tạo link token đổi GA...");
+
+  try {
+    const result = await window.electronAPI.changeGA.generateTransferLink({
+      channelId: changeGAState.channelId,
+      cookies: changeGAState.cookies,
+      rapt: raptInput,
+    });
+
+    if (!result.success) {
+      showChangeGALog(`❌ Lỗi: ${result.error}`);
+      return;
+    }
+
+    changeGAState.rapt = result.rapt;
+
+    // Hiện kết quả cuối
+    document.getElementById("changega-transfer-url").value = result.transferUrl;
+    document.getElementById("changega-final-result").style.display = "";
+
+    showChangeGALog(`✅ Đã tạo link token đổi GA!`);
+    showChangeGALog(`🎯 Mở link ở ô "Link Token đổi GA" và đăng nhập bằng Google Account MỚI để nhận kênh`);
+
+  } catch (error) {
+    showChangeGALog(`❌ Lỗi: ${error.message || error}`);
+  }
+}
+
+function copyChangeGATransferUrl() {
+  const url = document.getElementById("changega-transfer-url")?.value;
+  if (url) {
+    navigator.clipboard.writeText(url);
+    showChangeGALog("📋 Đã copy link token đổi GA");
+  }
+}
+
+function openChangeGATransferUrl() {
+  const url = document.getElementById("changega-transfer-url")?.value;
+  if (url && window.electronAPI?.shell?.openExternal) {
+    window.electronAPI.shell.openExternal(url);
+  } else if (url) {
+    window.open(url, "_blank");
+  }
 }
 
 // ============================================================================

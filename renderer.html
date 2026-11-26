@@ -2417,6 +2417,18 @@ label.with-icon::before {
 .bt-pick-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
 .bt-pick-btns { display: inline-flex; gap: 8px; }
 
+/* ===== Mẻ: chọn kênh để chạy (thumb/schedule) ===== */
+.bt-chpick { margin-top: 8px; }
+.bt-chpick-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+.bt-chpick-count { font-size: 13px; font-weight: 600; color: var(--text-secondary); }
+.bt-chpick-btns { display: inline-flex; gap: 6px; }
+.bt-chpick-btns .btn-sm { padding: 4px 10px; font-size: 12px; }
+.bt-chpick-list { display: flex; flex-wrap: wrap; gap: 6px 12px; max-height: 180px; overflow-y: auto; padding: 8px 10px; background: var(--bg-tertiary); border: 1px solid var(--border-default); border-radius: var(--radius-sm); }
+.bt-chpick-item { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; white-space: nowrap; }
+.bt-chpick-item input[type="checkbox"] { margin: 0; width: 14px; height: 14px; cursor: pointer; }
+.bt-chpick-item span { color: var(--text-primary); }
+.bt-chpick-empty { font-size: 13px; padding: 8px 0; }
+
 /* ===== Gấp phần "Cách render" để tiết kiệm chiều dọc ===== */
 .bt-collapse { border-top: 1px solid var(--border-default); padding-top: 10px; margin-top: 6px; }
 .bt-sep-inside { border-top: 0; padding-top: 0; margin: 0 0 6px; }
@@ -2581,6 +2593,7 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
           <button class="tab-button" data-tab="automation" data-sub="distribute"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z" /> <path d="m21.854 2.147-10.94 10.939" /></svg><span class="tab-label">Rải video cho kênh</span></button>
           <button class="tab-button" data-tab="automation" data-sub="proxycheck"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" /> <path d="m9 12 2 2 4-4" /></svg><span class="tab-label">Kiểm tra proxy</span></button>
           <button class="tab-button" data-tab="automation" data-sub="createchannel"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="20" height="15" x="2" y="7" rx="2" ry="2"/><polyline points="17 2 12 7 7 2"/></svg><span class="tab-label">Tạo channel</span></button>
+          <button class="tab-button" data-tab="automation" data-sub="changega"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span class="tab-label">Đổi GA</span></button>
         </div>
       </div>
 
@@ -4809,6 +4822,79 @@ input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
                   </div>
                 </div>
               </div>
+            </div>
+
+            <!-- Đổi GA (Google Account): chuyển kênh sang account khác -->
+            <div id="automation-sub-changega" class="automation-sub" style="display:none;">
+              <div class="card-section">
+                <div class="card-section-title">🔄 Đổi GA (Google Account) cho kênh YouTube</div>
+                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;">
+                  Chuyển kênh YouTube sang Google Account (Brand Account) khác bằng cách tạo link xác thực.
+                </p>
+
+                <!-- Bước 1: Thêm kênh -->
+                <div class="form-group">
+                  <label><strong>Bước 1:</strong> Channel ID (UC...)</label>
+                  <input type="text" id="changega-channel-id" placeholder="UC-ossRVoXIhQvGsSby-SkQ hoặc URL YouTube Studio" />
+                  <small>Lấy từ URL YouTube Studio: studio.youtube.com/channel/<b>UC...</b></small>
+                </div>
+
+                <!-- Bước 2: Cookies -->
+                <div class="form-group">
+                  <label><strong>Bước 2:</strong> Cookies (từ cURL của request <code>esr</code> trong DevTools)</label>
+                  <textarea id="changega-cookies" rows="4" placeholder="Paste cURL từ DevTools (F12 > Network > esr > Copy as cURL)&#10;Hoặc paste trực tiếp cookie string"></textarea>
+                  <small>Vào YouTube Studio > F12 > Network > reload trang > tìm request <code>esr</code> > chuột phải > Copy as cURL</small>
+                </div>
+
+                <button class="btn btn-primary" onclick="changeGAStep1()" style="margin-top:12px;">
+                  📋 Tạo link xác thực (Bước 1)
+                </button>
+              </div>
+
+              <!-- Kết quả Bước 1 -->
+              <div class="card-section" id="changega-step1-result" style="display:none;">
+                <div class="card-section-title">🔗 Link xác thực</div>
+                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
+                  Mở link này trong browser <b>đang đăng nhập kênh</b>, xác nhận mật khẩu, sau đó copy phần <code>rapt=AE...</code> từ URL redirect.
+                </p>
+                <div class="form-group">
+                  <textarea id="changega-login-url" rows="3" readonly style="font-size:12px;"></textarea>
+                  <button class="btn btn-secondary" onclick="copyChangeGAUrl()" style="margin-top:4px;">📋 Copy link</button>
+                  <button class="btn btn-secondary" onclick="openChangeGAUrl()" style="margin-top:4px;">🌐 Mở trong browser</button>
+                </div>
+              </div>
+
+              <!-- Bước 3: Paste rapt -->
+              <div class="card-section" id="changega-step2" style="display:none;">
+                <div class="card-section-title">🔑 Bước 3: Paste mã rapt</div>
+                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
+                  Sau khi xác nhận mật khẩu, URL sẽ chuyển thành dạng:<br>
+                  <code>https://studio.youtube.com/reauth?rapt=<b>AEjHL4Ng33...</b></code><br>
+                  Copy phần từ <b>AE</b> trở đi (hoặc cả URL) và paste vào đây:
+                </p>
+                <div class="form-group">
+                  <input type="text" id="changega-rapt" placeholder="AEjHL4Ng33IsnoXhwc6GRyOSLzn... (hoặc cả URL)" />
+                </div>
+                <button class="btn btn-success" onclick="changeGAStep2()">
+                  🎫 Gen Link Token đổi GA
+                </button>
+              </div>
+
+              <!-- Kết quả cuối -->
+              <div class="card-section" id="changega-final-result" style="display:none;">
+                <div class="card-section-title">✅ Link Token đổi GA</div>
+                <p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
+                  Mở link này và đăng nhập <b>Google Account MỚI</b> (account sẽ nhận kênh):
+                </p>
+                <div class="form-group">
+                  <textarea id="changega-transfer-url" rows="3" readonly style="font-size:12px;"></textarea>
+                  <button class="btn btn-secondary" onclick="copyChangeGATransferUrl()" style="margin-top:4px;">📋 Copy link</button>
+                  <button class="btn btn-secondary" onclick="openChangeGATransferUrl()" style="margin-top:4px;">🌐 Mở trong browser</button>
+                </div>
+              </div>
+
+              <!-- Log -->
+              <div id="changega-output" class="output" style="display:none;max-height:200px;margin-top:12px;"></div>
             </div>
 
             <div class="form-row" style="margin-top:var(--space-md);align-items:end;">
