@@ -51,6 +51,19 @@ export function readChannelPlans(file) {
   return out;
 }
 
+// File đổi GA: A=Profile ID hoặc tên profile, B=Channel ID (UC...), C=Email GA đích, D=Tên Brand Account đích.
+// Dòng thiếu cột A thì bỏ qua. Các cột khác tuỳ chọn.
+export function readChangeGAPlans(file) {
+  const out = [];
+  for (const r of readRows(file)) {
+    const profileName = str(r[0]);
+    if (isPlanHeader(r[0])) continue;
+    if (!profileName) continue;
+    out.push({ profileName, channelId: str(r[1]), targetEmail: str(r[2]), targetName: str(r[3]) });
+  }
+  return out;
+}
+
 const lower = (s) => str(s).toLowerCase();
 
 /** Đếm số profile theo tên (không phân biệt hoa thường) trong TOÀN BỘ GPM, để biết tên nào bị trùng. */

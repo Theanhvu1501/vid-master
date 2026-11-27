@@ -97,7 +97,7 @@ test("dữ liệu mẫu là dữ liệu giả an toàn: không có proxy/tài kh
 test("writeSample: tự thêm .xlsx, tên file mặc định đúng, loại lạ bị từ chối", () => {
   const d = tmp();
   assert.ok(writeSample("login", path.join(d, "ten")).endsWith("ten.xlsx"));
-  assert.deepEqual(Object.keys(SAMPLE_FILES).sort(), ["channel", "chromakey", "fullsheet", "login", "sheet", "urls"]);
+  assert.deepEqual(Object.keys(SAMPLE_FILES).sort(), ["changega", "channel", "chromakey", "fullsheet", "login", "sheet", "urls"]);
   assert.throws(() => buildSample("khong-co"), /Không có file mẫu/);
   rm(d);
 });

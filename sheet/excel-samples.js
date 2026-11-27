@@ -16,6 +16,7 @@ import { writeFullSheetSample } from "./full-template.js";
 export const SAMPLE_FILES = {
   login: "mau-tai-khoan-dang-nhap.xlsx",
   channel: "mau-tao-channel.xlsx",
+  changega: "mau-doi-ga.xlsx",
   sheet: "mau-tu-dong-hoa-sheet.xlsx",
   fullsheet: "mau-theo-doi-sheet-day-du.xlsx",
   urls: "urls.txt",
@@ -95,6 +96,35 @@ function channelSample() {
         ["Thứ tự cột", "Cùng thứ tự cột với script GPM 02.auto_create_channel.", ""],
       ],
       cols: [26, 70, 36],
+    },
+  ];
+}
+
+function changeGASample() {
+  return [
+    {
+      name: "ĐổiGA",
+      rows: [
+        ["Profile ID hoặc tên profile", "Channel ID (UC...)", "Email GA đích", "Tên Brand Account đích"],
+        ["PROFILE_ID_HOAC_TEN_1", "UCxxxxxxxxxxxxxxxxxxxxxx", "account.moi@example.com", "Tên Brand Account"],
+        ["PROFILE_ID_HOAC_TEN_2", "", "", ""],
+      ],
+      cols: [22, 28, 32, 28],
+    },
+    {
+      name: "Hướng dẫn",
+      rows: [
+        ["Cột", "Ý nghĩa", "Ghi chú"],
+        ["A — Profile ID hoặc tên profile", "Khuyên dùng Profile ID (chuỗi dạng xxxxxxxx-xxxx-...) vì ID không bao giờ trùng", "Ghi tên thì tên đó phải là DUY NHẤT trong GPM"],
+        ["B — Channel ID", "ID kênh YouTube cần chuyển (bắt đầu bằng UC...)", "Tuỳ chọn nếu profile chỉ có 1 kênh. Bắt buộc nếu account có nhiều kênh"],
+        ["C — Email GA đích", "Email của Google Account / Brand Account đích", "Tuỳ chọn. Để trống = chọn thủ công trong browser"],
+        ["D — Tên Brand Account đích", "Tên hiển thị của Brand Account đích", "Tuỳ chọn. Dùng để tìm nếu không có email"],
+        ["", "", ""],
+        ["Cách dùng", "Xoá 2 dòng ví dụ rồi nhập dữ liệu thật. Dòng 1 là tiêu đề, app tự bỏ qua.", ""],
+        ["Quy trình đổi GA", "1. App mở browser với profile GPM đã đăng nhập\n2. Vào YouTube Studio > Settings > Channel > Move channel\n3. Bạn chọn Brand Account đích và xác nhận trong browser\n4. App chờ bạn hoàn thành (2FA, chọn account, xác nhận)", ""],
+        ["Lưu ý quan trọng", "Quy trình CẦN THAO TÁC THỦ CÔNG trong browser (2FA, captcha, chọn account). Nên chạy từng profile một.", "Không nên chạy nhiều profile cùng lúc"],
+      ],
+      cols: [26, 78, 42],
     },
   ];
 }
@@ -181,7 +211,7 @@ function sheetSample() {
   ];
 }
 
-const BUILDERS = { login: loginSample, channel: channelSample, sheet: sheetSample };
+const BUILDERS = { login: loginSample, channel: channelSample, changega: changeGASample, sheet: sheetSample };
 const isText = (kind) => TEXT_KINDS.has(kind);
 
 export function buildSample(kind) {
