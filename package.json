@@ -68,7 +68,7 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "allowElevation": true,
-      "runAfterFinish": true
+      "runAfterFinish": false
     },
     "asarUnpack": [
       "render.js",
