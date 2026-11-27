@@ -15,6 +15,7 @@ const REASON_TEXT = {
   "machine-unassigned": "Máy này không còn được gán cho tài khoản của bạn. Liên hệ quản trị viên.",
   "license-revoked": "License của máy này đã bị thu hồi. Liên hệ quản trị viên.",
   disabled: "Tài khoản đã bị khóa. Liên hệ quản trị viên.",
+  expired: "Tài khoản đã hết hạn. Liên hệ quản trị viên để gia hạn.",
   "password-changed": "Mật khẩu đã được đổi. Vui lòng đăng nhập lại.",
   "no-user": "Tài khoản không còn tồn tại.",
   token: "Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.",

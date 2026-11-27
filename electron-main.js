@@ -2545,7 +2545,8 @@ ipcMain.handle("sheet:save-settings", async (e, s) => {
 });
 ipcMain.handle("account:get", () => {
   const u = sessionMgr.getUser();
-  return { loggedIn: sessionMgr.isLoggedIn(), username: u?.username || "", displayName: u?.displayName || u?.username || "", role: u?.role || "" };
+  // expiresAt: "YYYY-MM-DD" | null (không giới hạn / admin); daysLeft: số ngày còn dùng được (tính cả ngày hạn) | null
+  return { loggedIn: sessionMgr.isLoggedIn(), username: u?.username || "", displayName: u?.displayName || u?.username || "", role: u?.role || "", expiresAt: u?.expiresAt || null, daysLeft: Number.isFinite(u?.daysLeft) ? u.daysLeft : null };
 });
 ipcMain.handle("permissions:get", () => {
   const appFeatures = sessionMgr.getAppFeatures();

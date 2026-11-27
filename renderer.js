@@ -191,7 +191,15 @@ async function loadAccountMenu() {
       if (nameEl) nameEl.textContent = name;
       if (avatarEl) avatarEl.textContent = name.charAt(0).toUpperCase();
       if (dropdownName) dropdownName.textContent = name;
-      if (dropdownRole) dropdownRole.textContent = a.role || "";
+      if (dropdownRole) {
+        // Có hạn thì hiện ngay dưới vai trò: "user · còn 12 ngày (đến 27/12/2026)". Dùng textContent để không chèn HTML.
+        let txt = a.role || "";
+        if (a.expiresAt && Number.isFinite(a.daysLeft)) {
+          const [y, m, d] = String(a.expiresAt).split("-");
+          txt += (txt ? " · " : "") + (a.daysLeft <= 0 ? "đã hết hạn" : "còn " + a.daysLeft + " ngày") + " (đến " + d + "/" + m + "/" + y + ")";
+        }
+        dropdownRole.textContent = txt;
+      }
       if (logoutBtn) logoutBtn.style.display = "";
     } else {
       if (nameEl) nameEl.textContent = "Chưa đăng nhập";

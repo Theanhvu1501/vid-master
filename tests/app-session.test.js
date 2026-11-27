@@ -356,3 +356,51 @@ test("appFeaturesChanged: cùng nội dung cùng thứ tự -> false", () => {
   assert.equal(appFeaturesChanged(["app:a", "app:b"], ["app:a", "app:b"]), false);
   assert.equal(appFeaturesChanged([], []), false);
 });
+
+// ---------------- hạn sử dụng tài khoản ----------------
+test("reasonText: lý do 'expired' có câu riêng, nhắc gia hạn (không rơi vào câu chung)", () => {
+  const msg = reasonText("expired");
+  assert.match(msg, /hết hạn/i);
+  assert.match(msg, /gia hạn|quản trị viên/i);
+  assert.notEqual(msg, reasonText("lý-do-lạ-không-có"), "phải khác câu mặc định");
+});
+
+test("verify: server báo tài khoản hết hạn (403 expired) -> ĐĂNG XUẤT NGAY, xóa phiên, lý do đọc được", async () => {
+  const { mgr, disk } = mk({ respond: (url) => (/login/.test(url) ? OK_LOGIN : { status: 403, body: { valid: false, reason: "expired" } }) });
+  await mgr.login("bob", "pw");
+  const r = await mgr.verify();
+  assert.equal(r.state, "invalid");
+  assert.equal(r.reason, "expired");
+  assert.match(r.message, /hết hạn/i);
+  assert.equal(mgr.isLoggedIn(), false);
+  assert.equal(disk.value, null, "phiên đã lưu bị xóa");
+});
+
+test("login: tài khoản hết hạn (403 account-expired) -> denied, giữ nguyên lời server, KHÔNG có phiên", async () => {
+  const { mgr, disk } = mk({ respond: () => ({ status: 403, body: { message: "Tài khoản đã hết hạn. Liên hệ quản trị viên để gia hạn.", code: "account-expired" } }) });
+  const r = await mgr.login("bob", "pw");
+  assert.equal(r.ok, false);
+  assert.equal(r.kind, "denied");
+  assert.match(r.message, /hết hạn/);
+  assert.equal(mgr.isLoggedIn(), false);
+  assert.equal(disk.value, null);
+});
+
+test("login/verify: expiresAt + daysLeft từ server được giữ trong user để app hiển thị 'còn N ngày'", async () => {
+  const login = { status: 200, body: { token: mkJwt(Math.floor(Date.now() / 1000) + 30 * 86400), user: { id: 1, username: "bob", role: "user", expiresAt: "2026-12-27", daysLeft: 20 } } };
+  const { mgr } = mk({ respond: (url) => (/login/.test(url) ? login : { status: 200, body: { valid: true, user: { id: 1, username: "bob", role: "user", expiresAt: "2026-12-27", daysLeft: 19 } } }) });
+  await mgr.login("bob", "pw");
+  assert.equal(mgr.getUser().expiresAt, "2026-12-27");
+  assert.equal(mgr.getUser().daysLeft, 20);
+  await mgr.verify();
+  assert.equal(mgr.getUser().daysLeft, 19, "verify cập nhật số ngày còn lại");
+});
+
+test("verify: server gia hạn xong gỡ hạn (expiresAt null) thì app cập nhật theo, không giữ hạn cũ", async () => {
+  const login = { status: 200, body: { token: mkJwt(Math.floor(Date.now() / 1000) + 30 * 86400), user: { id: 1, username: "bob", role: "user", expiresAt: "2026-12-27", daysLeft: 5 } } };
+  const { mgr } = mk({ respond: (url) => (/login/.test(url) ? login : { status: 200, body: { valid: true, user: { id: 1, username: "bob", role: "user", expiresAt: null, daysLeft: null } } }) });
+  await mgr.login("bob", "pw");
+  await mgr.verify();
+  assert.equal(mgr.getUser().expiresAt, null);
+  assert.equal(mgr.getUser().daysLeft, null);
+});
