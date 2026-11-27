@@ -21,6 +21,32 @@ function icon(name, cls = "") {
   return `<svg class="ico ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ""}</svg>`;
 }
 
+// ============================================================================
+// PERMISSION-BASED TAB BLOCKING: capture-phase listener chặn click trước mọi handler khác
+// ============================================================================
+// Module-scope variable để capture listener và các handler khác cùng truy cập
+let latestPermPayload = null;
+
+// Capture-phase click listener: chạy TRƯỚC target-phase listeners (composer-ui, automation, etc.)
+// Phải đăng ký sớm (trước các script khác) để đảm bảo capture luôn chạy đầu tiên.
+document.addEventListener("click", function blockDisallowedTabClick(e) {
+  const btn = e.target.closest(".tab-button[data-tab]");
+  if (!btn) return; // Không phải tab button
+
+  const tabId = btn.getAttribute("data-tab");
+  if (!tabId) return;
+
+  // Fail open: không có AppFeatures hoặc không có payload → cho phép
+  const AppFeatures = window.AppFeatures;
+  if (!AppFeatures || !latestPermPayload) return;
+
+  // Kiểm tra quyền
+  if (!AppFeatures.isTabAllowed(tabId, latestPermPayload)) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }
+}, true); // true = capture phase
+
 // Settings Menu Functions
 function toggleSettingsMenu() {
   const dropdown = document.getElementById("settings-dropdown");
@@ -1740,9 +1766,100 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Web hoặc app đổi cấu hình/trạng thái kênh: biểu đồ đang mở thì nạp lại ngay (tab ẩn sẽ nạp khi mở)
   window.electronAPI?.sheet?.onChannelsChanged?.(() => { try { channelStatsView?.reload(); } catch { /* ignore */ } });
 
+  // Tab "Nghiên cứu Trend": dựng một lần, các lần sau reload
+  let trendView = null;
+  function openTrendResearch() {
+    const root = document.getElementById("trend-root");
+    if (!root || !window.TrendUI) return;
+    if (!trendView) trendView = window.TrendUI.mount(root);
+    else trendView.reload();
+  }
+
+  // ============================================================================
+  // PERMISSION-BASED TAB HIDING: ẩn tab/group dựa trên quyền của user
+  // ============================================================================
+  // latestPermPayload đã khai báo ở module scope (đầu file) để capture listener truy cập được
+  let permUnsubscribe = null;   // Unsubscribe từ onChanged
+
+  /**
+   * Áp dụng quyền để ẩn/hiện tab và group.
+   * @param {object} payload - { enforced: boolean, appFeatures: string[] }
+   * @param {{ initial?: boolean }} options - initial=true: startup/login, chuyển sang tab đầu tiên được phép nếu active bị ẩn
+   */
+  function applyPermissions(payload, options = {}) {
+    // CẬP NHẬT PAYLOAD TRƯỚC để capture listener và các guard khác thấy giá trị mới
+    latestPermPayload = payload;
+
+    const AppFeatures = window.AppFeatures;
+    if (!AppFeatures) return; // Fallback: không có module thì show all
+
+    // Thu thập thông tin tab từ DOM
+    const tabButtons = [...document.querySelectorAll(".tab-button[data-tab]")];
+    const tabDescriptions = tabButtons.map((btn) => ({
+      tabId: btn.getAttribute("data-tab"),
+      group: btn.closest(".tab-group[data-group]")?.getAttribute("data-group") || "",
+    }));
+
+    // Tính toán ẩn/hiện qua pure function
+    const { hiddenTabs, hiddenGroups } = AppFeatures.computeHidden(tabDescriptions, payload);
+
+    // Áp dụng vào DOM: tab buttons và tab content panels
+    for (const btn of tabButtons) {
+      const tabId = btn.getAttribute("data-tab");
+      const isHidden = hiddenTabs.has(tabId);
+      btn.classList.toggle("permission-hidden", isHidden);
+      btn.toggleAttribute("hidden", isHidden);
+      // Accessibility: disabled + aria-hidden + tabindex khi ẩn, gỡ khi hiện (reversible)
+      if (isHidden) {
+        btn.setAttribute("disabled", "");
+        btn.setAttribute("aria-hidden", "true");
+        btn.setAttribute("tabindex", "-1");
+      } else {
+        btn.removeAttribute("disabled");
+        btn.removeAttribute("aria-hidden");
+        btn.removeAttribute("tabindex");
+      }
+      // Panel content
+      const panel = document.getElementById(tabId);
+      if (panel) {
+        panel.classList.toggle("permission-hidden", isHidden);
+      }
+    }
+
+    // Áp dụng vào group headers
+    for (const group of document.querySelectorAll(".tab-group[data-group]")) {
+      const groupId = group.getAttribute("data-group");
+      const isHidden = hiddenGroups.has(groupId);
+      group.classList.toggle("permission-hidden", isHidden);
+      group.toggleAttribute("hidden", isHidden);
+    }
+
+    // Nếu là initial (startup/login) và tab đang active bị ẩn: chuyển sang tab đầu tiên được phép
+    // LƯU Ý: latestPermPayload đã được cập nhật TRƯỚC khi tính hiddenTabs, nên firstVisible.click()
+    // sẽ được capture listener cho qua (vì tab đó ĐƯỢC PHÉP).
+    if (options.initial) {
+      const activeBtn = document.querySelector(".tab-button.active");
+      const activeTabId = activeBtn?.getAttribute("data-tab");
+      if (activeTabId && hiddenTabs.has(activeTabId)) {
+        // Tìm tab đầu tiên được phép
+        const firstVisible = tabButtons.find((btn) => !hiddenTabs.has(btn.getAttribute("data-tab")));
+        if (firstVisible) {
+          firstVisible.click(); // Trigger tab switching - capture listener cho qua vì tab này allowed
+        }
+      }
+    }
+    // Nếu không phải initial (permissions thay đổi mid-session): không yank user khỏi tab hiện tại
+    // Chỉ ẩn buttons/groups, để tab switch tiếp theo đi đến tab được phép
+  }
+
   document.querySelectorAll(".tab-button").forEach((button) => {
     button.addEventListener("click", () => {
       const tabId = button.getAttribute("data-tab");
+
+      // Guard: không cho chuyển sang tab bị ẩn theo permission
+      if (window.AppFeatures && latestPermPayload && !window.AppFeatures.isTabAllowed(tabId, latestPermPayload)) {
+        return;
+      }
 
       document
         .querySelectorAll(".tab-button")
@@ -1757,8 +1874,87 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (tabId === "channel-stats") openChannelStats();
       if (tabId === "batches") openBatches();
       if (tabId === "veo3-image") openVeo3Image();
+      if (tabId === "trend-research") openTrendResearch();
     });
   });
+
+  // ============================================================================
+  // TREND TAB BADGE: đếm video hot mới từ tất cả profile
+  // ============================================================================
+
+  /**
+   * Cập nhật badge "số video hot" trên nút tab Nghiên cứu Trend.
+   * @param {number} count - Tổng số video hot mới (0 để ẩn)
+   */
+  function updateTrendBadge(count) {
+    const badge = document.getElementById("trend-badge");
+    if (!badge) return;
+    if (count <= 0) {
+      badge.style.display = "none";
+      badge.textContent = "0";
+    } else {
+      badge.style.display = "";
+      badge.textContent = count > 99 ? "99+" : String(count);
+    }
+  }
+
+  /**
+   * Tải tổng hotCount từ tất cả profile và cập nhật badge.
+   */
+  async function refreshTrendBadge() {
+    try {
+      // Skip nếu user không có quyền xem tab Trend (không cần tải badge)
+      if (window.AppFeatures && latestPermPayload && !window.AppFeatures.isTabAllowed("trend-research", latestPermPayload)) {
+        return;
+      }
+      if (!window.electronAPI?.trend?.listProfiles) return;
+      const profiles = await window.electronAPI.trend.listProfiles();
+      const total = profiles.reduce((sum, p) => sum + (p.hotCount || 0), 0);
+      updateTrendBadge(total);
+    } catch (err) {
+      console.error("refreshTrendBadge error:", err);
+    }
+  }
+
+  // Khởi tạo badge khi app start (guarded, không throw nếu API chưa sẵn sàng)
+  refreshTrendBadge();
+
+  // Lắng nghe scan completion từ scheduler để cập nhật badge
+  if (window.electronAPI?.trend?.onScanComplete) {
+    window.electronAPI.trend.onScanComplete((data) => {
+      if (data.success) {
+        // Reload badge từ profiles (tổng hợp từ tất cả profile)
+        refreshTrendBadge();
+      }
+    });
+  }
+
+  // Export để trend-ui.js có thể gọi
+  window._trendBadge = { update: updateTrendBadge, refresh: refreshTrendBadge };
+
+  // ============================================================================
+  // PERMISSIONS STARTUP: Lấy quyền từ main process và áp dụng
+  // ============================================================================
+  (async function initPermissions() {
+    try {
+      // Chỉ chạy nếu API sẵn sàng
+      if (!window.electronAPI?.permissions?.get) return;
+
+      // Lấy quyền lần đầu
+      const payload = await window.electronAPI.permissions.get();
+      applyPermissions(payload, { initial: true });
+
+      // Đăng ký lắng nghe thay đổi (chỉ 1 lần)
+      if (!permUnsubscribe && window.electronAPI.permissions.onChanged) {
+        permUnsubscribe = window.electronAPI.permissions.onChanged((newPayload) => {
+          applyPermissions(newPayload, { initial: false });
+        });
+      }
+    } catch (err) {
+      // Lỗi → fail open: show all tabs
+      console.error("initPermissions error:", err);
+    }
+  })();
 
   // Mở tab mặc định khi app khởi động: Thống kê kênh
   openChannelStats();

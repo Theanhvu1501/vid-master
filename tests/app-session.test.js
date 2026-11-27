@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createSessionManager, jwtExpiryMs, reasonText, OFFLINE_GRACE_MS } from "../app-session.js";
+import { createSessionManager, jwtExpiryMs, reasonText, OFFLINE_GRACE_MS, normalizeAppFeatures, appFeaturesChanged } from "../app-session.js";
 
 const DAY = 86_400_000;
 const mkJwt = (expSec) => `h.${Buffer.from(JSON.stringify({ exp: expSec })).toString("base64url")}.s`;
@@ -224,4 +224,135 @@ test("login: sai thông tin vẫn là thông báo chung (không nhắc tới mã
   const r = await mgr.login("bob", "x");
   assert.equal(r.kind, "invalid");
   assert.doesNotMatch(r.message, /mã máy/i);
+});
+
+// ---------------- appFeatures ----------------
+const OK_LOGIN_WITH_FEATURES = { status: 200, body: { token: mkJwt(Math.floor(Date.now() / 1000) + 30 * 86400), user: { id: 1, username: "bob", role: "user", appFeatures: ["app:render", "app:download"] } } };
+const OK_LOGIN_NO_FEATURES = { status: 200, body: { token: mkJwt(Math.floor(Date.now() / 1000) + 30 * 86400), user: { id: 1, username: "bob", role: "user" } } };
+const SAVED_WITH_FEATURES = (extra = {}) => ({ token: mkJwt(Math.floor(Date.now() / 1000) + 20 * 86400), user: { id: 1, username: "bob", appFeatures: ["app:trend", "app:automation"] }, machineId: "MACHINE-1234", verifiedAt: 1_700_000_000_000, ...extra });
+
+test("login: server gửi appFeatures mảng -> lưu và getAppFeatures() trả mảng đã chuẩn hóa", async () => {
+  const { mgr, disk } = mk({ respond: () => OK_LOGIN_WITH_FEATURES });
+  const r = await mgr.login("bob", "x");
+  assert.equal(r.ok, true);
+  assert.deepEqual(mgr.getAppFeatures(), ["app:render", "app:download"]);
+  assert.deepEqual(disk.value.user.appFeatures, ["app:render", "app:download"]);
+});
+
+test("login: server không gửi appFeatures (old server) -> getAppFeatures() null", async () => {
+  const { mgr } = mk({ respond: () => OK_LOGIN_NO_FEATURES });
+  await mgr.login("bob", "x");
+  assert.equal(mgr.getAppFeatures(), null);
+});
+
+test("verify: server gửi appFeatures mới (kể cả []) -> cập nhật", async () => {
+  const { mgr, disk } = mk({
+    saved: SAVED_WITH_FEATURES(),
+    respond: () => ({ status: 200, body: { valid: true, user: { id: 1, username: "bob", appFeatures: [] } } }),
+  });
+  await mgr.restore();
+  assert.deepEqual(mgr.getAppFeatures(), []);
+  assert.deepEqual(disk.value.user.appFeatures, []);
+});
+
+test("verify: server không gửi appFeatures -> giữ nguyên danh sách cũ", async () => {
+  const { mgr, disk } = mk({
+    saved: SAVED_WITH_FEATURES(),
+    respond: () => ({ status: 200, body: { valid: true, user: { id: 1, username: "bob" } } }),
+  });
+  await mgr.restore();
+  assert.deepEqual(mgr.getAppFeatures(), ["app:trend", "app:automation"]);
+  assert.deepEqual(disk.value.user.appFeatures, ["app:trend", "app:automation"]);
+});
+
+test("verify: server gửi appFeatures rác (string thay vì array, array chứa non-string, không có prefix app:, trùng) -> chuẩn hóa/null", async () => {
+  // Chuỗi thay vì mảng -> null, giữ nguyên cũ
+  const m1 = mk({ saved: SAVED_WITH_FEATURES(), respond: () => ({ status: 200, body: { valid: true, user: { appFeatures: "app:render" } } }) });
+  await m1.mgr.restore();
+  assert.deepEqual(m1.mgr.getAppFeatures(), ["app:trend", "app:automation"]);
+
+  // Mảng chứa non-string -> bỏ qua phần tử lỗi, giữ phần tử hợp lệ
+  const m2 = mk({ saved: SAVED_WITH_FEATURES(), respond: () => ({ status: 200, body: { valid: true, user: { appFeatures: [123, "app:new", null, "app:new", "nope"] } } }) });
+  await m2.mgr.restore();
+  assert.deepEqual(m2.mgr.getAppFeatures(), ["app:new"]);
+
+  // Mảng rỗng là hợp lệ
+  const m3 = mk({ saved: SAVED_WITH_FEATURES(), respond: () => ({ status: 200, body: { valid: true, user: { appFeatures: [] } } }) });
+  await m3.mgr.restore();
+  assert.deepEqual(m3.mgr.getAppFeatures(), []);
+});
+
+test("restore: phiên đã lưu có appFeatures -> getAppFeatures() trả danh sách đã lưu", async () => {
+  const { mgr } = mk({
+    saved: SAVED_WITH_FEATURES(),
+    respond: () => ({ status: 200, body: { valid: true, user: { id: 1, username: "bob" } } }),
+  });
+  await mgr.restore();
+  assert.deepEqual(mgr.getAppFeatures(), ["app:trend", "app:automation"]);
+});
+
+test("offline verify: giữ nguyên appFeatures đã có", async () => {
+  const { mgr } = mk({ saved: SAVED_WITH_FEATURES(), t0: 1_700_000_000_000 + DAY, respond: () => ({ throw: true }) });
+  await mgr.restore();
+  assert.deepEqual(mgr.getAppFeatures(), ["app:trend", "app:automation"]);
+});
+
+// ---------------- normalizeAppFeatures unit tests ----------------
+test("normalizeAppFeatures: mảng hợp lệ -> mảng các string app:* duy nhất", () => {
+  assert.deepEqual(normalizeAppFeatures(["app:a", "app:b"]), ["app:a", "app:b"]);
+});
+
+test("normalizeAppFeatures: mảng có trùng -> loại trùng", () => {
+  assert.deepEqual(normalizeAppFeatures(["app:a", "app:a", "app:b"]), ["app:a", "app:b"]);
+});
+
+test("normalizeAppFeatures: mảng có phần tử không phải string hoặc không prefix app: -> bỏ qua", () => {
+  assert.deepEqual(normalizeAppFeatures(["app:ok", 123, null, "nope", "app:yes"]), ["app:ok", "app:yes"]);
+});
+
+test("normalizeAppFeatures: string dài quá 64 ký tự -> cắt rồi lọc prefix", () => {
+  const long = "app:" + "x".repeat(100);
+  assert.equal(normalizeAppFeatures([long])[0].length, 64);
+});
+
+test("normalizeAppFeatures: quá 100 phần tử hợp lệ -> chỉ lấy 100 đầu", () => {
+  const big = Array.from({ length: 150 }, (_, i) => `app:f${i}`);
+  assert.equal(normalizeAppFeatures(big).length, 100);
+});
+
+test("normalizeAppFeatures: không phải mảng -> null", () => {
+  assert.equal(normalizeAppFeatures("app:x"), null);
+  assert.equal(normalizeAppFeatures(undefined), null);
+  assert.equal(normalizeAppFeatures(null), null);
+  assert.equal(normalizeAppFeatures({}), null);
+});
+
+test("normalizeAppFeatures: mảng rỗng -> mảng rỗng (không phải null)", () => {
+  assert.deepEqual(normalizeAppFeatures([]), []);
+});
+
+// ---------------- appFeaturesChanged unit tests ----------------
+test("appFeaturesChanged: cả hai null -> false (không đổi)", () => {
+  assert.equal(appFeaturesChanged(null, null), false);
+});
+
+test("appFeaturesChanged: một bên null -> true (đổi)", () => {
+  assert.equal(appFeaturesChanged(null, []), true);
+  assert.equal(appFeaturesChanged([], null), true);
+  assert.equal(appFeaturesChanged(null, ["app:x"]), true);
+});
+
+test("appFeaturesChanged: cùng nội dung khác thứ tự -> false", () => {
+  assert.equal(appFeaturesChanged(["app:a", "app:b"], ["app:b", "app:a"]), false);
+});
+
+test("appFeaturesChanged: khác nội dung -> true", () => {
+  assert.equal(appFeaturesChanged(["app:a"], ["app:b"]), true);
+  assert.equal(appFeaturesChanged(["app:a", "app:b"], ["app:a"]), true);
+  assert.equal(appFeaturesChanged([], ["app:x"]), true);
+});
+
+test("appFeaturesChanged: cùng nội dung cùng thứ tự -> false", () => {
+  assert.equal(appFeaturesChanged(["app:a", "app:b"], ["app:a", "app:b"]), false);
+  assert.equal(appFeaturesChanged([], []), false);
 });

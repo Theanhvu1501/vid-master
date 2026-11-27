@@ -81,6 +81,20 @@ test("ai-keys: lưu mã hóa theo từng kênh, không lộ khóa thô, view ch�
   assert.ok(!JSON.stringify([...m.values()]).includes("KHOA-RIENG")); assert.deepEqual(ks.view("A"), { hasKey: true, keyHint: "…1234" });
   ks.clear("A"); assert.equal(ks.get("A"), ""); ks.prune(["Z"]); assert.equal(ks.get("B"), "");
 });
+test("ai-keys: reserved slots (__xxx__) survive prune, normal keys not in list are removed", () => {
+  const { ks } = mkKeys();
+  // Set up: normal key B, reserved key __trend-ai__
+  ks.set("B", "KHOA-RIENG-B-9999");
+  ks.set("__trend-ai__", "TREND-KEY-12345678");
+  assert.equal(ks.get("B"), "KHOA-RIENG-B-9999");
+  assert.equal(ks.get("__trend-ai__"), "TREND-KEY-12345678");
+  // Prune with list that doesn't include B or __trend-ai__
+  ks.prune(["Z"]);
+  // Normal key B should be removed
+  assert.equal(ks.get("B"), "", "normal key B should be pruned");
+  // Reserved key __trend-ai__ should survive
+  assert.equal(ks.get("__trend-ai__"), "TREND-KEY-12345678", "reserved key __trend-ai__ should survive prune");
+});
 test("ai-keys: khóa rác hoặc không mã hóa được thì KHÔNG lưu", () => {
   const { ks } = mkKeys(); assert.equal(ks.set("A", "ngan").ok, false); assert.equal(ks.set("A", "co khoang trang 123456").ok, false); assert.equal(ks.set("", "KHOA-HOP-LE-123").ok, false);
   const no = mkKeys(false).ks; assert.equal(no.set("A", "KHOA-HOP-LE-123").ok, false); assert.equal(no.get("A"), "");

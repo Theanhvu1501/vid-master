@@ -30,3 +30,6 @@ presets/
 # Profile Chrome + cookie đăng nhập Google của tab Veo3 (dữ liệu nhạy cảm, không bao giờ commit)
 /veo3/
 .web-ai-channel-keys.json
+
+# Dữ liệu tab Nghiên cứu Trend: profile (có YouTube API key dạng chữ thường) và video đã thu thập - không bao giờ commit
+.trend-research/

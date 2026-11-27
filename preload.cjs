@@ -55,6 +55,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
     keySet: (name, key) => ipcRenderer.invoke("ai:key-set", { name, key }),
     keyClear: (name) => ipcRenderer.invoke("ai:key-clear", name),
   },
+  // Quyền truy cập tính năng (appFeatures) — phân quyền theo role, cập nhật realtime từ server.
+  permissions: {
+    get: () => ipcRenderer.invoke("permissions:get"),
+    onChanged: (cb) => { const h = (_e, d) => cb(d); ipcRenderer.on("permissions:changed", h); return () => ipcRenderer.removeListener("permissions:changed", h); },
+  },
   // Sinh ảnh bằng Veo3 (Google Flow API qua Puppeteer): quản lý account, chạy song song.
   veo3: {
     get: () => ipcRenderer.invoke("veo3:get"),
@@ -163,6 +168,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     distribute: (opts) => ipcRenderer.invoke("automation:distribute", opts),
     proxyCheck: (opts) => ipcRenderer.invoke("automation:proxy-check", opts),
     createChannel: (opts) => ipcRenderer.invoke("automation:create-channel", opts),
+    changeGA: (opts) => ipcRenderer.invoke("automation:change-ga", opts),
     previewExcel: (opts) => ipcRenderer.invoke("automation:preview-excel", opts),
     previewRun: (opts) => ipcRenderer.invoke("automation:preview-run", opts),
     distributePreview: (opts) => ipcRenderer.invoke("automation:distribute-preview", opts),
@@ -170,5 +176,28 @@ contextBridge.exposeInMainWorld("electronAPI", {
     saveSample: (kind) => ipcRenderer.invoke("excel-sample:save", { kind }),
     onLog: (cb) => ipcRenderer.on("automation:log", (event, msg) => cb(msg)),
     removeLogListener: () => ipcRenderer.removeAllListeners("automation:log"),
+  },
+  // Trend Research - Nghiên cứu video tiềm năng
+  trend: {
+    listProfiles: () => ipcRenderer.invoke("trend:list-profiles"),
+    addProfile: (profile) => ipcRenderer.invoke("trend:add-profile", profile),
+    updateProfile: (id, updates) => ipcRenderer.invoke("trend:update-profile", { id, updates }),
+    deleteProfile: (id) => ipcRenderer.invoke("trend:delete-profile", id),
+    testApiKey: (apiKey) => ipcRenderer.invoke("trend:test-api-key", apiKey),
+    runScan: (profileId) => ipcRenderer.invoke("trend:run-scan", profileId),
+    getDashboard: (profileId, filters) => ipcRenderer.invoke("trend:get-dashboard", { profileId, filters }),
+    search: (profileId, keyword, options) => ipcRenderer.invoke("trend:search", { profileId, keyword, options }),
+    export: (profileId, filters) => ipcRenderer.invoke("trend:export", { profileId, filters }),
+    // AI Analysis - khóa riêng cho phân tích trend (không dùng khóa của kênh)
+    aiKeyGet: () => ipcRenderer.invoke("trend:ai-key-get"),
+    aiKeySet: (key) => ipcRenderer.invoke("trend:ai-key-set", { key }),
+    aiKeyClear: () => ipcRenderer.invoke("trend:ai-key-clear"),
+    analyze: (profileId, videoIds) => ipcRenderer.invoke("trend:analyze", { profileId, videoIds }),
+    onProgress: (cb) => ipcRenderer.on("trend:progress", (event, data) => cb(data)),
+    removeProgressListener: () => ipcRenderer.removeAllListeners("trend:progress"),
+    // Background scan completion notification (from scheduler)
+    onScanComplete: (cb) => { const h = (_e, d) => cb(d); ipcRenderer.on("trend:scan-complete", h); return () => ipcRenderer.removeListener("trend:scan-complete", h); },
+    // Clear hot count for a profile
+    clearHot: (profileId) => ipcRenderer.invoke("trend:clear-hot", { profileId }),
   },
 });

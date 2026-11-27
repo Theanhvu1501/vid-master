@@ -49,11 +49,18 @@ export function createChannelKeyStore({ io, crypto }) {
     return { hasKey: k.length > 0, keyHint: k.length >= 8 ? "…" + k.slice(-4) : "" };
   }
 
-  /** Kênh bị đổi tên/xóa thì khóa cũ không còn ai dùng: gỡ những tên không còn trong danh sách. */
+  /** Kiểm tra tên có phải reserved slot không (bắt đầu và kết thúc bằng __). */
+  const isReserved = (n) => /^__.+__$/.test(n);
+
+  /** Kênh bị đổi tên/xóa thì khóa cũ không còn ai dùng: gỡ những tên không còn trong danh sách.
+   *  Reserved slots (tên dạng __xxx__) không bị xóa để dùng cho các mục đích nội bộ như __trend-ai__. */
   function prune(validNames) {
     const keep = new Set((validNames || []).map(nameOf));
     const all = readAll(); let changed = false;
-    for (const n of Object.keys(all)) if (!keep.has(n)) { delete all[n]; changed = true; }
+    for (const n of Object.keys(all)) {
+      if (isReserved(n)) continue; // Không xóa reserved slots
+      if (!keep.has(n)) { delete all[n]; changed = true; }
+    }
     if (changed) io.write(FILE, all);
   }
 

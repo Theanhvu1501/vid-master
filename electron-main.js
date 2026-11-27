@@ -8,7 +8,7 @@ import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import { getMachineId } from "./license-check.js";
-import { createSessionManager } from "./app-session.js";
+import { createSessionManager, appFeaturesChanged } from "./app-session.js";
 import pLimit from "p-limit";
 import sharp from "sharp";
 import { createSheetRunner } from "./sheet/sheet-runner.js";
@@ -50,6 +50,12 @@ import { loadResume, saveResume, getEntry } from "./sheet/resume-state.js";
 import { listPendingUploads } from "./sheet/pending-uploads.js";
 import { registerComposerIpc, getPresetsDir } from "./sheet/composer-ipc.js";
 import { pickClipStart } from "./sheet/test-render-channel.js";
+// Trend Research
+import * as trendStore from "./sheet/trend-store.js";
+import * as trendApi from "./sheet/trend-api.js";
+import { runScan, getDashboardData, searchByKeyword, exportToExcel, sanitizeExportFilters } from "./sheet/trend-research.js";
+import { startScheduler, stopScheduler } from "./sheet/trend-scheduler.js";
+import { analyzeVideos } from "./sheet/trend-ai-analysis.js";
 
 const require = createRequire(import.meta.url);
 const { autoUpdater } = require("electron-updater");
@@ -627,9 +633,20 @@ async function forceLogout(message) {
 // Hỏi lại server định kỳ: admin gỡ máy / khóa tài khoản / thu hồi license thì có hiệu lực trong vòng 1 giờ.
 async function checkLicensePeriodically() {
   try {
+    const featuresBefore = sessionMgr.getAppFeatures();
     const r = await sessionMgr.verify();
     if (r.state === "invalid") await forceLogout(r.message);
     else if (r.state === "need-online") console.log("⚠️ " + r.message);
+    else if (r.state === "valid" || r.state === "offline") {
+      // So sánh appFeatures trước/sau; thông báo nếu đổi
+      const featuresAfter = sessionMgr.getAppFeatures();
+      if (appFeaturesChanged(featuresBefore, featuresAfter)) {
+        const enforced = featuresAfter !== null;
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send("permissions:changed", { enforced, appFeatures: enforced ? featuresAfter : [] });
+        }
+      }
+    }
   } catch (error) {
     console.error("Error in periodic session check:", error); // lỗi mạng: không đăng xuất oan
   }
@@ -766,6 +783,21 @@ app.whenReady().then(async () => {
       if (win && !win.isDestroyed()) win.webContents.send("sheet:event", { type: "log", message });
       console.log(message);
     });
+
+    // Start Trend Research background scheduler (checks every 5 min if any profile is due).
+    // Initial check runs ~30s after startup. Does not block app startup.
+    try {
+      startScheduler({
+        gpmHost: getTrendGpmHost(),
+        log: (msg) => console.log(msg),
+        mainWindow,
+        onScanComplete: (profile, result) => {
+          console.log(`[TrendScheduler] Completed: ${profile.name} - ${result.totalVideos} videos`);
+        },
+      });
+    } catch (err) {
+      console.error("[TrendScheduler] Start error:", err);
+    }
   }
 });
 
@@ -785,6 +817,8 @@ app.on("before-quit", () => {
   stopPotServer();
   taskTracker.abortAll();
   monitorAgent.stop();
+  // Dừng scheduler trend research
+  stopScheduler();
   // Đóng Chrome riêng của tab Veo3 (nếu đang mở) để không mồ côi sau khi thoát app.
   veo3Adapter.destroy().catch(() => {});
 });
@@ -2513,6 +2547,11 @@ ipcMain.handle("account:get", () => {
   const u = sessionMgr.getUser();
   return { loggedIn: sessionMgr.isLoggedIn(), username: u?.username || "", displayName: u?.displayName || u?.username || "", role: u?.role || "" };
 });
+ipcMain.handle("permissions:get", () => {
+  const appFeatures = sessionMgr.getAppFeatures();
+  const enforced = appFeatures !== null;
+  return { enforced, appFeatures: enforced ? appFeatures : [] };
+});
 ipcMain.handle("account:logout", async () => {
   // Người dùng đã xác nhận ở hộp "Xác nhận đăng xuất" theo style của app trong cửa sổ chính (confirmLogout) nên KHÔNG hỏi lại lần nữa:
   // trước đây hộp này bị hỏi hai lần (một hộp theo style, một hộp mặc định của hệ điều hành).
@@ -2880,6 +2919,33 @@ guardedHandler("automation:create-channel", async (o) => {
   });
 });
 
+// Đổi GA (Google Account): chuyển kênh YouTube sang account khác.
+guardedHandler("automation:change-ga", async (o) => {
+  const { runChangeGA } = await import("./sheet/change-ga.js");
+  const { readChangeGAPlans } = await import("./sheet/excel-import.js");
+  const profiles = needProfiles(o);
+  const host = gpmHostOf(o.gpmHost);
+  if (!o.planFile || !fs.existsSync(o.planFile)) throw new Error("Chưa chọn file Excel đổi GA (hoặc file không tồn tại)");
+  const counts = await gpmNameCounts(host);
+  const r = attachProfileData(profiles, readChangeGAPlans(o.planFile), counts);
+  logAttachSkips(o, r);
+  if (!r.matched.length) throw new Error("Không profile nào khớp với file Excel (cột A: Profile ID hoặc tên profile)");
+  // File tài khoản (tuỳ chọn) để đăng nhập trước nếu cần.
+  let accounts = new Map();
+  if (o.accountsFile && fs.existsSync(o.accountsFile)) {
+    const a = attachProfileData(r.matched, readLoginAccounts(o.accountsFile), counts);
+    accounts = new Map(a.matched.map((p) => [p.id, p.data]));
+  }
+  return runChangeGA({
+    ...o, gpmHost: host,
+    manualTimeout: (o.manualTimeout || 300) * 1000, // convert từ giây sang ms
+    profiles: r.matched.map((p) => ({
+      id: p.id, name: p.name, label: p.label, account: accounts.get(p.id) || null,
+      plan: { channelId: p.data.channelId, targetEmail: p.data.targetEmail, targetName: p.data.targetName },
+    })),
+  });
+});
+
 // Xem trước kế hoạch rải video (không mở trình duyệt, không đăng gì).
 ipcMain.handle("automation:distribute-preview", async (e, o = {}) => {
   try {
@@ -2900,7 +2966,15 @@ ipcMain.handle("automation:preview-excel", async (e, o = {}) => {
     const profiles = needProfiles(o);
     const file = o.kind === "login" ? o.accountsFile : o.planFile;
     if (!file || !fs.existsSync(file)) throw new Error("Chưa chọn file Excel (hoặc file không tồn tại)");
-    const items = o.kind === "login" ? readLoginAccounts(file) : readChannelPlans(file);
+    let items;
+    if (o.kind === "login") {
+      items = readLoginAccounts(file);
+    } else if (o.kind === "changega") {
+      const { readChangeGAPlans } = await import("./sheet/excel-import.js");
+      items = readChangeGAPlans(file);
+    } else {
+      items = readChannelPlans(file);
+    }
     const r = attachProfileData(profiles, items, await gpmNameCounts(gpmHostOf(o.gpmHost)));
     return {
       success: true, total: items.length,
@@ -2955,6 +3029,169 @@ ipcMain.handle("excel-sample:save", async (e, { kind } = {}) => {
 });
 
 ipcMain.handle("automation:stop", () => { stopAutomation(); return { ok: true }; });
+
+// ============================================================================
+// TREND RESEARCH - Nghiên cứu video tiềm năng
+// ============================================================================
+
+// Helper để lấy GPM host cho trend research. Dùng cùng nguồn với các handler khác.
+function getTrendGpmHost() {
+  return gpmHostOf(loadSheetSettings().gpmHost);
+}
+
+ipcMain.handle("trend:list-profiles", () => {
+  // Trả về profiles với apiKey thay bằng hasApiKey (không gửi key thật xuống renderer)
+  // Cũng bỏ seenHotIds (privacy/size) nhưng giữ hotCount
+  return trendStore.loadProfiles().map(trendStore.toPublicProfile);
+});
+
+ipcMain.handle("trend:add-profile", (event, profile) => {
+  const created = trendStore.addProfile(profile);
+  return trendStore.toPublicProfile(created);
+});
+
+ipcMain.handle("trend:update-profile", (event, { id, updates }) => {
+  // Nếu apiKey là empty/undefined, không cập nhật (giữ key cũ)
+  const { apiKey, ...rest } = updates;
+  const safeUpdates = apiKey ? { ...rest, apiKey } : rest;
+  const updated = trendStore.updateProfile(id, safeUpdates);
+  // updateProfile returns null for unknown id; toPublicProfile(null) returns null
+  return trendStore.toPublicProfile(updated);
+});
+
+ipcMain.handle("trend:delete-profile", (event, id) => {
+  trendStore.deleteProfile(id);
+  return { ok: true };
+});
+
+ipcMain.handle("trend:clear-hot", (event, { profileId }) => {
+  // Validate profileId is a non-empty string
+  if (typeof profileId !== "string" || !profileId.trim()) {
+    return { ok: false, error: "profileId phải là chuỗi không rỗng" };
+  }
+  // Check profile exists
+  const profile = trendStore.getProfile(profileId);
+  if (!profile) {
+    return { ok: false, error: "Profile không tồn tại" };
+  }
+  trendStore.clearHotCount(profileId);
+  return { ok: true };
+});
+
+ipcMain.handle("trend:test-api-key", async (event, apiKey) => {
+  return await trendApi.testApiKey(apiKey);
+});
+
+ipcMain.handle("trend:run-scan", async (event, profileId) => {
+  const gpmHost = getTrendGpmHost();
+  return await runScan(profileId, {
+    gpmHost,
+    log: (msg) => {
+      console.log(`[Trend] ${msg}`);
+      event.sender.send("trend:progress", { message: msg });
+    },
+    onProgress: (p) => event.sender.send("trend:progress", p),
+  });
+});
+
+ipcMain.handle("trend:get-dashboard", (event, { profileId, filters }) => {
+  return getDashboardData(profileId, filters);
+});
+
+ipcMain.handle("trend:search", async (event, { profileId, keyword, options }) => {
+  return await searchByKeyword(profileId, keyword, options);
+});
+
+ipcMain.handle("trend:export", async (event, { profileId, filters }) => {
+  // Validate profileId
+  if (typeof profileId !== "string" || !profileId) {
+    return { ok: false, error: "Profile ID không hợp lệ" };
+  }
+  // Check profile exists
+  const profile = trendStore.getProfile(profileId);
+  if (!profile) {
+    return { ok: false, error: "Profile không tồn tại" };
+  }
+  // Sanitize filters
+  const safeFilters = sanitizeExportFilters(filters);
+
+  const result = await dialog.showSaveDialog(mainWindow, {
+    defaultPath: `trend-videos-${new Date().toISOString().slice(0, 10)}.xlsx`,
+    filters: [{ name: "Excel", extensions: ["xlsx"] }],
+  });
+  if (result.canceled) return { ok: false, canceled: true };
+
+  try {
+    const filePath = await exportToExcel(profileId, safeFilters, result.filePath);
+    return { ok: true, path: filePath };
+  } catch (err) {
+    return { ok: false, error: err.message || "Lỗi xuất file Excel" };
+  }
+});
+
+// ================= Trend AI Analysis =================
+// Khóa AI cho trend analysis lưu với tên đặc biệt __trend-ai__ trong channelKeys store.
+// Dùng chung cơ chế với khóa AI theo kênh, nhưng không bị prune khi danh sách kênh thay đổi
+// (vì channelKeys.prune hiện KHÔNG được gọi ở đâu trong codebase).
+
+const TREND_AI_KEY_NAME = "__trend-ai__";
+
+ipcMain.handle("trend:ai-key-get", () => {
+  // Trả về { ok, hasKey, keyHint } - KHÔNG trả về khóa thật
+  return { ok: true, ...channelKeys.view(TREND_AI_KEY_NAME) };
+});
+
+ipcMain.handle("trend:ai-key-set", (_event, { key } = {}) => {
+  return channelKeys.set(TREND_AI_KEY_NAME, key);
+});
+
+ipcMain.handle("trend:ai-key-clear", () => {
+  return channelKeys.clear(TREND_AI_KEY_NAME);
+});
+
+ipcMain.handle("trend:analyze", async (event, { profileId, videoIds } = {}) => {
+  // Validate profileId
+  if (typeof profileId !== "string" || !profileId) {
+    return { ok: false, error: "Profile ID không hợp lệ" };
+  }
+
+  // Check profile exists
+  const profile = trendStore.getProfile(profileId);
+  if (!profile) {
+    return { ok: false, error: "Profile không tồn tại" };
+  }
+
+  // Get AI key (from dedicated trend AI slot)
+  const apiKey = channelKeys.get(TREND_AI_KEY_NAME);
+  if (!apiKey) {
+    return { ok: false, error: "Chưa cấu hình Gemini API key cho phân tích AI" };
+  }
+
+  // Load videos from store (NOT from renderer to prevent prompt injection)
+  // Use sanitized filters similar to export, limit to 10 videos
+  const safeFilters = sanitizeExportFilters({});
+  safeFilters.limit = 10;
+
+  let videos = trendStore.queryVideos(profileId, safeFilters);
+
+  // If videoIds provided, filter to only those IDs (but still from store data)
+  if (Array.isArray(videoIds) && videoIds.length > 0) {
+    const idSet = new Set(videoIds.map(String));
+    videos = videos.filter((v) => idSet.has(String(v.videoId)));
+  }
+
+  if (!videos || videos.length === 0) {
+    return { ok: false, error: "Không có video để phân tích. Vui lòng quét dữ liệu trước." };
+  }
+
+  try {
+    const result = await analyzeVideos(videos, { apiKey });
+    return result; // { ok: true, insights } or { ok: false, code, error }
+  } catch (err) {
+    // Should not happen since analyzeVideos never throws, but just in case
+    return { ok: false, error: err?.message || "Lỗi không xác định khi phân tích" };
+  }
+});
 
 // IPC Handlers
 ipcMain.handle("select-folder", async () => {

@@ -21,6 +21,41 @@ const REASON_TEXT = {
 };
 export const reasonText = (r) => REASON_TEXT[r] || "Phiên đăng nhập không còn hợp lệ. Vui lòng đăng nhập lại.";
 
+/**
+ * Chuẩn hóa danh sách appFeatures từ server.
+ * @param {unknown} value - Giá trị từ server (có thể là array, string, undefined, null, ...)
+ * @returns {string[] | null} - Mảng các string "app:*" duy nhất (max 100, mỗi string <= 64 ký tự), hoặc null nếu server không gửi/không hợp lệ.
+ */
+export function normalizeAppFeatures(value) {
+  if (!Array.isArray(value)) return null;
+  const seen = new Set();
+  const result = [];
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const s = item.slice(0, 64);
+    if (!s.startsWith("app:") || seen.has(s)) continue;
+    seen.add(s);
+    result.push(s);
+    if (result.length >= 100) break;
+  }
+  return result;
+}
+
+/**
+ * So sánh hai danh sách appFeatures (thứ tự không quan trọng).
+ * @param {string[] | null} a
+ * @param {string[] | null} b
+ * @returns {boolean} - true nếu khác nhau (hoặc một bên null mà bên kia không phải), false nếu giống.
+ */
+export function appFeaturesChanged(a, b) {
+  if (a === null && b === null) return false;
+  if (a === null || b === null) return true;
+  if (a.length !== b.length) return true;
+  const setA = new Set(a);
+  for (const x of b) if (!setA.has(x)) return true;
+  return false;
+}
+
 // Đọc hạn của JWT mà KHÔNG xác thực chữ ký (chỉ để biết "chắc chắn đã hết hạn" khi offline; server mới là nơi xác thực).
 export function jwtExpiryMs(token) {
   try {
@@ -59,6 +94,8 @@ export function createSessionManager({ fetchImpl = fetch, getBase, getMachineId,
     getToken: () => current?.token || "",
     getUser: () => current?.user || null,
     isLoggedIn: () => !!current,
+    /** Trả danh sách appFeatures (string[]) hoặc null nếu chưa biết. null = fail OPEN (UI hiện tất cả tab). */
+    getAppFeatures: () => current?.user?.appFeatures ?? null,
 
     /** Đăng nhập. Trả { ok:true, user } hoặc { ok:false, kind, message }. */
     async login(username, password) {
@@ -70,7 +107,10 @@ export function createSessionManager({ fetchImpl = fetch, getBase, getMachineId,
       catch { return { ok: false, kind: "network", message: "Không kết nối được server. Kiểm tra mạng rồi thử lại." }; }
 
       if (r.status === 200 && typeof r.data.token === "string") {
-        current = { token: r.data.token, user: r.data.user || null, machineId, verifiedAt: now() };
+        const serverUser = r.data.user || {};
+        const normalizedFeatures = normalizeAppFeatures(serverUser.appFeatures);
+        const user = normalizedFeatures !== null ? { ...serverUser, appFeatures: normalizedFeatures } : serverUser;
+        current = { token: r.data.token, user, machineId, verifiedAt: now() };
         persist();
         return { ok: true, user: current.user };
       }
@@ -89,7 +129,16 @@ export function createSessionManager({ fetchImpl = fetch, getBase, getMachineId,
       catch { return this._offline(); }
       if (r.status === 200 && r.data.valid) {
         current.verifiedAt = now();
-        if (r.data.user) current.user = r.data.user;
+        if (r.data.user) {
+          const serverUser = r.data.user;
+          const normalizedFeatures = normalizeAppFeatures(serverUser.appFeatures);
+          // Merge user: nếu server gửi appFeatures (kể cả []) thì cập nhật; không gửi thì giữ nguyên
+          current.user = {
+            ...(current.user || {}),
+            ...serverUser,
+            appFeatures: normalizedFeatures !== null ? normalizedFeatures : (current.user?.appFeatures ?? null),
+          };
+        }
         persist();
         return { state: "valid", user: current.user };
       }
